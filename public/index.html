@@ -750,26 +750,26 @@
             <div class="tier t-mid">
                 <span class="tier-pill">MEDIUM RISK</span>
                 <h3>Soft Step-Up</h3>
-                <p class="tier-desc">Something's slightly off — a new browser, unusual hours, minor location shift.</p>
+                <p class="tier-desc">Something's slightly off — a new browser, unusual hours, minor location shift. Lighter-weight authentication methods are sufficient.</p>
                 <ul class="tier-signals">
                     <li>Unrecognized browser or OS</li>
                     <li>Access outside normal hours</li>
                     <li>Minor location deviation</li>
                     <li>Moderate anomaly score</li>
                 </ul>
-                <div class="tier-result">→ Email or push confirmation</div>
+                <div class="tier-result">→ SMS OTP, email validation, KBA, or passkey (no biometric)</div>
             </div>
             <div class="tier t-high">
                 <span class="tier-pill">HIGH RISK</span>
-                <h3>Hard Challenge</h3>
-                <p class="tier-desc">Unknown device, suspicious IP, behavioral anomaly, or credential stuffing pattern.</p>
+                <h3>Strong Step-Up</h3>
+                <p class="tier-desc">Unknown device, suspicious IP, behavioral anomaly, or credential stuffing pattern. Only strong possession factors or biometrics are accepted.</p>
                 <ul class="tier-signals">
                     <li>Unknown device + new location</li>
                     <li>Flagged IP reputation</li>
                     <li>Behavioral anomaly detected</li>
                     <li>Credential stuffing pattern</li>
                 </ul>
-                <div class="tier-result">⛔ MFA required or access blocked</div>
+                <div class="tier-result">⛔ FIDO2 (YubiKey), biometric passkey, or push with biometric app required</div>
             </div>
         </div>
     </div>
