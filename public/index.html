@@ -732,29 +732,29 @@
         <div class="section-head">
             <div class="section-kicker">Section 3 — Risk-Based Authentication</div>
             <h2>The Right Response<br>for Every Risk Level</h2>
-            <p class="lead">X-Auth doesn't apply a one-size-fits-all policy. It matches the friction to the actual threat.</p>
+            <p class="lead">X-Auth evaluates both the identity signals behind a request <em>and</em> the sensitivity of what's being accessed — then matches the friction to the actual risk.</p>
         </div>
         <div class="tiers-grid">
             <div class="tier t-low">
                 <span class="tier-pill">LOW RISK</span>
                 <h3>Seamless Access</h3>
-                <p class="tier-desc">Known device, familiar location, consistent behavior. No challenge needed.</p>
+                <p class="tier-desc">e.g. login request for read-only access — trusted identity signals and low-sensitivity operation.</p>
                 <ul class="tier-signals">
                     <li>Trusted device fingerprint</li>
                     <li>Recognized IP &amp; location</li>
                     <li>Consistent behavioral pattern</li>
-                    <li>Clean session history</li>
+                    <li>Low-sensitivity resource</li>
                 </ul>
                 <div class="tier-result">✓ Instant access granted</div>
             </div>
             <div class="tier t-mid">
                 <span class="tier-pill">MEDIUM RISK</span>
                 <h3>Soft Step-Up</h3>
-                <p class="tier-desc">Something's slightly off — a new browser, unusual hours, minor location shift.</p>
+                <p class="tier-desc">e.g. report generation for sensitive data — elevated sensitivity or mild identity signal deviation.</p>
                 <ul class="tier-signals">
                     <li>Unrecognized browser or OS</li>
                     <li>Access outside normal hours</li>
-                    <li>Minor location deviation</li>
+                    <li>Sensitive resource requested</li>
                     <li>Moderate anomaly score</li>
                 </ul>
                 <div class="tier-result">→ SMS OTP, magic email link, or FIDO2</div>
@@ -762,10 +762,10 @@
             <div class="tier t-high">
                 <span class="tier-pill">HIGH RISK</span>
                 <h3>Strong Step-Up</h3>
-                <p class="tier-desc">Unknown device, suspicious IP, behavioral anomaly, or credential stuffing pattern.</p>
+                <p class="tier-desc">e.g. payment attempt — high-value operation, suspicious signals, or both.</p>
                 <ul class="tier-signals">
-                    <li>Unknown device + new location</li>
-                    <li>Flagged IP reputation</li>
+                    <li>High-value or irreversible action</li>
+                    <li>Unknown device or flagged IP</li>
                     <li>Behavioral anomaly detected</li>
                     <li>Credential stuffing pattern</li>
                 </ul>
