@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>X-Auth by XentraNET | Secure Access Made Easy</title>
+    <meta name="description" content="X-Auth eliminates passwords and unnecessary MFA friction. Real-time, risk-based access evaluation for Zero Trust environments. A XentraNET product.">
+    <meta property="og:title" content="X-Auth by XentraNET | Secure Access Made Easy">
+    <meta property="og:description" content="Stop friction theater. X-Auth evaluates risk in real-time — seamless access for legitimate users, hard stops for threats.">
+    <meta property="og:type" content="website">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:          #09090b;
+            --bg-raised:   rgba(255,255,255,0.03);
+            --bg-card:     rgba(18,18,22,0.85);
+            --accent:      #00e096;
+            --accent-glow: rgba(0,224,150,0.18);
+            --accent-ring: rgba(0,224,150,0.28);
+            --warn:        #f0b429;
+            --danger:      #f04040;
+            --text:        #dddde4;
+            --muted:       #7c7c8a;
+            --border:      rgba(255,255,255,0.07);
+            --glow:        0 0 28px rgba(0,224,150,0.22);
+        }
+
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; font-size: 16px; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Subtle grid */
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background-image:
+                linear-gradient(var(--accent-glow) 1px, transparent 1px),
+                linear-gradient(90deg, var(--accent-glow) 1px, transparent 1px);
+            background-size: 48px 48px;
+            opacity: 0.4;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 0 1.75rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ── Typography ── */
+        h1 {
+            font-size: clamp(3rem, 9vw, 5.5rem);
+            font-weight: 900;
+            line-height: 1.02;
+            letter-spacing: -3px;
+        }
+        h2 {
+            font-size: clamp(2rem, 4.5vw, 3rem);
+            font-weight: 900;
+            line-height: 1.08;
+            letter-spacing: -1.5px;
+        }
+        h3 { font-size: 1.1rem; font-weight: 700; }
+        .gradient-text {
+            background: linear-gradient(140deg, #fff 20%, #888 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .eyebrow {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            padding: 0.3rem 0.9rem;
+            border-radius: 100px;
+        }
+        .section-kicker {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 0.9rem;
+        }
+        .lead {
+            color: var(--muted);
+            font-size: 1.05rem;
+            line-height: 1.75;
+            max-width: 560px;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-block;
+            padding: 0.9rem 1.8rem;
+            font-family: 'Inter', sans-serif;
+            font-weight: 700;
+            font-size: 0.95rem;
+            border-radius: 5px;
+            text-decoration: none;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #000;
+            box-shadow: var(--glow);
+        }
+        .btn-primary:hover { filter: brightness(1.08); transform: translateY(-2px); }
+        .btn-ghost {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-ghost:hover { border-color: var(--accent-ring); color: var(--accent); }
+
+        /* ── Header ── */
+        .site-header {
+            position: sticky; top: 0; z-index: 200;
+            background: rgba(9,9,11,0.88);
+            backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--border);
+        }
+        .header-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.1rem 0;
+        }
+        .logo {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 1.3rem;
+            color: var(--accent);
+            text-decoration: none;
+            letter-spacing: -0.5px;
+        }
+        .logo span { color: var(--muted); font-weight: 400; }
+        nav { display: flex; align-items: center; gap: 0.15rem; }
+        nav a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            padding: 0.45rem 0.85rem;
+            border-radius: 4px;
+            transition: color 0.2s;
+        }
+        nav a:hover { color: var(--text); }
+        nav .nav-cta {
+            background: var(--accent);
+            color: #000;
+            font-weight: 700;
+            margin-left: 0.4rem;
+        }
+        nav .nav-cta:hover { filter: brightness(1.08); }
+
+        /* ── Section base ── */
+        section { padding: 6rem 0; }
+        .section-head { margin-bottom: 3.5rem; }
+
+        /* ── Hero ── */
+        .hero {
+            padding: 6.5rem 0 4rem;
+            text-align: center;
+        }
+        .hero .eyebrow { margin-bottom: 2rem; }
+        .hero h1 { margin-bottom: 1.4rem; }
+        .hero .hero-sub {
+            max-width: 560px;
+            margin: 0 auto 2.75rem;
+            color: var(--muted);
+            font-size: 1.2rem;
+            line-height: 1.75;
+        }
+        .hero-actions {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 0.9rem;
+            margin-bottom: 4rem;
+        }
+
+        /* Terminal */
+        .terminal-shell {
+            max-width: 760px;
+            margin: 0 auto;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            box-shadow: 0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(0,224,150,0.06);
+        }
+        .term-bar {
+            background: #111116;
+            padding: 0.7rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            border-bottom: 1px solid var(--border);
+        }
+        .dot { width: 11px; height: 11px; border-radius: 50%; }
+        .dot-r { background: #f04040; }
+        .dot-y { background: #f0b429; }
+        .dot-g { background: #29c940; }
+        .term-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-left: 0.4rem;
+        }
+        .term-body {
+            background: #0c0c10;
+            padding: 1.75rem 2rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.84rem;
+            line-height: 1.9;
+            color: #8888a0;
+            text-align: left;
+            overflow-x: auto;
+        }
+        .kw  { color: #c084fc; }
+        .str { color: #86efac; }
+        .fn  { color: #60a5fa; }
+        .cmt { color: #3f4555; font-style: italic; }
+
+        /* ── Stats ── */
+        .stats-band {
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            padding: 0;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+        }
+        .stat-cell {
+            padding: 3rem 2.5rem;
+            border-right: 1px solid var(--border);
+            position: relative;
+        }
+        .stat-cell:last-child { border-right: none; }
+        .stat-category {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            letter-spacing: 2.5px;
+            text-transform: uppercase;
+            margin-bottom: 1.25rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 3px;
+            display: inline-block;
+        }
+        .stat-cell.threat .stat-category { color: var(--danger); background: rgba(240,64,64,0.1); }
+        .stat-cell.solution .stat-category { color: var(--accent); background: var(--accent-glow); }
+        .stat-cell.roi .stat-category { color: var(--warn); background: rgba(240,180,41,0.1); }
+        .stat-numbers { display: flex; flex-direction: column; gap: 1.5rem; }
+        .stat-item {}
+        .stat-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: clamp(2rem, 4vw, 3rem);
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.4rem;
+        }
+        .stat-cell.threat  .stat-num { color: var(--danger); }
+        .stat-cell.solution .stat-num { color: var(--accent); }
+        .stat-cell.roi     .stat-num { color: var(--warn); }
+        .stat-desc { color: var(--muted); font-size: 0.825rem; line-height: 1.45; }
+        .stat-divider {
+            width: 1px;
+            background: var(--border);
+            align-self: stretch;
+            margin: 0.25rem 0;
+            display: none;
+        }
+
+        /* ── Don't Scare ── */
+        .problem-section {
+            background: linear-gradient(180deg, transparent, rgba(0,224,150,0.02) 50%, transparent);
+        }
+        .problem-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6rem;
+            align-items: start;
+        }
+        .problem-left h2 { margin-bottom: 1rem; }
+        .problem-left .lead { margin-top: 0.5rem; }
+        blockquote {
+            font-size: 1.05rem;
+            color: var(--text);
+            font-style: italic;
+            line-height: 1.8;
+            border-left: 3px solid var(--accent);
+            padding-left: 1.4rem;
+            margin-bottom: 1.75rem;
+        }
+        .problem-right p {
+            color: var(--muted);
+            font-size: 0.95rem;
+            line-height: 1.85;
+            margin-bottom: 0.9rem;
+        }
+        .problem-right p strong { color: var(--text); }
+
+        /* ── Risk Tiers ── */
+        .tiers-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .tier {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2rem 1.75rem;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+        }
+        .tier.t-low    { border-top: 3px solid var(--accent); }
+        .tier.t-mid    { border-top: 3px solid var(--warn); }
+        .tier.t-high   { border-top: 3px solid var(--danger); }
+        .tier-pill {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            padding: 0.22rem 0.65rem;
+            border-radius: 100px;
+            margin-bottom: 1.25rem;
+        }
+        .tier.t-low  .tier-pill { background: rgba(0,224,150,0.1);  color: var(--accent); }
+        .tier.t-mid  .tier-pill { background: rgba(240,180,41,0.1); color: var(--warn); }
+        .tier.t-high .tier-pill { background: rgba(240,64,64,0.1);  color: var(--danger); }
+        .tier h3 { margin-bottom: 0.5rem; }
+        .tier-desc {
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-bottom: 1.25rem;
+            line-height: 1.55;
+        }
+        .tier-signals { list-style: none; flex: 1; }
+        .tier-signals li {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.76rem;
+            color: var(--muted);
+            padding: 0.28rem 0;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .tier-signals li::before { content: '›'; flex-shrink: 0; }
+        .tier.t-low  .tier-signals li::before { color: var(--accent); }
+        .tier.t-mid  .tier-signals li::before { color: var(--warn); }
+        .tier.t-high .tier-signals li::before { color: var(--danger); }
+        .tier-result {
+            margin-top: 1.5rem;
+            padding: 0.7rem 1rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            font-family: 'Inter', sans-serif;
+        }
+        .tier.t-low  .tier-result { background: rgba(0,224,150,0.08);  color: var(--accent); }
+        .tier.t-mid  .tier-result { background: rgba(240,180,41,0.08); color: var(--warn); }
+        .tier.t-high .tier-result { background: rgba(240,64,64,0.08);  color: var(--danger); }
+
+        /* ── Intelligence Engine ── */
+        .engine-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .engine-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2rem;
+            backdrop-filter: blur(12px);
+            transition: border-color 0.2s;
+        }
+        .engine-card:hover { border-color: var(--accent-ring); }
+        .engine-icon { font-size: 1.5rem; margin-bottom: 0.9rem; display: block; }
+        .engine-card h3 { color: var(--accent); margin-bottom: 0.5rem; }
+        .engine-card p { color: var(--muted); font-size: 0.875rem; line-height: 1.75; }
+        .tag-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 1rem; }
+        .tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.66rem;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+        }
+
+        /* ── Core Services ── */
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .service-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2.25rem 2rem;
+            backdrop-filter: blur(12px);
+            transition: border-color 0.2s;
+        }
+        .service-card:hover { border-color: var(--accent-ring); }
+        .service-card h3 { color: var(--accent); margin-bottom: 0.65rem; }
+        .service-card p { color: var(--muted); font-size: 0.875rem; line-height: 1.75; }
+
+        /* ── Trust ── */
+        .trust-section { text-align: center; }
+        .trust-section .lead { margin: 0 auto 3rem; text-align: center; }
+        .badges {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 0.7rem;
+            margin-bottom: 4rem;
+        }
+        .badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            padding: 0.55rem 1.1rem;
+            border-radius: 6px;
+            letter-spacing: 0.5px;
+        }
+        .zero-callout {
+            display: inline-block;
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            border-radius: 14px;
+            padding: 2.25rem 4rem;
+        }
+        .zero-callout .zero {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 3.75rem;
+            font-weight: 700;
+            color: var(--accent);
+            line-height: 1;
+            display: block;
+        }
+        .zero-callout p { color: var(--muted); font-size: 0.875rem; margin-top: 0.6rem; }
+
+        /* ── Pricing ── */
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .plan {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2.5rem 2.25rem;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+        }
+        .plan.featured {
+            border-color: var(--accent-ring);
+            background: rgba(0,224,150,0.04);
+            position: relative;
+        }
+        .plan-badge {
+            position: absolute;
+            top: -1px; right: 1.75rem;
+            background: var(--accent);
+            color: #000;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            padding: 0.25rem 0.7rem;
+            border-radius: 0 0 6px 6px;
+        }
+        .plan-tier {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 0.9rem;
+        }
+        .plan-price {
+            font-size: 2.6rem;
+            font-weight: 900;
+            letter-spacing: -2px;
+            margin-bottom: 0.25rem;
+            line-height: 1;
+        }
+        .plan-price sub {
+            font-size: 0.9rem;
+            font-weight: 400;
+            color: var(--muted);
+            letter-spacing: 0;
+            vertical-align: baseline;
+        }
+        .plan-tagline {
+            color: var(--muted);
+            font-size: 0.83rem;
+            line-height: 1.55;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .plan-features { list-style: none; flex: 1; }
+        .plan-features li {
+            color: var(--muted);
+            font-size: 0.83rem;
+            padding: 0.42rem 0;
+            display: flex;
+            gap: 0.65rem;
+            align-items: flex-start;
+        }
+        .plan-features li::before { content: '✓'; color: var(--accent); font-weight: 700; flex-shrink: 0; }
+        .plan-cta {
+            display: block;
+            margin-top: 2rem;
+            text-align: center;
+            padding: 0.875rem 1rem;
+            border-radius: 5px;
+            font-weight: 700;
+            font-size: 0.875rem;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .plan:not(.featured) .plan-cta { border: 1px solid var(--border); color: var(--text); }
+        .plan:not(.featured) .plan-cta:hover { border-color: var(--accent-ring); color: var(--accent); }
+        .plan.featured .plan-cta { background: var(--accent); color: #000; box-shadow: var(--glow); }
+        .plan.featured .plan-cta:hover { filter: brightness(1.08); transform: translateY(-1px); }
+
+        /* ── Footer ── */
+        .site-footer {
+            border-top: 1px solid var(--border);
+            padding: 2.5rem 0;
+        }
+        .footer-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .footer-brand .logo { display: block; margin-bottom: 0.25rem; }
+        .footer-brand p { font-size: 0.73rem; color: var(--muted); }
+        .footer-links { display: flex; gap: 1.5rem; }
+        .footer-links a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.8rem;
+            transition: color 0.2s;
+        }
+        .footer-links a:hover { color: var(--text); }
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            color: var(--muted);
+        }
+        .status-dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent);
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 960px) {
+            .problem-grid { grid-template-columns: 1fr; gap: 3rem; }
+            .tiers-grid   { grid-template-columns: 1fr; }
+            .engine-grid  { grid-template-columns: 1fr; }
+            .services-grid { grid-template-columns: 1fr; }
+            .pricing-grid { grid-template-columns: 1fr; }
+            .stats-grid   { grid-template-columns: 1fr; }
+            .stat-cell    { border-right: none; border-bottom: 1px solid var(--border); }
+            .stat-cell:last-child { border-bottom: none; }
+        }
+        @media (max-width: 720px) {
+            section { padding: 4rem 0; }
+            .hero { padding: 4.5rem 0 3rem; }
+            nav a:not(.nav-cta) { display: none; }
+            .footer-inner { flex-direction: column; gap: 1.5rem; text-align: center; }
+            .footer-links { flex-wrap: wrap; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
+            <nav>
+                <a href="#problem">The Problem</a>
+                <a href="#how-it-works">How It Works</a>
+                <a href="#services">Services</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<!-- ── Section 1: Hero ── -->
+<section class="hero">
+    <div class="container">
+        <div class="eyebrow">A XentraNET Identity Product</div>
+        <h1 style="margin-top:2rem;"><span class="gradient-text">Secure Access<br>Made Easy</span></h1>
+        <p class="hero-sub">Eliminate passwords and stop unnecessary MFA friction. X-Auth evaluates risk in real-time — seamless access for legitimate users, hard stops for threats.</p>
+        <div class="hero-actions">
+            <a href="#" class="btn btn-primary">Start Protecting for Free</a>
+            <a href="#how-it-works" class="btn btn-ghost">See How It Works</a>
+        </div>
+        <div class="terminal-shell">
+            <div class="term-bar">
+                <div class="dot dot-r"></div>
+                <div class="dot dot-y"></div>
+                <div class="dot dot-g"></div>
+                <span class="term-label">x-auth.js — risk-based access in 10 lines</span>
+            </div>
+            <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
+
+<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenant: <span class="str">'your-app'</span> });
+
+<span class="cmt">// Evaluate risk on every request — device, location, behavior, network</span>
+<span class="kw">const</span> { riskLevel, session } = <span class="kw">await</span> xauth.<span class="fn">evaluate</span>(req);
+
+<span class="cmt">// Only challenge when the signals demand it</span>
+<span class="kw">if</span> (riskLevel === <span class="str">'high'</span>) {
+  <span class="kw">await</span> xauth.<span class="fn">stepUp</span>({ method: <span class="str">'biometric'</span> });
+}
+
+<span class="cmt">// Low risk? Let them through. Seamlessly.</span>
+<span class="kw">return</span> session.<span class="fn">authorize</span>(req);</code></pre></div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Key Messaging: Stats ── -->
+<div class="stats-band">
+    <div class="container">
+        <div class="stats-grid">
+            <div class="stat-cell threat">
+                <span class="stat-category">The Threat</span>
+                <div class="stat-numbers">
+                    <div class="stat-item">
+                        <div class="stat-num">29%</div>
+                        <div class="stat-desc">of U.S. adults experienced account takeover in 2024</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-num">80%+</div>
+                        <div class="stat-desc">of data breaches involve compromised credentials</div>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-cell solution">
+                <span class="stat-category">The Solution</span>
+                <div class="stat-numbers">
+                    <div class="stat-item">
+                        <div class="stat-num">Zero</div>
+                        <div class="stat-desc">instances of unauthorized access reported by X-Auth clients</div>
+                    </div>
+                </div>
+            </div>
+            <div class="stat-cell roi">
+                <span class="stat-category">The ROI</span>
+                <div class="stat-numbers">
+                    <div class="stat-item">
+                        <div class="stat-num">&gt;60%</div>
+                        <div class="stat-desc">reduction in helpdesk costs for organizations on XentraNET</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Section 2: The Problem ── -->
+<section class="problem-section" id="problem">
+    <div class="container">
+        <div class="problem-grid">
+            <div class="problem-left">
+                <div class="section-kicker">Section 2 — The Problem</div>
+                <h2>Don't Scare Your<br>Customers Away</h2>
+                <p class="lead" style="margin-top:1rem;">Static authentication treats every login the same. That's not security — it's friction theater.</p>
+            </div>
+            <div class="problem-right">
+                <blockquote>
+                    "Why are you asking for an SMS one-time code when I just want to log in and check my debit balance from the same home computer I use every single time?"
+                </blockquote>
+                <p>That's your customer. Frustrated. Abandoning your app. Traditional authentication blasts every user with MFA hurdles regardless of how well you know them.</p>
+                <p>Dynamic, risk-based authentication changes that. X-Auth evaluates a live trust score on every request — device reputation, behavioral patterns, location, and network signals — <strong>continuously, not just at login</strong>. As part of a Zero Trust framework, every access attempt is verified in real-time.</p>
+                <p>Legitimate users glide through. Threats get stopped. Make accessing your system a low-friction experience for the good citizens of the internet, and a wall for everyone else.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 3: Risk Framework ── -->
+<section id="how-it-works">
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Section 3 — Risk-Based Authentication</div>
+            <h2>The Right Response<br>for Every Risk Level</h2>
+            <p class="lead">X-Auth doesn't apply a one-size-fits-all policy. It matches the friction to the actual threat.</p>
+        </div>
+        <div class="tiers-grid">
+            <div class="tier t-low">
+                <span class="tier-pill">LOW RISK</span>
+                <h3>Seamless Access</h3>
+                <p class="tier-desc">Known device, familiar location, consistent behavior. No challenge needed.</p>
+                <ul class="tier-signals">
+                    <li>Trusted device fingerprint</li>
+                    <li>Recognized IP &amp; location</li>
+                    <li>Consistent behavioral pattern</li>
+                    <li>Clean session history</li>
+                </ul>
+                <div class="tier-result">✓ Instant access granted</div>
+            </div>
+            <div class="tier t-mid">
+                <span class="tier-pill">MEDIUM RISK</span>
+                <h3>Soft Step-Up</h3>
+                <p class="tier-desc">Something's slightly off — a new browser, unusual hours, minor location shift.</p>
+                <ul class="tier-signals">
+                    <li>Unrecognized browser or OS</li>
+                    <li>Access outside normal hours</li>
+                    <li>Minor location deviation</li>
+                    <li>Moderate anomaly score</li>
+                </ul>
+                <div class="tier-result">→ Email or push confirmation</div>
+            </div>
+            <div class="tier t-high">
+                <span class="tier-pill">HIGH RISK</span>
+                <h3>Hard Challenge</h3>
+                <p class="tier-desc">Unknown device, suspicious IP, behavioral anomaly, or credential stuffing pattern.</p>
+                <ul class="tier-signals">
+                    <li>Unknown device + new location</li>
+                    <li>Flagged IP reputation</li>
+                    <li>Behavioral anomaly detected</li>
+                    <li>Credential stuffing pattern</li>
+                </ul>
+                <div class="tier-result">⛔ MFA required or access blocked</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 4: Intelligence Engine ── -->
+<section>
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Section 4 — Intelligence Engine</div>
+            <h2>Every Signal.<br>Evaluated in Real-Time.</h2>
+            <p class="lead">X-Auth ingests four categories of signals continuously to build a live trust score for every session — not just at login.</p>
+        </div>
+        <div class="engine-grid">
+            <div class="engine-card">
+                <span class="engine-icon">🖥</span>
+                <h3>Device Reputation</h3>
+                <p>Each device is fingerprinted and scored against historical fraud patterns and browser entropy. New or anomalous devices are flagged before a credential is ever entered.</p>
+                <div class="tag-row">
+                    <span class="tag">device fingerprint</span>
+                    <span class="tag">fraud history</span>
+                    <span class="tag">browser entropy</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🧠</span>
+                <h3>Behavioral Biometrics</h3>
+                <p>AI/ML models build a behavioral baseline for each user — typing cadence, mouse dynamics, touch pressure, and navigation patterns. Deviations trigger escalation automatically.</p>
+                <div class="tag-row">
+                    <span class="tag">typing cadence</span>
+                    <span class="tag">mouse dynamics</span>
+                    <span class="tag">touch pressure</span>
+                    <span class="tag">AI/ML</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🌐</span>
+                <h3>Network Risk</h3>
+                <p>IP reputation, geo-fencing, traffic velocity analysis, VPN detection, and Tor exit node identification guard against proxy abuse and distributed credential attacks.</p>
+                <div class="tag-row">
+                    <span class="tag">IP reputation</span>
+                    <span class="tag">geo-fencing</span>
+                    <span class="tag">VPN detection</span>
+                    <span class="tag">Tor detection</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">👤</span>
+                <h3>User Behavior</h3>
+                <p>Session duration, access times, resource access patterns, and privilege escalation attempts are monitored continuously throughout the session — not just at login.</p>
+                <div class="tag-row">
+                    <span class="tag">anomaly detection</span>
+                    <span class="tag">continuous auth</span>
+                    <span class="tag">privilege monitoring</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 5: Core Services ── -->
+<section id="services">
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Section 5 — Core Identity Services</div>
+            <h2>Identity, Top to Bottom</h2>
+            <p class="lead">Risk intelligence is the foundation. Authentication and authorization are the execution layers that act on it.</p>
+        </div>
+        <div class="services-grid">
+            <div class="service-card">
+                <h3>Adaptive AuthN</h3>
+                <p>Passkeys, passwordless, WebAuthn, FIDO2, and Magic Links through a single SDK. Authentication that adapts in real-time based on the live risk score — across every major platform.</p>
+                <div class="tag-row" style="margin-top:1.25rem;">
+                    <span class="tag">Passkeys</span>
+                    <span class="tag">Passwordless</span>
+                    <span class="tag">WebAuthn</span>
+                    <span class="tag">FIDO2</span>
+                    <span class="tag">Magic Links</span>
+                </div>
+            </div>
+            <div class="service-card">
+                <h3>Policy-as-Code AuthZ</h3>
+                <p>Fine-grained RBAC and ABAC enforced at the edge via Open Policy Agent (OPA). Define permissions as code, deploy globally, and enforce with near-zero latency.</p>
+                <div class="tag-row" style="margin-top:1.25rem;">
+                    <span class="tag">RBAC</span>
+                    <span class="tag">ABAC</span>
+                    <span class="tag">OPA</span>
+                    <span class="tag">Edge Enforcement</span>
+                </div>
+            </div>
+            <div class="service-card">
+                <h3>Risk Intelligence</h3>
+                <p>Continuous AI/ML risk scoring built for Zero Trust architectures. Ingest signals, compute trust, and respond — all before the request is served. ATO protection and bot mitigation included.</p>
+                <div class="tag-row" style="margin-top:1.25rem;">
+                    <span class="tag">AI/ML Scoring</span>
+                    <span class="tag">Zero Trust</span>
+                    <span class="tag">ATO Protection</span>
+                    <span class="tag">Bot Mitigation</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 6: Compliance & Trust ── -->
+<section class="trust-section">
+    <div class="container">
+        <div class="section-kicker">Section 6 — Compliance &amp; Trust Center</div>
+        <h2 style="margin-bottom:1rem;">Built for Regulated Industries</h2>
+        <p class="lead">From fintech startups to enterprise infrastructure — X-Auth is the foundation of digital trust.</p>
+        <div class="badges">
+            <span class="badge">SOC 2 Type II</span>
+            <span class="badge">ISO 27001</span>
+            <span class="badge">GDPR Ready</span>
+            <span class="badge">HIPAA Compliant</span>
+            <span class="badge">PCI DSS</span>
+        </div>
+        <div class="zero-callout">
+            <span class="zero">Zero</span>
+            <p>instances of unauthorized access reported by X-Auth clients</p>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 7: Pricing ── -->
+<section id="pricing">
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Section 7 — Pricing</div>
+            <h2>Start Free.<br>Scale Confidently.</h2>
+            <p class="lead">No credit card required for the Developer tier. Full risk intelligence included on every plan.</p>
+        </div>
+        <div class="pricing-grid">
+            <div class="plan">
+                <div class="plan-tier">Developer</div>
+                <div class="plan-price">Free <sub>forever</sub></div>
+                <div class="plan-tagline">For side projects and early-stage MVPs. Up to 5,000 MAU.</div>
+                <ul class="plan-features">
+                    <li>Up to 5,000 monthly active users</li>
+                    <li>Risk-based authentication</li>
+                    <li>Passwordless &amp; social login</li>
+                    <li>Basic RBAC</li>
+                    <li>Community support</li>
+                </ul>
+                <a href="#" class="plan-cta">Get Started Free</a>
+            </div>
+            <div class="plan featured">
+                <div class="plan-badge">MOST POPULAR</div>
+                <div class="plan-tier">Growth</div>
+                <div class="plan-price">Custom <sub>/ mo</sub></div>
+                <div class="plan-tagline">For production apps requiring advanced risk scoring and priority support.</div>
+                <ul class="plan-features">
+                    <li>Unlimited monthly active users</li>
+                    <li>Advanced behavioral biometrics</li>
+                    <li>Full RBAC + ABAC policy engine</li>
+                    <li>ATO protection &amp; bot mitigation</li>
+                    <li>Analytics dashboard</li>
+                    <li>Priority support SLA</li>
+                </ul>
+                <a href="#" class="plan-cta">Request Pricing</a>
+            </div>
+            <div class="plan">
+                <div class="plan-tier">Enterprise</div>
+                <div class="plan-price">Custom <sub>/ yr</sub></div>
+                <div class="plan-tagline">Dedicated infrastructure, custom throughput, and 24/7 security response.</div>
+                <ul class="plan-features">
+                    <li>Dedicated cluster deployment</li>
+                    <li>Custom risk policy engine</li>
+                    <li>SSO &amp; SCIM provisioning</li>
+                    <li>Compliance reporting</li>
+                    <li>SLA guarantees</li>
+                    <li>24/7 security response team</li>
+                </ul>
+                <a href="#" class="plan-cta">Contact Sales</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer class="site-footer">
+    <div class="container">
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
+                <p>An XentraNET Identity Product &nbsp;·&nbsp; &copy; 2026 XentraNET</p>
+            </div>
+            <div class="footer-links">
+                <a href="#">Privacy</a>
+                <a href="#">Terms</a>
+                <a href="#">Docs</a>
+                <a href="#">Security</a>
+                <a href="#">Contact</a>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot"></span>
+                ALL SYSTEMS OPERATIONAL
+            </div>
+        </div>
+    </div>
+</footer>
+
+</body>
+</html>
