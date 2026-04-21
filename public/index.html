@@ -853,7 +853,7 @@ xauth.<span class="fn">renderButton</span>(<span class="str">'#signin-btn'</span
 
 <span class="cmt">// Need risk evaluation for any journey, not just login?</span>
 <span class="cmt">// Call advice() anywhere — checkout, transfer, sensitive read.</span>
-<span class="kw">await</span> xauth.<span class="fn">advice</span>({ journey: <span class="str">'transfer'</span>, amount: 2999 });
+<span class="kw">await</span> xauth.<span class="fn">advice</span>({ action: <span class="str">'transfer'</span>, amount: 2999 });
 
 <span class="cmt">// Risk policy &amp; authentication methods are configured in</span>
 <span class="cmt">// the X-Auth admin console — your code never changes.</span></code></pre></div>
@@ -1076,39 +1076,41 @@ xauth.<span class="fn">renderButton</span>(<span class="str">'#signin-btn'</span
     <div class="container">
         <div class="section-head">
             <div class="section-kicker">Core App Services</div>
-            <h2>Authentication, Authorization,<br>Risk — All Three.</h2>
-            <p class="lead">Risk intelligence is the foundation. Authentication and authorization are the execution layers that act on it.</p>
+            <h2>Advice, Authentication,<br>Risk — All Three.</h2>
+            <p class="lead">One universal endpoint evaluates risk for any journey. Authentication and authenticators execute step-up when the answer is "prove you're you."</p>
         </div>
         <div class="services-grid">
             <div class="service-card">
-                <h3>Adaptive AuthN</h3>
-                <p>Passkeys, passwordless, WebAuthn, FIDO2, and Magic Links through a single SDK. Authentication that adapts in real-time based on the live risk score — across every major platform.</p>
+                <h3>Universal Risk Advice</h3>
+                <p>One endpoint — <code>POST /v1/advice</code> — protects any journey. Login, checkout, transfer, profile change, sensitive read: send a <code>transaction_ctx</code> and a <code>device_ctx</code>, get back ALLOW, STEP_UP with a required ACR, or DENY. No flow-by-flow integration.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
-                    <span class="tag">Passkeys</span>
-                    <span class="tag">Passwordless</span>
-                    <span class="tag">WebAuthn</span>
-                    <span class="tag">FIDO2</span>
-                    <span class="tag">Magic Links</span>
+                    <span class="tag">/v1/advice</span>
+                    <span class="tag">transaction_ctx</span>
+                    <span class="tag">device_ctx</span>
+                    <span class="tag">ACR-aware</span>
+                    <span class="tag">multi-tenant</span>
                 </div>
             </div>
             <div class="service-card">
-                <h3>Policy-as-Code AuthZ</h3>
-                <p>Fine-grained RBAC and ABAC enforced at the edge via Open Policy Agent (OPA). Define permissions as code, deploy globally, and enforce with near-zero latency.</p>
+                <h3>Adaptive Authentication</h3>
+                <p>A full OIDC provider with risk-aware step-up. When <code>/v1/advice</code> returns STEP_UP, the authenticator service dispatches the right challenge — passkey, push, TOTP, SMS, or magic link — and the session is upgraded with the achieved ACR.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
-                    <span class="tag">RBAC</span>
-                    <span class="tag">ABAC</span>
-                    <span class="tag">OPA</span>
-                    <span class="tag">Edge Enforcement</span>
+                    <span class="tag">OIDC</span>
+                    <span class="tag">Passkeys / FIDO2</span>
+                    <span class="tag">TOTP</span>
+                    <span class="tag">Push</span>
+                    <span class="tag">SMS</span>
+                    <span class="tag">Magic Link</span>
                 </div>
             </div>
             <div class="service-card">
                 <h3>Risk Intelligence</h3>
-                <p>Continuous AI/ML risk scoring built for Zero Trust architectures. Ingest signals, compute trust, and respond — all before the request is served. ATO protection and bot mitigation included.</p>
+                <p>Signal aggregation and policy engine behind every advice call. Ingests device, behavioral, network, and user signals; weighs them against tenant policy and resource sensitivity; returns a tier — <code>low</code>, <code>medium</code>, <code>high</code> — with a per-tier decision.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
-                    <span class="tag">AI/ML Scoring</span>
+                    <span class="tag">Signal Aggregation</span>
+                    <span class="tag">Tenant Policy</span>
+                    <span class="tag">Risk Tiers</span>
                     <span class="tag">Zero Trust</span>
-                    <span class="tag">ATO Protection</span>
-                    <span class="tag">Bot Mitigation</span>
                 </div>
             </div>
         </div>
