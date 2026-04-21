@@ -840,29 +840,29 @@
                 <div class="dot dot-r"></div>
                 <div class="dot dot-y"></div>
                 <div class="dot dot-g"></div>
-                <span class="term-label">x-auth.js — drop-in like social login</span>
+                <span class="term-label">x-auth — frontend advice(), backend verify()</span>
             </div>
             <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
 
 <span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
 
-<span class="cmt">// "Sign in with X-Auth" — drop in a button, like social login.</span>
-xauth.<span class="fn">renderButton</span>(<span class="str">'#signin-btn'</span>, {
-  onSuccess: (user) =&gt; location.href = <span class="str">'/app'</span>,
-});
-
-<span class="cmt">// For any protected journey — checkout, transfer, sensitive read.</span>
-<span class="cmt">// advice() runs the full OIDC step-up transparently when required;</span>
-<span class="cmt">// the returned access_token is validated either way.</span>
+<span class="cmt">// Frontend — advice() runs any required OIDC step-up and returns</span>
+<span class="cmt">// a transaction-scoped access_token, bound to this exact action.</span>
 <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> xauth.<span class="fn">advice</span>({
-  action: <span class="str">'transfer'</span>, amount: 2999,
+  action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
 });
 
 <span class="kw">if</span> (decision === <span class="str">'ALLOW'</span>) {
   <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
     headers: { authorization: <span class="str">`Bearer ${access_token}`</span> },
   });
-}</code></pre></div>
+}
+
+<span class="cmt">// Your backend — verify() echoes back the bound transaction_ctx.</span>
+<span class="cmt">// `expect` asserts the token matches THIS action (or it throws).</span>
+<span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+  expect: { action: <span class="str">'transfer'</span>, amount: body.amount },
+});</code></pre></div>
         </div>
     </div>
 </section>
