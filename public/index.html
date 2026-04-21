@@ -786,6 +786,119 @@
         }
         .pricing-block .pricing-grid { margin-top: 2rem; }
 
+        /* ── Contact ── */
+        .contact-grid {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 2rem;
+            margin-top: 3.5rem;
+            align-items: start;
+        }
+        .contact-form-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 2.25rem;
+            backdrop-filter: blur(12px);
+        }
+        .contact-form .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .contact-form .form-field { margin-bottom: 1.25rem; }
+        .contact-form > .form-field:last-of-type { margin-bottom: 1rem; }
+        .contact-form .form-field > label {
+            display: block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 0.45rem;
+        }
+        .contact-form input[type=text],
+        .contact-form input[type=email],
+        .contact-form textarea {
+            width: 100%;
+            background: rgba(12,12,16,0.7);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.92rem;
+            padding: 0.7rem 0.9rem;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .contact-form input:focus,
+        .contact-form textarea:focus {
+            outline: none;
+            border-color: var(--accent-ring);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        .contact-form textarea { resize: vertical; min-height: 90px; line-height: 1.55; }
+        .radio-row { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+        .contact-form .radio {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.84rem;
+            color: var(--text);
+            padding: 0.45rem 0.9rem;
+            border: 1px solid var(--border);
+            border-radius: 100px;
+            background: rgba(12,12,16,0.45);
+            cursor: pointer;
+            text-transform: none;
+            letter-spacing: 0;
+            margin: 0;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+        }
+        .contact-form .radio input { accent-color: var(--accent); margin: 0; }
+        .contact-form .radio:has(input:checked) {
+            border-color: var(--accent-ring);
+            color: var(--accent);
+            background: var(--accent-glow);
+        }
+        .form-submit-btn { width: 100%; margin-top: 0.25rem; }
+        .form-note {
+            color: var(--muted);
+            font-size: 0.75rem;
+            text-align: center;
+            margin-top: 0.9rem;
+        }
+        .contact-aside { display: flex; flex-direction: column; gap: 1rem; }
+        .contact-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.75rem;
+            backdrop-filter: blur(12px);
+        }
+        .contact-card .section-kicker { margin-bottom: 0.55rem; }
+        .contact-card-email {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.05rem;
+            color: var(--accent);
+            text-decoration: none;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+            word-break: break-all;
+        }
+        .contact-card-email:hover { filter: brightness(1.15); }
+        .contact-card p {
+            color: var(--muted);
+            font-size: 0.87rem;
+            line-height: 1.7;
+        }
+        .contact-card p a {
+            color: var(--accent);
+            text-decoration: none;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .contact-card p a:hover { filter: brightness(1.15); }
+
         /* ── Responsive ── */
         @media (max-width: 960px) {
             .problem-grid { grid-template-columns: 1fr; gap: 3rem; }
@@ -798,6 +911,8 @@
             .stat-cell:last-child { border-bottom: none; }
             .product-split-grid { grid-template-columns: 1fr; }
             .flow-grid { grid-template-columns: 1fr; }
+            .contact-grid { grid-template-columns: 1fr; }
+            .contact-form .form-row { grid-template-columns: 1fr; }
         }
         @media (max-width: 720px) {
             section { padding: 4rem 0; }
@@ -819,7 +934,8 @@
                 <a href="#apps">For Apps</a>
                 <a href="#agents">For Agents</a>
                 <a href="#pricing">Pricing</a>
-                <a href="#" class="nav-cta">Get Started Free</a>
+                <a href="#contact">Contact</a>
+                <a href="#contact" class="nav-cta" data-plan="Developer">Get Started Free</a>
             </nav>
         </div>
     </div>
@@ -1299,7 +1415,7 @@
                         <li>Basic RBAC</li>
                         <li>Community support</li>
                     </ul>
-                    <a href="#" class="plan-cta">Get Started Free</a>
+                    <a href="#contact" class="plan-cta" data-product="apps" data-plan="Developer">Get Started Free</a>
                 </div>
                 <div class="plan featured">
                     <div class="plan-badge">MOST POPULAR</div>
@@ -1314,7 +1430,7 @@
                         <li>Analytics dashboard</li>
                         <li>Priority support SLA</li>
                     </ul>
-                    <a href="#" class="plan-cta">Request Pricing</a>
+                    <a href="#contact" class="plan-cta" data-product="apps" data-plan="Growth">Request Pricing</a>
                 </div>
                 <div class="plan">
                     <div class="plan-tier">Enterprise</div>
@@ -1328,7 +1444,7 @@
                         <li>SLA guarantees</li>
                         <li>24/7 security response team</li>
                     </ul>
-                    <a href="#" class="plan-cta">Contact Sales</a>
+                    <a href="#contact" class="plan-cta" data-product="apps" data-plan="Enterprise">Contact Sales</a>
                 </div>
             </div>
         </div>
@@ -1352,7 +1468,7 @@
                         <li>Basic audit log (7-day retention)</li>
                         <li>Community support</li>
                     </ul>
-                    <a href="#" class="plan-cta">Get Started Free</a>
+                    <a href="#contact" class="plan-cta" data-product="agents" data-plan="Developer">Get Started Free</a>
                 </div>
                 <div class="plan featured">
                     <div class="plan-badge">MOST POPULAR</div>
@@ -1367,7 +1483,7 @@
                         <li>Instant revocation &amp; rotation</li>
                         <li>Priority support SLA</li>
                     </ul>
-                    <a href="#" class="plan-cta">Request Pricing</a>
+                    <a href="#contact" class="plan-cta" data-product="agents" data-plan="Growth">Request Pricing</a>
                 </div>
                 <div class="plan">
                     <div class="plan-tier">Enterprise</div>
@@ -1381,7 +1497,75 @@
                         <li>SSO admin, SCIM, policy-as-code</li>
                         <li>24/7 security response team</li>
                     </ul>
-                    <a href="#" class="plan-cta">Contact Sales</a>
+                    <a href="#contact" class="plan-cta" data-product="agents" data-plan="Enterprise">Contact Sales</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 8: Contact ── -->
+<section id="contact">
+    <div class="container">
+        <div class="section-head" style="text-align:center;">
+            <div class="section-kicker">Get in Touch</div>
+            <h2 style="margin:0 auto;">Ready When You Are.</h2>
+            <p class="lead" style="margin:1rem auto 0;">Free-tier signups, sales questions, security reviews — we reply the same business day.</p>
+        </div>
+        <div class="contact-grid">
+            <div class="contact-form-wrap">
+                <form class="contact-form" id="contact-form">
+                    <div class="form-row">
+                        <div class="form-field">
+                            <label for="cf-name">Name</label>
+                            <input id="cf-name" name="name" type="text" required autocomplete="name">
+                        </div>
+                        <div class="form-field">
+                            <label for="cf-email">Work email</label>
+                            <input id="cf-email" name="email" type="email" required autocomplete="email">
+                        </div>
+                    </div>
+                    <div class="form-field">
+                        <label for="cf-company">Company</label>
+                        <input id="cf-company" name="company" type="text" autocomplete="organization">
+                    </div>
+                    <div class="form-field">
+                        <label>I'm interested in</label>
+                        <div class="radio-row">
+                            <label class="radio"><input type="radio" name="product" value="apps" checked> X-Auth for Apps</label>
+                            <label class="radio"><input type="radio" name="product" value="agents"> X-Auth for Agents</label>
+                            <label class="radio"><input type="radio" name="product" value="both"> Both</label>
+                        </div>
+                    </div>
+                    <div class="form-field">
+                        <label>Plan</label>
+                        <div class="radio-row">
+                            <label class="radio"><input type="radio" name="plan" value="Developer" checked> Developer (free)</label>
+                            <label class="radio"><input type="radio" name="plan" value="Growth"> Growth</label>
+                            <label class="radio"><input type="radio" name="plan" value="Enterprise"> Enterprise</label>
+                        </div>
+                    </div>
+                    <div class="form-field">
+                        <label for="cf-message">Anything we should know?</label>
+                        <textarea id="cf-message" name="message" rows="4" placeholder="Stack, expected MAU, agent workloads, timeline…"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary form-submit-btn">Send to sales@x-auth.com →</button>
+                    <p class="form-note">Your email client will open with a pre-filled message.</p>
+                </form>
+            </div>
+            <div class="contact-aside">
+                <div class="contact-card">
+                    <div class="section-kicker">Sales</div>
+                    <a href="mailto:sales@x-auth.com" class="contact-card-email">sales@x-auth.com</a>
+                    <p>Pricing, onboarding, proofs-of-concept — or just a quick question before you sign up.</p>
+                </div>
+                <div class="contact-card">
+                    <div class="section-kicker">Security</div>
+                    <p>Found a vulnerability? Disclose privately to <a href="mailto:security@x-auth.com">security@x-auth.com</a>. PGP key on request.</p>
+                </div>
+                <div class="contact-card">
+                    <div class="section-kicker">Enterprise &amp; Regulated</div>
+                    <p>Dedicated-cluster deployments (SOC 2, ISO 27001, HIPAA, PCI DSS), SSO/SCIM, and 24/7 security response. <a href="mailto:sales@x-auth.com?subject=Enterprise%20inquiry">Start an enterprise conversation →</a></p>
                 </div>
             </div>
         </div>
@@ -1395,14 +1579,14 @@
             <div class="footer-brand">
                 <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
                 <p>An XentraNET Identity Product &nbsp;·&nbsp; &copy; 2026 XentraNET</p>
-                <p class="footer-email"><a href="mailto:info@x-auth.com">info@x-auth.com</a></p>
+                <p class="footer-email"><a href="mailto:sales@x-auth.com">sales@x-auth.com</a></p>
             </div>
             <div class="footer-links">
                 <a href="#">Privacy</a>
                 <a href="#">Terms</a>
                 <a href="#">Docs</a>
                 <a href="#">Security</a>
-                <a href="mailto:info@x-auth.com">Contact</a>
+                <a href="#contact">Contact</a>
             </div>
             <div class="status-pill">
                 <span class="status-dot"></span>
@@ -1411,6 +1595,54 @@
         </div>
     </div>
 </footer>
+
+<script>
+(function () {
+    var form = document.getElementById('contact-form');
+    if (!form) return;
+
+    function setRadio(name, value) {
+        if (!value) return;
+        var r = form.querySelector('input[name="' + name + '"][value="' + value + '"]');
+        if (r) r.checked = true;
+    }
+
+    document.querySelectorAll('a[data-plan], a[data-product]').forEach(function (a) {
+        a.addEventListener('click', function () {
+            setRadio('plan', a.dataset.plan);
+            setRadio('product', a.dataset.product);
+        });
+    });
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var d = new FormData(form);
+        var name    = (d.get('name')    || '').toString().trim();
+        var email   = (d.get('email')   || '').toString().trim();
+        var company = (d.get('company') || '').toString().trim();
+        var product = (d.get('product') || '').toString();
+        var plan    = (d.get('plan')    || '').toString();
+        var message = (d.get('message') || '').toString().trim();
+
+        var subject = 'X-Auth — ' + plan + ' / ' + product + ' inquiry from ' + name;
+        var body = [
+            'Name:    ' + name,
+            'Email:   ' + email,
+            'Company: ' + (company || '(not provided)'),
+            'Product: ' + product,
+            'Plan:    ' + plan,
+            '',
+            'Message:',
+            message || '(none)'
+        ].join('\n');
+
+        window.location.href =
+            'mailto:sales@x-auth.com'
+            + '?subject=' + encodeURIComponent(subject)
+            + '&body='    + encodeURIComponent(body);
+    });
+})();
+</script>
 
 </body>
 </html>
