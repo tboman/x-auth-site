@@ -851,12 +851,18 @@ xauth.<span class="fn">renderButton</span>(<span class="str">'#signin-btn'</span
   onSuccess: (user) =&gt; location.href = <span class="str">'/app'</span>,
 });
 
-<span class="cmt">// Need risk evaluation for any journey, not just login?</span>
-<span class="cmt">// Call advice() anywhere — checkout, transfer, sensitive read.</span>
-<span class="kw">await</span> xauth.<span class="fn">advice</span>({ action: <span class="str">'transfer'</span>, amount: 2999 });
+<span class="cmt">// For any protected journey — checkout, transfer, sensitive read.</span>
+<span class="cmt">// advice() runs the full OIDC step-up transparently when required;</span>
+<span class="cmt">// the returned access_token is validated either way.</span>
+<span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> xauth.<span class="fn">advice</span>({
+  action: <span class="str">'transfer'</span>, amount: 2999,
+});
 
-<span class="cmt">// Risk policy &amp; authentication methods are configured in</span>
-<span class="cmt">// the X-Auth admin console — your code never changes.</span></code></pre></div>
+<span class="kw">if</span> (decision === <span class="str">'ALLOW'</span>) {
+  <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
+    headers: { authorization: <span class="str">`Bearer ${access_token}`</span> },
+  });
+}</code></pre></div>
         </div>
     </div>
 </section>
