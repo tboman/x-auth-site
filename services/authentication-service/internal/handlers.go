@@ -1,0 +1,84 @@
+package internal
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/tenantx"
+)
+
+// Deps bundles every collaborator authentication-service needs. Passing this to
+// the router keeps cmd/main.go's constructor small and the test wiring obvious.
+type Deps struct {
+	Store         Storage
+	Logger        *slog.Logger
+	Authenticator AuthenticatorClient
+	Issuer        string
+}
+
+// Router builds the complete http.Handler for authentication-service.
+//
+// Routing tiers:
+//
+//   - /healthz — unauthenticated, always served
+//   - /.well-known/*, /authorize, /token, /revoke, /userinfo — public OIDC
+//     surface, no tenant header (tenant is carried by the authorization code
+//     or the bearer token's session row)
+//   - /v1/social/{provider}/authorize|/callback — public social-login stub
+//   - /v1/users/*, /v1/sessions/* — tenant-scoped, behind tenantx.Middleware
+//
+// The whole tree is wrapped in Recover + Logging so every request logs and
+// handler panics turn into 500 instead of crashing the process.
+func Router(d Deps) http.Handler {
+	oidc := &OIDCHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
+	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
+
+	mux := http.NewServeMux()
+
+	// Liveness probe. No tenant header required.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// OIDC discovery — static JSON.
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", oidc.OAuthMetadata)
+	mux.HandleFunc("GET /.well-known/openid-configuration", oidc.OIDCMetadata)
+
+	// OIDC / OAuth2 flows — public, no tenant header.
+	mux.HandleFunc("GET /authorize", oidc.Authorize)
+	mux.HandleFunc("POST /token", oidc.Token)
+	mux.HandleFunc("POST /revoke", oidc.Revoke)
+	mux.HandleFunc("GET /userinfo", oidc.UserInfo)
+
+	// Social login stubs — public, no tenant header (tenant_id is a query param).
+	mux.HandleFunc("GET /v1/social/{provider}/authorize", social.Authorize)
+	mux.HandleFunc("GET /v1/social/{provider}/callback", social.Callback)
+
+	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
+	// these routes with tenantx.Middleware without firing it for OIDC traffic.
+	v1 := http.NewServeMux()
+	v1.HandleFunc("POST /v1/users", users.Create)
+	v1.HandleFunc("GET /v1/users", users.List)
+	v1.HandleFunc("GET /v1/users/{id}", users.Get)
+	v1.HandleFunc("PATCH /v1/users/{id}", users.Patch)
+	v1.HandleFunc("DELETE /v1/users/{id}", users.Delete)
+
+	v1.HandleFunc("POST /v1/sessions", sessions.Create)
+	v1.HandleFunc("GET /v1/sessions/{id}", sessions.Get)
+	v1.HandleFunc("POST /v1/sessions/{id}/refresh", sessions.Refresh)
+	v1.HandleFunc("POST /v1/sessions/{id}/invalidate", sessions.Invalidate)
+	v1.HandleFunc("POST /v1/sessions/{id}/upgrade", sessions.Upgrade)
+
+	// Social routes collide with the /v1/ prefix, so they are registered on the
+	// root mux *before* this point. tenantx.Middleware only applies to the
+	// tenant-scoped subtree.
+	mux.Handle("/v1/users", tenantx.Middleware(v1))
+	mux.Handle("/v1/users/", tenantx.Middleware(v1))
+	mux.Handle("/v1/sessions", tenantx.Middleware(v1))
+	mux.Handle("/v1/sessions/", tenantx.Middleware(v1))
+
+	return httpx.Recover(d.Logger)(httpx.Logging(d.Logger)(mux))
+}

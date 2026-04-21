@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>X-Auth by XentraNET | Secure Access Made Easy</title>
-    <meta name="description" content="X-Auth eliminates passwords and unnecessary MFA friction. Real-time, risk-based access evaluation for Zero Trust environments. A XentraNET product.">
-    <meta property="og:title" content="X-Auth by XentraNET | Secure Access Made Easy">
-    <meta property="og:description" content="Stop friction theater. X-Auth evaluates risk in real-time — seamless access for legitimate users, hard stops for threats.">
+    <title>X-Auth by XentraNET | Identity for Humans and AI Agents</title>
+    <meta name="description" content="X-Auth is the identity platform for the AI era. Risk-based authentication for your apps. Scoped, pooled identities for your AI agents, delivered over MCP. Two products. One platform.">
+    <meta property="og:title" content="X-Auth by XentraNET | Identity for Humans and AI Agents">
+    <meta property="og:description" content="Risk-based OIDC for your users. MCP-native identity broker for your agents. One platform, two products, zero shared service accounts.">
     <meta property="og:type" content="website">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -570,6 +570,13 @@
         }
         .footer-brand .logo { display: block; margin-bottom: 0.25rem; }
         .footer-brand p { font-size: 0.73rem; color: var(--muted); }
+        .footer-brand .footer-email { margin-top: 0.4rem; font-size: 0.78rem; }
+        .footer-brand .footer-email a {
+            color: var(--accent);
+            text-decoration: none;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .footer-brand .footer-email a:hover { filter: brightness(1.15); }
         .footer-links { display: flex; gap: 1.5rem; }
         .footer-links a {
             color: var(--muted);
@@ -593,6 +600,192 @@
             box-shadow: 0 0 8px var(--accent);
         }
 
+        /* ── Two-Product Split ── */
+        .product-split-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-top: 3.5rem;
+        }
+        .product-split-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 2.5rem 2.25rem;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .product-split-card:hover { border-color: var(--accent-ring); transform: translateY(-2px); }
+        .product-split-card .ps-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            letter-spacing: 2.5px;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            padding: 0.22rem 0.7rem;
+            border-radius: 100px;
+            text-transform: uppercase;
+            align-self: flex-start;
+            margin-bottom: 1.4rem;
+        }
+        .product-split-card h3 {
+            font-size: 1.9rem;
+            font-weight: 900;
+            letter-spacing: -1px;
+            line-height: 1.1;
+            margin-bottom: 0.9rem;
+        }
+        .product-split-card .ps-sub {
+            color: var(--muted);
+            font-size: 0.95rem;
+            line-height: 1.7;
+            margin-bottom: 1.5rem;
+        }
+        .product-split-card ul { list-style: none; flex: 1; margin-bottom: 1.75rem; }
+        .product-split-card ul li {
+            font-size: 0.87rem;
+            color: var(--text);
+            padding: 0.35rem 0;
+            display: flex;
+            gap: 0.6rem;
+        }
+        .product-split-card ul li::before {
+            content: '›';
+            color: var(--accent);
+            font-weight: 700;
+        }
+        .product-split-card .ps-cta {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--accent);
+            text-decoration: none;
+            letter-spacing: 1px;
+            border-top: 1px solid var(--border);
+            padding-top: 1.25rem;
+        }
+        .product-split-card .ps-cta:hover { filter: brightness(1.15); }
+
+        /* ── Product Section Divider (big branded header) ── */
+        .product-divider {
+            padding: 4rem 0 1rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+        .product-divider .pd-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            letter-spacing: 3.5px;
+            text-transform: uppercase;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            padding: 0.45rem 1.2rem;
+            border-radius: 100px;
+            display: inline-block;
+            margin-bottom: 1.4rem;
+        }
+        .product-divider h2 {
+            font-size: clamp(2.5rem, 5.5vw, 3.8rem);
+            letter-spacing: -2px;
+        }
+        .product-divider .pd-sub {
+            color: var(--muted);
+            font-size: 1.05rem;
+            line-height: 1.7;
+            max-width: 620px;
+            margin: 1.25rem auto 0;
+        }
+
+        /* ── Agent Flow (Personas → Pools → MCP) ── */
+        .flow-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .flow-step {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-top: 3px solid var(--accent);
+            border-radius: 14px;
+            padding: 2rem 1.75rem;
+            backdrop-filter: blur(12px);
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        .flow-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            letter-spacing: 2.5px;
+            color: var(--accent);
+            background: var(--accent-glow);
+            padding: 0.22rem 0.65rem;
+            border-radius: 100px;
+            align-self: flex-start;
+            margin-bottom: 1.25rem;
+        }
+        .flow-step h3 { margin-bottom: 0.5rem; }
+        .flow-step .flow-desc {
+            color: var(--muted);
+            font-size: 0.87rem;
+            line-height: 1.7;
+            margin-bottom: 1.25rem;
+            flex: 1;
+        }
+        .flow-step .flow-code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--muted);
+            background: #0c0c10;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.75rem 0.9rem;
+            line-height: 1.7;
+            overflow-x: auto;
+        }
+        .flow-step .flow-code .kw  { color: #c084fc; }
+        .flow-step .flow-code .str { color: #86efac; }
+        .flow-step .flow-code .fn  { color: #60a5fa; }
+
+        /* ── Pricing block header (per product) ── */
+        .pricing-block { margin-top: 4rem; }
+        .pricing-block:first-of-type { margin-top: 3.5rem; }
+        .pricing-block-head {
+            display: flex;
+            align-items: baseline;
+            gap: 1rem;
+            margin-bottom: 0.6rem;
+            flex-wrap: wrap;
+        }
+        .pricing-block-head .pb-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            letter-spacing: 2.5px;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            padding: 0.3rem 0.8rem;
+            border-radius: 100px;
+            text-transform: uppercase;
+        }
+        .pricing-block-head h3 {
+            font-size: 1.6rem;
+            font-weight: 900;
+            letter-spacing: -1px;
+        }
+        .pricing-block .pb-sub {
+            color: var(--muted);
+            font-size: 0.9rem;
+            line-height: 1.6;
+            max-width: 580px;
+            margin-bottom: 1rem;
+        }
+        .pricing-block .pricing-grid { margin-top: 2rem; }
+
         /* ── Responsive ── */
         @media (max-width: 960px) {
             .problem-grid { grid-template-columns: 1fr; gap: 3rem; }
@@ -603,6 +796,8 @@
             .stats-grid   { grid-template-columns: 1fr; }
             .stat-cell    { border-right: none; border-bottom: 1px solid var(--border); }
             .stat-cell:last-child { border-bottom: none; }
+            .product-split-grid { grid-template-columns: 1fr; }
+            .flow-grid { grid-template-columns: 1fr; }
         }
         @media (max-width: 720px) {
             section { padding: 4rem 0; }
@@ -621,9 +816,8 @@
         <div class="header-inner">
             <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
             <nav>
-                <a href="#problem">The Problem</a>
-                <a href="#how-it-works">How It Works</a>
-                <a href="#services">Services</a>
+                <a href="#apps">For Apps</a>
+                <a href="#agents">For Agents</a>
                 <a href="#pricing">Pricing</a>
                 <a href="#" class="nav-cta">Get Started Free</a>
             </nav>
@@ -634,34 +828,35 @@
 <!-- ── Section 1: Hero ── -->
 <section class="hero">
     <div class="container">
-        <div class="eyebrow">A XentraNET Identity Product</div>
-        <h1 style="margin-top:2rem;"><span class="gradient-text">Secure Access<br>Made Easy</span></h1>
-        <p class="hero-sub">Eliminate passwords and stop unnecessary MFA friction. X-Auth evaluates risk in real-time — seamless access for legitimate users, hard stops for threats.</p>
+        <div class="eyebrow">XentraNET Identity Platform</div>
+        <h1 style="margin-top:2rem;"><span class="gradient-text">Identity for humans<br>and the agents<br>they deploy.</span></h1>
+        <p class="hero-sub">X-Auth is the identity platform for the AI era. Risk-based authentication for your users. Scoped, pooled identities for your AI agents. One platform. Two products. Zero shared service accounts.</p>
         <div class="hero-actions">
-            <a href="#" class="btn btn-primary">Start Protecting for Free</a>
-            <a href="#how-it-works" class="btn btn-ghost">See How It Works</a>
+            <a href="#apps" class="btn btn-primary">X-Auth for Apps</a>
+            <a href="#agents" class="btn btn-ghost">X-Auth for Agents</a>
         </div>
         <div class="terminal-shell">
             <div class="term-bar">
                 <div class="dot dot-r"></div>
                 <div class="dot dot-y"></div>
                 <div class="dot dot-g"></div>
-                <span class="term-label">x-auth.js — risk-based access in 10 lines</span>
+                <span class="term-label">x-auth.js — drop-in like social login</span>
             </div>
             <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
 
-<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenant: <span class="str">'your-app'</span> });
+<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
 
-<span class="cmt">// Evaluate risk on every request — device, location, behavior, network</span>
-<span class="kw">const</span> { riskLevel, session } = <span class="kw">await</span> xauth.<span class="fn">evaluate</span>(req);
+<span class="cmt">// "Sign in with X-Auth" — drop in a button, like social login.</span>
+xauth.<span class="fn">renderButton</span>(<span class="str">'#signin-btn'</span>, {
+  onSuccess: (user) =&gt; location.href = <span class="str">'/app'</span>,
+});
 
-<span class="cmt">// Only challenge when the signals demand it</span>
-<span class="kw">if</span> (riskLevel === <span class="str">'high'</span>) {
-  <span class="kw">await</span> xauth.<span class="fn">stepUp</span>({ method: <span class="str">'biometric'</span> });
-}
+<span class="cmt">// Need risk evaluation for any journey, not just login?</span>
+<span class="cmt">// Call advice() anywhere — checkout, transfer, sensitive read.</span>
+<span class="kw">await</span> xauth.<span class="fn">advice</span>({ journey: <span class="str">'transfer'</span>, amount: 2999 });
 
-<span class="cmt">// Low risk? Let them through. Seamlessly.</span>
-<span class="kw">return</span> session.<span class="fn">authorize</span>(req);</code></pre></div>
+<span class="cmt">// Risk policy &amp; authentication methods are configured in</span>
+<span class="cmt">// the X-Auth admin console — your code never changes.</span></code></pre></div>
         </div>
     </div>
 </section>
@@ -705,12 +900,58 @@
     </div>
 </div>
 
+<!-- ── Two Products Overview ── -->
+<section id="platform">
+    <div class="container">
+        <div class="section-head" style="text-align:center;">
+            <div class="section-kicker">The Platform</div>
+            <h2 style="margin:0 auto;">One Platform.<br>Two Products.</h2>
+            <p class="lead" style="margin:1rem auto 0;">X-Auth solves identity twice — once for the humans using your app, and once for the AI agents acting on their behalf. Shared risk engine. Shared console. Separate plans.</p>
+        </div>
+        <div class="product-split-grid">
+            <div class="product-split-card">
+                <span class="ps-tag">X-Auth for Apps</span>
+                <h3>Risk-based OIDC,<br>in five lines.</h3>
+                <p class="ps-sub">Drop-in OIDC provider with a live risk score on every request. Your users glide through when trusted, get challenged when they shouldn't be.</p>
+                <ul>
+                    <li>Passkeys, WebAuthn, FIDO2, magic links</li>
+                    <li>Continuous, signal-driven step-up</li>
+                    <li>Policy engine with sensitivity-aware overrides</li>
+                    <li>Integration as simple as social login</li>
+                </ul>
+                <a href="#apps" class="ps-cta">› see how it works</a>
+            </div>
+            <div class="product-split-card">
+                <span class="ps-tag">X-Auth for Agents</span>
+                <h3>Real identities<br>for your AI agents.</h3>
+                <p class="ps-sub">An MCP-native identity broker. Every MCP connection is bound to a scoped, revocable identity from a pool you control — no more shared service accounts or over-scoped keys.</p>
+                <ul>
+                    <li>Define personas (pre-authorized claim bundles)</li>
+                    <li>Provision identity pools per workload</li>
+                    <li>Install <code>mcp.x-auth.com</code>, pick a persona, OIDC does the rest</li>
+                    <li>Audit every connection, revoke in one click</li>
+                </ul>
+                <a href="#agents" class="ps-cta">› see how it works</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Product Divider: X-Auth for Apps ── -->
+<div class="product-divider" id="apps">
+    <div class="container">
+        <span class="pd-tag">Product 01 · For Apps</span>
+        <h2><span class="gradient-text">Authenticate your users<br>without scaring them.</span></h2>
+        <p class="pd-sub">Risk-based OIDC for the humans using your app. Seamless access for the trusted, hard stops for the rest.</p>
+    </div>
+</div>
+
 <!-- ── Section 2: The Problem ── -->
 <section class="problem-section" id="problem">
     <div class="container">
         <div class="problem-grid">
             <div class="problem-left">
-                <div class="section-kicker">Section 2 — The Problem</div>
+                <div class="section-kicker">The Problem</div>
                 <h2>Don't Scare Your<br>Customers Away</h2>
                 <p class="lead" style="margin-top:1rem;">Static authentication treats every login the same. That's not security — it's friction theater.</p>
             </div>
@@ -730,7 +971,7 @@
 <section id="how-it-works">
     <div class="container">
         <div class="section-head">
-            <div class="section-kicker">Section 3 — Risk-Based Authentication</div>
+            <div class="section-kicker">Risk-Based Authentication</div>
             <h2>The Right Response<br>for Every Risk Level</h2>
             <p class="lead">X-Auth evaluates both the identity signals behind a request <em>and</em> the sensitivity of what's being accessed — then matches the friction to the actual risk.</p>
         </div>
@@ -779,7 +1020,7 @@
 <section>
     <div class="container">
         <div class="section-head">
-            <div class="section-kicker">Section 4 — Intelligence Engine</div>
+            <div class="section-kicker">Intelligence Engine</div>
             <h2>Every Signal.<br>Evaluated in Real-Time.</h2>
             <p class="lead">X-Auth ingests four categories of signals continuously to build a live trust score for every session — not just at login.</p>
         </div>
@@ -834,8 +1075,8 @@
 <section id="services">
     <div class="container">
         <div class="section-head">
-            <div class="section-kicker">Section 5 — Core Identity Services</div>
-            <h2>Identity, Top to Bottom</h2>
+            <div class="section-kicker">Core App Services</div>
+            <h2>Authentication, Authorization,<br>Risk — All Three.</h2>
             <p class="lead">Risk intelligence is the foundation. Authentication and authorization are the execution layers that act on it.</p>
         </div>
         <div class="services-grid">
@@ -874,10 +1115,139 @@
     </div>
 </section>
 
+<!-- ── Product Divider: X-Auth for Agents ── -->
+<div class="product-divider" id="agents">
+    <div class="container">
+        <span class="pd-tag">Product 02 · For Agents</span>
+        <h2><span class="gradient-text">Your agents deserve<br>their own identities.</span></h2>
+        <p class="pd-sub">An MCP-native identity broker at <code>mcp.x-auth.com</code>. Real, scoped, revocable identities for every agent you deploy.</p>
+    </div>
+</div>
+
+<!-- ── Agent Problem ── -->
+<section class="problem-section">
+    <div class="container">
+        <div class="problem-grid">
+            <div class="problem-left">
+                <div class="section-kicker">The Agent Identity Crisis</div>
+                <h2>Shared Keys.<br>Blast Radius.</h2>
+                <p class="lead" style="margin-top:1rem;">Your AI agents are running with credentials they shouldn't have — and you have no audit trail when things go wrong.</p>
+            </div>
+            <div class="problem-right">
+                <blockquote>
+                    "Which agent made this API call? Under whose authority? With what scope? And how do I revoke just <em>that one</em> without breaking the others?"
+                </blockquote>
+                <p>That's your security team. Staring at a shared service account used by a dozen agent workloads. One prompt injection away from a breach. One audit query away from a compliance finding.</p>
+                <p>Today's agents check into systems using credentials borrowed from humans, API keys with superuser scope, or a shared service account that can't be scoped down without breaking something. <strong>None of that is identity — it's a backdoor with a sticker on it.</strong></p>
+                <p>X-Auth for Agents gives every MCP connection a real identity, pre-scoped to the minimum claims it needs, drawn from a pool you manage. Revoke one without touching the others. Audit every connection. Sleep at night.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Agent Flow: Personas → Pools → MCP ── -->
+<section>
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">How It Works</div>
+            <h2>Personas. Pools.<br>One MCP Install.</h2>
+            <p class="lead">Three primitives. Define once in the X-Auth console, consume from any AI chat or agent runtime.</p>
+        </div>
+        <div class="flow-grid">
+            <div class="flow-step">
+                <span class="flow-num">STEP 01</span>
+                <h3>Define Personas</h3>
+                <p class="flow-desc">A <strong>persona</strong> is a pre-authorized bundle of claims — OAuth scopes, entitlements, attributes. Defined once by your security team, reused across every agent that takes on that role.</p>
+                <pre class="flow-code"><span class="kw">persona</span>: <span class="str">"crm-reader"</span>
+<span class="kw">scopes</span>:
+  - crm.contacts.read
+  - crm.accounts.read
+<span class="kw">ttl</span>: <span class="str">15m</span></pre>
+            </div>
+            <div class="flow-step">
+                <span class="flow-num">STEP 02</span>
+                <h3>Provision Identity Pools</h3>
+                <p class="flow-desc">An <strong>identity pool</strong> holds concrete agent identities eligible to assume one or more personas. Size the pool to your workload. Assign, rotate, revoke — per-identity, without collateral damage.</p>
+                <pre class="flow-code"><span class="kw">pool</span>: <span class="str">"support-desk-agents"</span>
+<span class="kw">size</span>: 25
+<span class="kw">personas</span>:
+  - crm-reader
+  - tickets-writer</pre>
+            </div>
+            <div class="flow-step">
+                <span class="flow-num">STEP 03</span>
+                <h3>Install. Pick a Persona. OIDC.</h3>
+                <p class="flow-desc">The AI chat owner installs <code>mcp.x-auth.com</code> as a tool and picks the persona they need. A standard OIDC handshake runs — X-Auth binds an identity from the pool and grants exactly the scopes the persona authorizes. The connection embodies that identity for its lifetime.</p>
+                <pre class="flow-code"><span class="kw">install</span>: mcp.x-auth.com
+<span class="kw">persona</span>: <span class="str">crm-reader</span>
+<span class="kw">handshake</span>: oidc
+<span class="kw">scopes</span>:
+  - crm.contacts.read
+  - crm.accounts.read
+<span class="cmt"># → identity bound, tokens issued</span></pre>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Agent Features ── -->
+<section>
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Broker Capabilities</div>
+            <h2>Every Agent.<br>Its Own Identity.</h2>
+            <p class="lead">The broker handles the identity lifecycle so your agent runtime doesn't have to. MCP-native from day one.</p>
+        </div>
+        <div class="engine-grid">
+            <div class="engine-card">
+                <span class="engine-icon">🪪</span>
+                <h3>Persona Templates</h3>
+                <p>Codify the OAuth scopes and claim bundles your agents are allowed to assume. Version them, review them, sign them. Your security team owns what "agent authority" means — the agents don't negotiate it at runtime.</p>
+                <div class="tag-row">
+                    <span class="tag">OAuth scopes</span>
+                    <span class="tag">claim bundles</span>
+                    <span class="tag">policy-as-code</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🏊</span>
+                <h3>Identity Pools</h3>
+                <p>Real, concrete identities — not stamped-out JWTs. Assign pool size to workload volume, set per-identity TTLs, rotate or retire individuals without taking down the fleet. Scope each pool to one or more personas.</p>
+                <div class="tag-row">
+                    <span class="tag">per-workload pools</span>
+                    <span class="tag">individual rotation</span>
+                    <span class="tag">blast-radius limiting</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🔌</span>
+                <h3>MCP-Native Delivery</h3>
+                <p>Install <code>mcp.x-auth.com</code> as a tool in Claude, ChatGPT, Cursor, or any MCP-aware runtime. Pick a persona at install — the OIDC handshake binds an identity from the pool. If your runtime supports <strong>DCR</strong> (Dynamic Client Registration) or <strong>CIMD</strong> (Client Identifier Metadata Document), install is truly zero-config — no manual client provisioning, no copy-pasted secrets.</p>
+                <div class="tag-row">
+                    <span class="tag">DCR</span>
+                    <span class="tag">CIMD</span>
+                    <span class="tag">OIDC</span>
+                    <span class="tag">Claude · ChatGPT · Cursor</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">📜</span>
+                <h3>Audit &amp; Revocation</h3>
+                <p>Every MCP connection is logged with the requesting runtime, the selected persona, the pool, and the bound identity. Revoke a live connection mid-session. Trace any downstream API call back to the exact agent, persona, and time window.</p>
+                <div class="tag-row">
+                    <span class="tag">per-connection log</span>
+                    <span class="tag">instant revocation</span>
+                    <span class="tag">forensic trace</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
 <!-- ── Section 6: Compliance & Trust ── -->
 <section class="trust-section">
     <div class="container">
-        <div class="section-kicker">Section 6 — Compliance &amp; Trust Center</div>
+        <div class="section-kicker">Compliance &amp; Trust Center</div>
         <h2 style="margin-bottom:1rem;">Built for Regulated Industries</h2>
         <p class="lead">From fintech startups to enterprise infrastructure — X-Auth is the foundation of digital trust.</p>
         <div class="badges">
@@ -898,52 +1268,113 @@
 <section id="pricing">
     <div class="container">
         <div class="section-head">
-            <div class="section-kicker">Section 7 — Pricing</div>
+            <div class="section-kicker">Pricing</div>
             <h2>Start Free.<br>Scale Confidently.</h2>
-            <p class="lead">No credit card required for the Developer tier. Full risk intelligence included on every plan.</p>
+            <p class="lead">No credit card required on either product's Developer tier. Pick the surface you're starting with — or use both.</p>
         </div>
-        <div class="pricing-grid">
-            <div class="plan">
-                <div class="plan-tier">Developer</div>
-                <div class="plan-price">Free <sub>forever</sub></div>
-                <div class="plan-tagline">For side projects and early-stage MVPs. Up to 5,000 MAU.</div>
-                <ul class="plan-features">
-                    <li>Up to 5,000 monthly active users</li>
-                    <li>Risk-based authentication</li>
-                    <li>Passwordless &amp; social login</li>
-                    <li>Basic RBAC</li>
-                    <li>Community support</li>
-                </ul>
-                <a href="#" class="plan-cta">Get Started Free</a>
+        <!-- Pricing for Apps -->
+        <div class="pricing-block">
+            <div class="pricing-block-head">
+                <span class="pb-tag">X-Auth for Apps</span>
+                <h3>Human identity, billed by MAU.</h3>
             </div>
-            <div class="plan featured">
-                <div class="plan-badge">MOST POPULAR</div>
-                <div class="plan-tier">Growth</div>
-                <div class="plan-price">Custom <sub>/ mo</sub></div>
-                <div class="plan-tagline">For production apps requiring advanced risk scoring and priority support.</div>
-                <ul class="plan-features">
-                    <li>Unlimited monthly active users</li>
-                    <li>Advanced behavioral biometrics</li>
-                    <li>Full RBAC + ABAC policy engine</li>
-                    <li>ATO protection &amp; bot mitigation</li>
-                    <li>Analytics dashboard</li>
-                    <li>Priority support SLA</li>
-                </ul>
-                <a href="#" class="plan-cta">Request Pricing</a>
+            <p class="pb-sub">Risk-based OIDC for the users of your app. All tiers include the full risk engine.</p>
+            <div class="pricing-grid">
+                <div class="plan">
+                    <div class="plan-tier">Developer</div>
+                    <div class="plan-price">Free <sub>forever</sub></div>
+                    <div class="plan-tagline">For side projects and early-stage MVPs. Up to 5,000 MAU.</div>
+                    <ul class="plan-features">
+                        <li>Up to 5,000 monthly active users</li>
+                        <li>Risk-based authentication</li>
+                        <li>Passwordless &amp; social login</li>
+                        <li>Basic RBAC</li>
+                        <li>Community support</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Get Started Free</a>
+                </div>
+                <div class="plan featured">
+                    <div class="plan-badge">MOST POPULAR</div>
+                    <div class="plan-tier">Growth</div>
+                    <div class="plan-price">Custom <sub>/ mo</sub></div>
+                    <div class="plan-tagline">For production apps requiring advanced risk scoring and priority support.</div>
+                    <ul class="plan-features">
+                        <li>Unlimited monthly active users</li>
+                        <li>Advanced behavioral biometrics</li>
+                        <li>Full RBAC + ABAC policy engine</li>
+                        <li>ATO protection &amp; bot mitigation</li>
+                        <li>Analytics dashboard</li>
+                        <li>Priority support SLA</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Request Pricing</a>
+                </div>
+                <div class="plan">
+                    <div class="plan-tier">Enterprise</div>
+                    <div class="plan-price">Custom <sub>/ yr</sub></div>
+                    <div class="plan-tagline">Dedicated infrastructure, custom throughput, and 24/7 security response.</div>
+                    <ul class="plan-features">
+                        <li>Dedicated cluster deployment</li>
+                        <li>Custom risk policy engine</li>
+                        <li>SSO &amp; SCIM provisioning</li>
+                        <li>Compliance reporting</li>
+                        <li>SLA guarantees</li>
+                        <li>24/7 security response team</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Contact Sales</a>
+                </div>
             </div>
-            <div class="plan">
-                <div class="plan-tier">Enterprise</div>
-                <div class="plan-price">Custom <sub>/ yr</sub></div>
-                <div class="plan-tagline">Dedicated infrastructure, custom throughput, and 24/7 security response.</div>
-                <ul class="plan-features">
-                    <li>Dedicated cluster deployment</li>
-                    <li>Custom risk policy engine</li>
-                    <li>SSO &amp; SCIM provisioning</li>
-                    <li>Compliance reporting</li>
-                    <li>SLA guarantees</li>
-                    <li>24/7 security response team</li>
-                </ul>
-                <a href="#" class="plan-cta">Contact Sales</a>
+        </div>
+
+        <!-- Pricing for Agents -->
+        <div class="pricing-block">
+            <div class="pricing-block-head">
+                <span class="pb-tag">X-Auth for Agents</span>
+                <h3>Agent identity, billed by pool &amp; personas.</h3>
+            </div>
+            <p class="pb-sub">Provision real identities for your AI agents. Tiers scale on concurrent agent identities, distinct personas, and MCP installs.</p>
+            <div class="pricing-grid">
+                <div class="plan">
+                    <div class="plan-tier">Developer</div>
+                    <div class="plan-price">Free <sub>forever</sub></div>
+                    <div class="plan-tagline">For exploring MCP-based identity brokering and small personal agents.</div>
+                    <ul class="plan-features">
+                        <li>2 concurrent agent identities</li>
+                        <li>2 personas (claim bundles)</li>
+                        <li>Up to 2 MCP installs</li>
+                        <li>Basic audit log (7-day retention)</li>
+                        <li>Community support</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Get Started Free</a>
+                </div>
+                <div class="plan featured">
+                    <div class="plan-badge">MOST POPULAR</div>
+                    <div class="plan-tier">Growth</div>
+                    <div class="plan-price">Custom <sub>/ mo</sub></div>
+                    <div class="plan-tagline">For teams running production agent workloads across multiple personas and runtimes.</div>
+                    <ul class="plan-features">
+                        <li>Scalable identity pools</li>
+                        <li>Multiple personas with approval workflows</li>
+                        <li>Multi-runtime MCP installs</li>
+                        <li>Full audit log (90-day retention)</li>
+                        <li>Instant revocation &amp; rotation</li>
+                        <li>Priority support SLA</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Request Pricing</a>
+                </div>
+                <div class="plan">
+                    <div class="plan-tier">Enterprise</div>
+                    <div class="plan-price">Custom <sub>/ yr</sub></div>
+                    <div class="plan-tagline">For regulated deployments needing dedicated broker infrastructure and custom policy controls.</div>
+                    <ul class="plan-features">
+                        <li>Unlimited identities &amp; personas</li>
+                        <li>Dedicated broker cluster</li>
+                        <li>Private MCP endpoint &amp; mTLS</li>
+                        <li>SIEM audit export</li>
+                        <li>SSO admin, SCIM, policy-as-code</li>
+                        <li>24/7 security response team</li>
+                    </ul>
+                    <a href="#" class="plan-cta">Contact Sales</a>
+                </div>
             </div>
         </div>
     </div>
@@ -956,13 +1387,14 @@
             <div class="footer-brand">
                 <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
                 <p>An XentraNET Identity Product &nbsp;·&nbsp; &copy; 2026 XentraNET</p>
+                <p class="footer-email"><a href="mailto:info@x-auth.com">info@x-auth.com</a></p>
             </div>
             <div class="footer-links">
                 <a href="#">Privacy</a>
                 <a href="#">Terms</a>
                 <a href="#">Docs</a>
                 <a href="#">Security</a>
-                <a href="#">Contact</a>
+                <a href="mailto:info@x-auth.com">Contact</a>
             </div>
             <div class="status-pill">
                 <span class="status-dot"></span>

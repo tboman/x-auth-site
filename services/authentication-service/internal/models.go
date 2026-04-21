@@ -1,0 +1,185 @@
+// Package internal contains the authentication-service domain model, storage,
+// HTTP handlers, OIDC/OAuth endpoints, and thin clients for sister services.
+//
+// authentication-service is the public OIDC provider for X-Auth for Apps. It owns:
+//   - users (CRUD)
+//   - sessions (create after first-factor auth, refresh, invalidate, upgrade on step-up)
+//   - tokens (opaque access + refresh, hashed at rest)
+//   - OIDC endpoints (discovery, authorize, token, userinfo, revoke)
+//   - social-login stubs (google, github, microsoft)
+//
+// Phase 1 uses opaque UUID tokens so the happy path works end-to-end without JWT
+// signing. Every phase-2 shortcut is flagged with a `TODO(phase-2)` comment.
+//
+// See ARCHITECTURE.md §4.3 for the source-of-truth service contract.
+package internal
+
+import "time"
+
+// Risk level values. Mirrors the shape the transaction-service and risk-service
+// use so a session record can be compared / round-tripped without translation.
+const (
+	RiskLow    = "low"
+	RiskMedium = "medium"
+	RiskHigh   = "high"
+)
+
+// User identity record.
+//
+// Phase 1 identifies a user by (tenant_id, email). There is no password column:
+// first-factor auth is performed by authenticator-service against its own
+// credential store and authentication-service only learns about the user when
+// transaction-service asks it to mint a session.
+type User struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	Email     string    `json:"email"`
+	Name      string    `json:"name,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// CreateUserRequest is the JSON body for POST /v1/users. tenant_id is sourced
+// from the X-Tenant-Id header, not the body.
+type CreateUserRequest struct {
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+// UpdateUserRequest is the JSON body for PATCH /v1/users/{id}. Both fields are
+// optional; only non-empty values are applied.
+type UpdateUserRequest struct {
+	Email string `json:"email,omitempty"`
+	Name  string `json:"name,omitempty"`
+}
+
+// Session is a tenant-scoped, user-bound login session. risk_level and
+// step_up_completed track the most recent authentication posture so the
+// orchestrating transaction-service can decide whether to allow a high-risk
+// action without re-evaluating from scratch.
+type Session struct {
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
+	UserID          string     `json:"user_id"`
+	RiskLevel       string     `json:"risk_level"`
+	StepUpCompleted bool       `json:"step_up_completed"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	InvalidatedAt   *time.Time `json:"invalidated_at,omitempty"`
+}
+
+// CreateSessionRequest is the JSON body for POST /v1/sessions. transaction-service
+// supplies this after a successful first-factor check — authentication-service
+// trusts the caller and mints the session without re-verifying credentials.
+// TODO(phase-2): require a signed token from transaction-service so a rogue
+// internal caller cannot fabricate sessions for arbitrary users.
+type CreateSessionRequest struct {
+	UserID          string `json:"user_id"`
+	RiskLevel       string `json:"risk_level"`
+	StepUpCompleted bool   `json:"step_up_completed"`
+}
+
+// UpgradeSessionRequest is the JSON body for POST /v1/sessions/{id}/upgrade.
+// Used by transaction-service after authenticator-service verifies a step-up
+// challenge to re-classify the session as step-up-completed and optionally
+// lower the risk level.
+type UpgradeSessionRequest struct {
+	RiskLevel       string `json:"risk_level,omitempty"`
+	StepUpCompleted bool   `json:"step_up_completed"`
+}
+
+// TokenType discriminates between access and refresh token records.
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
+// Token is the authentication-service's internal record of an issued opaque
+// token. Plaintext tokens are never persisted — we store the SHA-256 hex digest
+// and compare by re-hashing what the caller presents.
+//
+// TODO(phase-2): when access tokens become signed JWTs, the access-token record
+// can be dropped entirely and this type can shrink to refresh-token-only.
+type Token struct {
+	TokenHash string     `json:"-"`
+	SessionID string     `json:"session_id"`
+	UserID    string     `json:"user_id"`
+	TenantID  string     `json:"tenant_id"`
+	TokenType string     `json:"token_type"`
+	Scope     string     `json:"scope,omitempty"`
+	IssuedAt  time.Time  `json:"issued_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+}
+
+// AuthCode is the transient record created by /authorize and consumed by /token.
+// Single-use by construction — the storage layer deletes it on read.
+type AuthCode struct {
+	Code        string
+	ClientID    string
+	TenantID    string
+	UserID      string
+	SessionID   string
+	RedirectURI string
+	Scope       string
+	State       string
+	Nonce       string
+	CreatedAt   time.Time
+}
+
+// OIDCClient is a registered OAuth/OIDC client. Phase 1 seeds a single dev
+// client (see storage.go seedDefaultClient); full dynamic registration lives in
+// broker-service for now.
+type OIDCClient struct {
+	ClientID         string    `json:"client_id"`
+	ClientSecretHash string    `json:"-"` // never marshal the hash back to the wire
+	RedirectURIs     []string  `json:"redirect_uris"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// SocialProfile is the canned profile returned by a social-login stub callback.
+// Real providers return wildly different shapes; phase 1 normalises to this
+// minimal set so the rest of the session-creation path does not care which
+// provider the user came from.
+type SocialProfile struct {
+	Provider   string
+	ExternalID string
+	Email      string
+	Name       string
+}
+
+// TTLs (in seconds) for the various artefacts authentication-service manages.
+// Centralised here so tests can reason about expected lifetimes without repeating
+// magic numbers throughout the handlers.
+const (
+	SessionTTLSeconds      = 3600  // 1 hour
+	AccessTokenTTLSeconds  = 900   // 15 minutes
+	RefreshTokenTTLSeconds = 86400 // 24 hours
+	AuthCodeTTLSeconds     = 300   // 5 minutes
+
+	// DefaultClientID is the dev client seeded at startup. Using a stable, well-
+	// known value keeps smoke tests and local cURL examples simple.
+	DefaultClientID     = "cli_default"
+	DefaultClientSecret = "dev-secret" // TODO(phase-2): replace with a random, hashed secret per environment.
+)
+
+// ValidRiskLevel returns true when s is one of {low, medium, high}.
+func ValidRiskLevel(s string) bool {
+	switch s {
+	case RiskLow, RiskMedium, RiskHigh:
+		return true
+	}
+	return false
+}
+
+// ValidSocialProvider returns true when s is a supported social-login stub.
+// Phase 1 supports google, github, microsoft — any other string is rejected at
+// the /v1/social/{provider}/authorize boundary.
+func ValidSocialProvider(s string) bool {
+	switch s {
+	case "google", "github", "microsoft":
+		return true
+	}
+	return false
+}

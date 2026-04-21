@@ -1,0 +1,200 @@
+<mxGraphModel adaptiveColors="auto">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+
+    <mxCell id="title" value="OIDC Transaction Authorization — Client Integration Pattern" style="text;fontSize=16;fontStyle=1;fontColor=#333333;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="200" y="-35" width="600" height="30" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="u_user" value="End User" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="480" y="10" width="40" height="60" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="u_browser" value="Browser (User Agent)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6E6E6;strokeColor=#999999;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="415" y="105" width="170" height="35" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e_user_browser" edge="1" parent="1" source="u_user" target="u_browser" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#999999;endArrow=block;endFill=1;">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_svc" value="Client Service  (X-Auth Customer)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#6C8EBF;fontColor=#333333;fontSize=14;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;arcSize=4;container=1;collapsible=0;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="20" y="200" width="420" height="530" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_frontend" value="Client Frontend (Web / Mobile)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="c_svc">
+      <mxGeometry x="20" y="45" width="380" height="38" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_backend" value="Client Backend&#xa;(API Server)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="c_svc">
+      <mxGeometry x="20" y="115" width="170" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_threshold" value="Threshold Engine&#xa;(Policy)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="c_svc">
+      <mxGeometry x="215" y="115" width="185" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_txndb" value="Transaction DB" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;size=8;" vertex="1" parent="c_svc">
+      <mxGeometry x="20" y="195" width="170" height="55" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_oidcconf" value="OIDC Client Config&#xa;client_id: &quot;acme-bank&quot;&#xa;redirect_uri: /callback&#xa;grant_type: authorization_code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0F0F0;strokeColor=#CCCCCC;fontSize=9;align=left;spacingLeft=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="c_svc">
+      <mxGeometry x="215" y="195" width="185" height="65" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_thresholds" value="Client-Defined Thresholds (examples)&#xa;&#xa;  $100 purchase          → risk_threshold: 0.3&#xa;  $5K bank transfer      → risk_threshold: 0.6&#xa;  $50K wire transfer     → risk_threshold: 0.8&#xa;  Admin privilege change  → risk_threshold: 0.9&#xa;&#xa;Client owns transaction data and threshold logic.&#xa;X-Auth never sees the transaction details." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=9;align=left;spacingLeft=8;spacingRight=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="c_svc">
+      <mxGeometry x="20" y="290" width="380" height="130" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="c_owns" value="Client owns" style="text;fontSize=9;fontStyle=2;fontColor=#999999;align=center;" vertex="1" parent="c_svc">
+      <mxGeometry x="135" y="440" width="150" height="15" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ec_fe_be" edge="1" parent="c_svc" source="c_frontend" target="c_backend" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6C8EBF;endArrow=block;endFill=1;">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ec_be_th" edge="1" parent="c_svc" source="c_backend" target="c_threshold" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6C8EBF;endArrow=block;endFill=1;" value="Analyze txn">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ec_be_db" edge="1" parent="c_svc" source="c_backend" target="c_txndb" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#9673A6;endArrow=block;endFill=1;" value="Store / execute">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_platform" value="X-Auth Platform  (OIDC Authorization Server)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#82B366;fontColor=#333333;fontSize=14;fontStyle=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;arcSize=4;container=1;collapsible=0;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="570" y="200" width="460" height="530" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_txnsvc" value="transaction-service :8080&#xa;OIDC Authorization Server&#xa;/authorize    /token    /userinfo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="x_platform">
+      <mxGeometry x="20" y="45" width="420" height="60" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_risksvc" value="risk-service :8081&#xa;(Scoring Pipeline)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="x_platform">
+      <mxGeometry x="20" y="140" width="195" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_authrsvc" value="authenticator-service :8083&#xa;(FIDO2 / OTP / Push)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="x_platform">
+      <mxGeometry x="240" y="140" width="200" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_pipeline" value="Risk Signal Pipeline&#xa;&#xa;  Device Scorer    × 0.25     Weighted aggregation&#xa;  Behavior Scorer  × 0.30  →  + policy overlay&#xa;  Network Scorer   × 0.25     + resource sensitivity&#xa;  User Scorer      × 0.20     = risk score (0.0–1.0)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=9;align=left;spacingLeft=8;spacingRight=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="x_platform">
+      <mxGeometry x="20" y="220" width="420" height="85" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_redis" value="Redis&#xa;(cache)" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;fontStyle=1;size=8;" vertex="1" parent="x_platform">
+      <mxGeometry x="20" y="335" width="120" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_pg1" value="txn_db&#xa;(PG)" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;size=8;" vertex="1" parent="x_platform">
+      <mxGeometry x="160" y="335" width="120" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_pg2" value="risk_db / authr_db&#xa;(PG)" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;size=8;" vertex="1" parent="x_platform">
+      <mxGeometry x="300" y="335" width="140" height="50" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_claims" value="Authorization Token Claims (returned to client)&#xa;&#xa;  risk_score:     0.87&#xa;  risk_tier:      &quot;high&quot;&#xa;  acr:            &quot;urn:x-auth:fido2&quot;&#xa;  threshold:      0.8&#xa;  threshold_met:  true&#xa;  scope:          &quot;txn:transfer&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=9;align=left;spacingLeft=8;spacingRight=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="x_platform">
+      <mxGeometry x="20" y="410" width="420" height="105" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="x_owns" value="X-Auth owns" style="text;fontSize=9;fontStyle=2;fontColor=#999999;align=center;" vertex="1" parent="x_platform">
+      <mxGeometry x="145" y="195" width="170" height="15" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ex_txn_risk" edge="1" parent="x_platform" source="x_txnsvc" target="x_risksvc" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#D6B656;endArrow=block;endFill=1;" value="Evaluate risk">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ex_txn_authr" edge="1" parent="x_platform" source="x_txnsvc" target="x_authrsvc" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#D6B656;endArrow=block;endFill=1;" value="Step-up (conditional)">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e_browser_client" edge="1" parent="1" source="u_browser" target="c_frontend" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6C8EBF;strokeWidth=2;endArrow=block;endFill=1;startArrow=block;startFill=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="User interface">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e_browser_xauth" edge="1" parent="1" source="u_browser" target="x_txnsvc" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#0066CC;strokeWidth=2;dashed=1;dashPattern=8 4;endArrow=block;endFill=1;startArrow=block;startFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="OIDC redirect flow&#xa;/authorize (risk_threshold, PKCE)&#xa;← 302 auth code (or step-up page)">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e_backchannel" edge="1" parent="1" source="c_backend" target="x_txnsvc" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82B366;strokeWidth=2;endArrow=block;endFill=1;startArrow=block;startFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" value="Back-channel (mTLS)&#xa;POST /token (code + PKCE verifier)&#xa;← authorization token + claims">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_summary" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;container=1;collapsible=0;arcSize=4;" vertex="1" parent="1">
+      <mxGeometry x="20" y="760" width="1010" height="150" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_title" value="Transaction Authorization Flow" style="text;fontSize=12;fontStyle=1;fontColor=#333333;align=left;verticalAlign=middle;" vertex="1" parent="f_summary">
+      <mxGeometry x="15" y="5" width="300" height="20" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_left" value="① User initiates high-value transaction in Client Frontend&#xa;② Client Backend analyzes transaction data → sets risk_threshold&#xa;③ Client redirects browser to X-Auth /authorize&#xa;    with risk_threshold, scope, PKCE code_challenge" style="text;whiteSpace=wrap;html=1;fontSize=10;align=left;verticalAlign=top;spacingLeft=4;fontColor=#333333;" vertex="1" parent="f_summary">
+      <mxGeometry x="10" y="28" width="380" height="70" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_mid" value="④ X-Auth evaluates risk signals → produces score&#xa;⑤ If score &lt; threshold → immediate auth code (no step-up)&#xa;    If score ≥ threshold → FIDO2 step-up → then auth code&#xa;⑥ Browser redirected back to Client with auth code" style="text;whiteSpace=wrap;html=1;fontSize=10;align=left;verticalAlign=top;spacingLeft=4;fontColor=#333333;" vertex="1" parent="f_summary">
+      <mxGeometry x="350" y="28" width="360" height="70" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_right" value="⑦ Client exchanges code for token (back-channel + PKCE)&#xa;⑧ Token carries authorization claims: risk_score, acr,&#xa;    threshold_met — Client uses token as proof to execute" style="text;whiteSpace=wrap;html=1;fontSize=10;align=left;verticalAlign=top;spacingLeft=4;fontColor=#333333;" vertex="1" parent="f_summary">
+      <mxGeometry x="690" y="28" width="310" height="60" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="f_note" value="Key: Client owns transaction data + threshold logic. X-Auth owns risk scoring + step-up. Standard OIDC — no proprietary APIs needed." style="text;whiteSpace=wrap;html=1;fontSize=10;fontStyle=3;align=left;verticalAlign=middle;spacingLeft=4;fontColor=#666666;" vertex="1" parent="f_summary">
+      <mxGeometry x="10" y="105" width="990" height="30" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="legend" value="" style="rounded=1;fillColor=#F5F5F5;strokeColor=#CCCCCC;container=1;collapsible=0;" vertex="1" parent="1">
+      <mxGeometry x="20" y="930" width="1010" height="35" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg1" value="" edge="1" parent="legend" style="endArrow=block;endFill=1;startArrow=block;startFill=1;strokeColor=#6C8EBF;strokeWidth=2;">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="15" y="18" as="sourcePoint"/>
+        <mxPoint x="80" y="18" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg1t" value="User interface" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="85" y="8" width="80" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg2" value="" edge="1" parent="legend" style="endArrow=block;endFill=1;startArrow=block;startFill=1;strokeColor=#0066CC;strokeWidth=2;dashed=1;dashPattern=8 4;">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="195" y="18" as="sourcePoint"/>
+        <mxPoint x="260" y="18" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg2t" value="OIDC redirect flow" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="265" y="8" width="100" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg3" value="" edge="1" parent="legend" style="endArrow=block;endFill=1;startArrow=block;startFill=1;strokeColor=#82B366;strokeWidth=2;">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="395" y="18" as="sourcePoint"/>
+        <mxPoint x="460" y="18" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg3t" value="Back-channel (server-to-server)" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="465" y="8" width="180" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg4" value="" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="legend">
+      <mxGeometry x="665" y="8" width="50" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg4t" value="Client-owned" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="720" y="8" width="70" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg5" value="" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="legend">
+      <mxGeometry x="800" y="8" width="50" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg5t" value="Public" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="855" y="8" width="35" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg6" value="" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="legend">
+      <mxGeometry x="900" y="8" width="50" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="leg6t" value="Internal" style="text;fontSize=9;fontColor=#333333;align=left;" vertex="1" parent="legend">
+      <mxGeometry x="955" y="8" width="45" height="20" as="geometry"/>
+    </mxCell>
+
+  </root>
+</mxGraphModel>

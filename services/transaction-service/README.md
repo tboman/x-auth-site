@@ -1,0 +1,198 @@
+# transaction-service
+
+Public-facing orchestrator for **X-Auth for Apps** (product 1). Receives access
+requests, coordinates risk evaluation via `risk-service`, triggers step-up challenges
+via `authenticator-service`, promotes sessions via `authentication-service`, and
+persists a tenant-scoped audit trail of every orchestration decision.
+
+`ARCHITECTURE.md` §4.1 is the source of truth for contracts. One deliberate naming
+override applies: the canonical endpoint is now `POST /v1/advice`; `POST /v1/evaluate`
+is kept as an alias pointing at the same handler so the original contract still works.
+
+## Scope
+
+Phase 1: in-memory, tenant-scoped transaction store with HTTP clients against the three
+sister services. Storage is swappable via the `Storage` interface in
+`internal/storage.go` — phase 2 will add Postgres.
+
+## Endpoints
+
+All `/v1/*` endpoints require the `X-Tenant-Id` header. Tenancy is enforced at the
+storage layer: a transaction created under tenant A is invisible (404) to tenant B.
+
+| Method | Path | Status codes |
+|---|---|---|
+| GET | `/healthz` | 200 |
+| POST | `/v1/advice` | 200, 400, 502 |
+| POST | `/v1/evaluate` | 200, 400, 502 (alias for `/v1/advice`) |
+| POST | `/v1/step-up/verify` | 200, 400, 401, 404, 409, 502 |
+| POST | `/v1/authorize` | 200, 400, 403, 502 |
+| GET | `/v1/transactions` | 200, 400 |
+| GET | `/v1/transactions/{id}` | 200, 400, 404 |
+
+## Orchestration rules
+
+### `/v1/advice`
+
+1. Validate input. `user_id`, `action`, and `context.ip_address` are required.
+2. Mint a `txn_*` UUID and persist a `pending` transaction up-front so we have a paper
+   trail even if step 3 fails.
+3. Call `POST {RISK_SERVICE_URL}/internal/v1/evaluate`.
+4. Tier decides what happens next:
+   - `low`    -> `allow`, no step-up.
+   - `medium` -> create challenge with methods `["otp", "magic_link"]`, return
+     `step_up_required`.
+   - `high`   -> create challenge with methods `["fido2", "push"]`, return
+     `step_up_required`.
+
+### `/v1/step-up/verify`
+
+1. Load the transaction (must be in `step_up_required` and match `challenge_id`).
+2. Call `POST {AUTHENTICATOR_SERVICE_URL}/internal/v1/challenges/{id}/verify`.
+3. If verified and the request carried `session_id`, upgrade the session via
+   `PATCH {AUTHENTICATION_SERVICE_URL}/internal/v1/sessions/{id}`.
+4. Persist `decision: step_up_satisfied` and return `decision: allow` to the caller.
+
+A soft verification failure (HTTP 200 with `verified: false`) returns 401 and leaves the
+transaction in `step_up_required` so the caller can retry until the authenticator
+service exhausts `attempts_remaining`.
+
+### `/v1/authorize`
+
+Post-authentication policy check. Fetches the session, then re-evaluates via
+risk-service if **any** of the following:
+
+- session fetch failed with a 4xx (session gone / wrong tenant);
+- session `updated_at` is older than 5 minutes;
+- the requested `resource_sensitivity` is `high` or `critical`.
+
+Decision from the resulting tier:
+
+- `low` | `medium` -> `allow` (200).
+- `high`           -> `deny` with `reason: step_up_required` (403). Callers then
+  re-enter the `/v1/advice` flow to pick up the challenge.
+
+### Downstream errors
+
+Any downstream 5xx or network error returns `502` with
+`{"error":"upstream_unavailable","service":"...","transaction_id":"..."}`. The
+transaction is still persisted with `decision: "error"` so the caller can audit.
+
+## Transaction shape
+
+```json
+{
+  "id": "txn_0f1e…",
+  "tenant_id": "tenant-a",
+  "user_id": "usr_abc",
+  "session_id": "ses_xyz",
+  "action": "transfer.initiate",
+  "resource": "payments",
+  "resource_sensitivity": "high",
+  "risk_evaluation_id": "rev_001",
+  "risk_tier": "high",
+  "risk_score": 0.87,
+  "decision": "step_up_satisfied",
+  "step_up_used": true,
+  "step_up_method": "fido2",
+  "challenge_id": "ch_001",
+  "policy_id": "pol_payments_v3",
+  "history": [
+    {"at": "…", "event": "advice_received",      "detail": "transfer.initiate"},
+    {"at": "…", "event": "risk_evaluated",       "detail": "high"},
+    {"at": "…", "event": "challenge_issued",     "detail": "ch_001"},
+    {"at": "…", "event": "decision",             "detail": "step_up_required"},
+    {"at": "…", "event": "challenge_verified",   "detail": "fido2"},
+    {"at": "…", "event": "decision",             "detail": "step_up_satisfied"}
+  ],
+  "created_at": "2026-04-20T12:00:00Z",
+  "decided_at": "2026-04-20T12:00:45Z"
+}
+```
+
+## Environment
+
+| Var | Default |
+|---|---|
+| `PORT` | `8080` |
+| `RISK_SERVICE_URL` | `http://localhost:8081` |
+| `AUTHENTICATION_SERVICE_URL` | `http://localhost:8082` |
+| `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` |
+
+## Run locally
+
+```bash
+go run ./services/transaction-service/cmd
+# listens on :8080 by default, or $PORT if set
+```
+
+Run tests:
+
+```bash
+go test ./services/transaction-service/...
+```
+
+## End-to-end cURL sketch
+
+```bash
+# 1. Ask for advice (medium/high-risk example returns step_up_required)
+curl -sX POST http://localhost:8080/v1/advice \
+  -H 'X-Tenant-Id: tenant-a' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "usr_abc",
+    "session_id": "ses_xyz",
+    "action": "transfer.initiate",
+    "resource": "payments",
+    "resource_sensitivity": "high",
+    "context": {
+      "ip_address": "203.0.113.42",
+      "user_agent": "Mozilla/5.0",
+      "device_fingerprint": "fp_a1b2c3d4",
+      "geo": {"lat": 37.7749, "lon": -122.4194}
+    }
+  }'
+# -> { "transaction_id": "txn_…", "decision": "step_up_required",
+#      "step_up": { "challenge_id": "ch_…", "methods": ["fido2","push"], "expires_at": "…" } }
+
+# 2. Verify the challenge (after the user satisfies it)
+curl -sX POST http://localhost:8080/v1/step-up/verify \
+  -H 'X-Tenant-Id: tenant-a' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "transaction_id": "txn_…",
+    "challenge_id":   "ch_…",
+    "method":         "fido2",
+    "response":       { "credential_id": "…", "signature": "…" }
+  }'
+# -> { "transaction_id": "txn_…", "decision": "allow",
+#      "session": { "id": "ses_xyz", "risk_level": "high", "step_up_completed": true, … } }
+
+# 3. Later, the same session requests access to a sensitive resource
+curl -sX POST http://localhost:8080/v1/authorize \
+  -H 'X-Tenant-Id: tenant-a' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id":    "usr_abc",
+    "session_id": "ses_xyz",
+    "action":     "transfer.initiate",
+    "resource":   "payments",
+    "attributes": { "amount": 5000, "currency": "USD", "resource_sensitivity": "high" }
+  }'
+# -> { "transaction_id": "txn_…", "decision": "allow", "policy_id": "pol_…", "evaluated_at": "…" }
+
+# 4. Audit: list or fetch transactions
+curl -s http://localhost:8080/v1/transactions?limit=10 -H 'X-Tenant-Id: tenant-a'
+curl -s http://localhost:8080/v1/transactions/txn_…    -H 'X-Tenant-Id: tenant-a'
+```
+
+## Build the container
+
+```bash
+docker build -f services/transaction-service/Dockerfile -t transaction-service .
+docker run --rm -p 8080:8080 \
+  -e RISK_SERVICE_URL=http://host.docker.internal:8081 \
+  -e AUTHENTICATION_SERVICE_URL=http://host.docker.internal:8082 \
+  -e AUTHENTICATOR_SERVICE_URL=http://host.docker.internal:8083 \
+  transaction-service
+```
