@@ -153,6 +153,17 @@
             letter-spacing: -0.5px;
         }
         .logo span { color: var(--muted); font-weight: 400; }
+        .logo-wrap { display: inline-flex; align-items: baseline; gap: 0.4rem; }
+        .logo-sub {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 400;
+            font-size: 1.3rem;
+            color: var(--muted);
+            text-decoration: none;
+            letter-spacing: -0.5px;
+            transition: color 0.15s;
+        }
+        .logo-sub:hover { color: var(--text); }
         nav { display: flex; align-items: center; gap: 0.15rem; }
         nav a {
             color: var(--muted);
@@ -929,7 +940,10 @@
 <header class="site-header">
     <div class="container">
         <div class="header-inner">
-            <a href="#" class="logo">X-AUTH// <span>by XentraNET</span></a>
+            <div class="logo-wrap">
+                <a href="#" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
             <nav>
                 <a href="#apps">For Apps</a>
                 <a href="#agents">For Agents</a>
