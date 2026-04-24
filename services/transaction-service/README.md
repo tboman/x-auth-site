@@ -11,9 +11,13 @@ is kept as an alias pointing at the same handler so the original contract still 
 
 ## Scope
 
-Phase 1: in-memory, tenant-scoped transaction store with HTTP clients against the three
-sister services. Storage is swappable via the `Storage` interface in
-`internal/storage.go` — phase 2 will add Postgres.
+Tenant-scoped transaction store with HTTP clients against the three sister services.
+Storage is swappable via the `Storage` interface in `internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation (this service is the reference
+  rollout; see `docs/postgres.md`).
 
 ## Endpoints
 
@@ -112,24 +116,57 @@ transaction is still persisted with `decision: "error"` so the caller can audit.
 
 ## Environment
 
-| Var | Default |
-|---|---|
-| `PORT` | `8080` |
-| `RISK_SERVICE_URL` | `http://localhost:8081` |
-| `AUTHENTICATION_SERVICE_URL` | `http://localhost:8082` |
-| `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` |
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8080` | |
+| `RISK_SERVICE_URL` | `http://localhost:8081` | |
+| `AUTHENTICATION_SERVICE_URL` | `http://localhost:8082` | |
+| `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_TRANSACTION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `TXN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
 
 ## Run locally
 
+Without Postgres (in-memory fallback):
+
 ```bash
 go run ./services/transaction-service/cmd
-# listens on :8080 by default, or $PORT if set
+# listens on :8080, transactions are ephemeral
 ```
 
-Run tests:
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=txn_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/transaction-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" \
+     -f services/transaction-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" \
+  go run ./services/transaction-service/cmd
+```
+
+Run tests (unit only, no DB needed):
 
 ```bash
 go test ./services/transaction-service/...
+```
+
+Run PG-backed integration tests too:
+
+```bash
+TXN_PG_DSN="postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" \
+  go test ./services/transaction-service/... -run PG
 ```
 
 ## End-to-end cURL sketch
