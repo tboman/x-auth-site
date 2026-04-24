@@ -80,9 +80,15 @@ func NewMemStorage() *MemStorage {
 // service (today it lives in broker-service for the agents product) and drop
 // the static seed.
 func (s *MemStorage) seedDefaultClient() {
+	// Phase 1: the default dev client is treated as a public client (no secret),
+	// so cURL examples and tests can exchange codes without client authentication.
+	// The DefaultClientSecret constant is retained for the phase-2 switch to a
+	// confidential client once real secrets per environment land.
+	// TODO(phase-2): seed a confidential client with a random, hashed secret.
+	_ = DefaultClientSecret
 	s.clients[DefaultClientID] = OIDCClient{
 		ClientID:         DefaultClientID,
-		ClientSecretHash: HashToken(DefaultClientSecret),
+		ClientSecretHash: "",
 		RedirectURIs:     []string{"http://localhost:3000/callback"},
 		CreatedAt:        time.Now().UTC(),
 	}

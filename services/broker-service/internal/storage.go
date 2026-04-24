@@ -129,10 +129,15 @@ func (s *MemStorage) GetClient(clientID string) (DCRClient, error) {
 	return c, nil
 }
 
-// PutAuthCode stores a pending authorization code.
+// PutAuthCode stores a pending authorization code. If CreatedAt is the zero
+// value (direct-seed path in tests and admin tools that bypass /authorize) we
+// stamp it to now so the TTL window in handleCodeGrant is meaningful.
 func (s *MemStorage) PutAuthCode(ac AuthCode) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ac.CreatedAt.IsZero() {
+		ac.CreatedAt = time.Now().UTC()
+	}
 	s.codes[ac.Code] = ac
 	return nil
 }
