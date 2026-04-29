@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iOS (Swift) Quickstart | X-Auth</title>
+    <meta name="description" content="Integrate X-Auth into a native iOS app in 5 minutes with the Swift SDK.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Mobile App / iOS</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#f4f4f5;--c2:#a1a1aa;">iOS</div>
+            <div>
+                <h1>iOS (Swift) Quickstart</h1>
+                <p class="lead">Add X-Auth to a SwiftUI or UIKit app via Swift Package Manager. Call <code>advice()</code> from a tap handler with full <code>async</code>/<code>await</code> ergonomics.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Package: github.com/xentranet/x-auth-ios</span>
+            <span>iOS 16+ · Swift 5.9+</span>
+            <span>Time: ~6 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Add the Swift Package</h2>
+            <p>In Xcode: <em>File → Add Package Dependencies…</em> and paste the URL. Or add it to <code>Package.swift</code>:</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">Package.swift</span></div>
+                <div class="term-body"><pre><code>.<span class="fn">package</span>(url: <span class="str">"https://github.com/xentranet/x-auth-ios"</span>, from: <span class="str">"1.0.0"</span>)</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Construct an XAuth instance</h2>
+            <p>Build the SDK once, hold it in your app's environment.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">App.swift</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> SwiftUI
+<span class="kw">import</span> XAuth
+
+<span class="fn">@main</span>
+<span class="kw">struct</span> TransferApp: App {
+    <span class="kw">let</span> xauth = <span class="fn">XAuth</span>(tenantId: <span class="str">"your-app"</span>)
+
+    <span class="kw">var</span> body: <span class="kw">some</span> Scene {
+        <span class="fn">WindowGroup</span> {
+            <span class="fn">TransferView</span>().<span class="fn">environment</span>(xauth)
+        }
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Call <code>advice()</code> from a SwiftUI button</h2>
+            <p>Pull the SDK from the environment, call <code>advice</code>, and POST the bearer to your backend.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">TransferView.swift</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> SwiftUI
+<span class="kw">import</span> XAuth
+
+<span class="kw">struct</span> TransferView: View {
+    <span class="fn">@Environment</span>(XAuth.<span class="kw">self</span>) <span class="kw">var</span> xauth
+
+    <span class="kw">var</span> body: <span class="kw">some</span> View {
+        <span class="fn">Button</span>(<span class="str">"Transfer $29.99"</span>) {
+            <span class="fn">Task</span> {
+                <span class="kw">let</span> advice = <span class="kw">try await</span> xauth.<span class="fn">advice</span>(
+                    action: <span class="str">"transfer"</span>, amount: <span class="num">2999</span>, currency: <span class="str">"USD"</span>
+                )
+                <span class="kw">guard</span> advice.decision == .allow <span class="kw">else</span> { <span class="kw">return</span> }
+
+                <span class="kw">var</span> req = <span class="fn">URLRequest</span>(url: <span class="fn">URL</span>(string: <span class="str">"https://api.example.com/transfer"</span>)!)
+                req.httpMethod = <span class="str">"POST"</span>
+                req.<span class="fn">setValue</span>(<span class="str">"Bearer \(advice.accessToken)"</span>,
+                             forHTTPHeaderField: <span class="str">"Authorization"</span>)
+                _ = <span class="kw">try await</span> URLSession.shared.<span class="fn">data</span>(<span class="kw">for</span>: req)
+            }
+        }
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Verify on your backend</h2>
+            <p>Use any backend SDK to call <code>verify()</code> and assert the bound action matches.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">api/transfer.ts (Node example)</span></div>
+                <div class="term-body"><pre><code><span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+  expect: { action: <span class="str">'transfer'</span>, amount: req.body.amount },
+});</code></pre></div>
+            </div>
+            <p style="margin-top:1.25rem;">Pair with a backend quickstart: <a href="../express/">Express</a>, <a href="../go/">Go</a>, <a href="../spring-boot-api/">Spring Boot</a>, <a href="../aspnet/">ASP.NET</a>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Configure step-up methods (FaceID for biometric, push for out-of-band) and tune your risk policy.</p>
+        <ul>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#services"><strong>Step-up methods</strong><span>Passkey/FaceID, push, TOTP, SMS, magic link.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

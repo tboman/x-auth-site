@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASP.NET Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in an ASP.NET Web API with an action filter attribute.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Backend API / ASP.NET</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#5c2d91;--c2:#3a1c5d;">.NET</div>
+            <div>
+                <h1>ASP.NET Quickstart</h1>
+                <p class="lead">Drop the X-Auth NuGet package in. Decorate your controller actions with <code>[VerifyTransaction]</code>. The bound transaction context is injected.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>NuGet: XentraNet.XAuth.AspNetCore</span>
+            <span>.NET 8+</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Install the NuGet package</h2>
+            <p>Pull <code>XentraNet.XAuth.AspNetCore</code> from nuget.org.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>dotnet add package XentraNet.XAuth.AspNetCore</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Register XAuth in your DI container</h2>
+            <p>Wire it up in <code>Program.cs</code> alongside the rest of your services.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">Program.cs</span></div>
+                <div class="term-body"><pre><code><span class="kw">using</span> XentraNet.XAuth.AspNetCore;
+
+<span class="kw">var</span> builder = WebApplication.<span class="fn">CreateBuilder</span>(args);
+
+builder.Services.<span class="fn">AddControllers</span>();
+builder.Services.<span class="fn">AddXAuth</span>(opts =&gt;
+{
+    opts.TenantId = builder.Configuration[<span class="str">"XAuth:TenantId"</span>];
+});
+
+<span class="kw">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">MapControllers</span>();
+app.<span class="fn">Run</span>();</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Apply <code>[VerifyTransaction]</code></h2>
+            <p>Decorate any controller action that performs a sensitive operation. The filter validates the bearer, checks the action+amount, and rejects with <code>401</code> on mismatch.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">Controllers/TransferController.cs</span></div>
+                <div class="term-body"><pre><code><span class="kw">using</span> Microsoft.AspNetCore.Mvc;
+<span class="kw">using</span> XentraNet.XAuth.AspNetCore;
+
+[<span class="fn">ApiController</span>]
+[<span class="fn">Route</span>(<span class="str">"api/[controller]"</span>)]
+<span class="kw">public class</span> TransferController : ControllerBase
+{
+    [<span class="fn">HttpPost</span>]
+    [<span class="fn">VerifyTransaction</span>(<span class="str">"transfer"</span>, Expect = <span class="kw">new</span>[] { <span class="str">"amount"</span> })]
+    <span class="kw">public</span> IActionResult <span class="fn">Transfer</span>(
+        [<span class="fn">FromBody</span>] TransferRequest body,
+        [<span class="fn">FromXAuth</span>] TransactionContext ctx)
+    {
+        ledger.<span class="fn">Transfer</span>(body, ctx);
+        <span class="kw">return</span> <span class="fn">Ok</span>(<span class="kw">new</span> { ok = <span class="kw">true</span> });
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Pair with a frontend</h2>
+            <p>The bearer arriving at this endpoint comes from any X-Auth frontend SDK.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">React example (snippet)</span></div>
+                <div class="term-body"><pre><code><span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="fn">advice</span>({
+  action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
+});
+
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'https://api.example.com/api/transfer'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
+  body: <span class="fn">JSON</span>.stringify({ amount: 2999 }),
+});</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Customize error handling, plug in CAEP signals, and tune your risk policy.</p>
+        <ul>
+            <li><a href="../react/"><strong>React frontend</strong><span>SPA pair for this ASP.NET backend.</span></a></li>
+            <li><a href="../ios/"><strong>iOS frontend</strong><span>Native Swift app calling this ASP.NET backend.</span></a></li>
+            <li><a href="../android/"><strong>Android frontend</strong><span>Native Kotlin app calling this ASP.NET backend.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

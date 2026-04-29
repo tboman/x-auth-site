@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Android (Kotlin) Quickstart | X-Auth</title>
+    <meta name="description" content="Integrate X-Auth into a native Android app in 5 minutes with the Kotlin SDK.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Mobile App / Android</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#3ddc84;--c2:#0c8a4e;">AD</div>
+            <div>
+                <h1>Android (Kotlin) Quickstart</h1>
+                <p class="lead">Add X-Auth to a Kotlin Android app via Gradle. Call <code>advice()</code> from a coroutine inside any click listener.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Coordinate: com.xentranet:x-auth-android</span>
+            <span>Android API 24+ · Kotlin 1.9+</span>
+            <span>Time: ~6 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Add the Gradle dependency</h2>
+            <p>Pull the SDK from Maven Central.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/build.gradle.kts</span></div>
+                <div class="term-body"><pre><code>dependencies {
+    <span class="fn">implementation</span>(<span class="str">"com.xentranet:x-auth-android:1.0.0"</span>)
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Construct an XAuth instance</h2>
+            <p>Build the SDK once in your <code>Application</code> subclass and expose it via Hilt or a singleton.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">App.kt</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> com.example.transfer
+
+<span class="kw">import</span> android.app.Application
+<span class="kw">import</span> com.xentranet.xauth.XAuth
+
+<span class="kw">class</span> App : <span class="fn">Application</span>() {
+    <span class="kw">lateinit var</span> xauth: XAuth
+        <span class="kw">private set</span>
+
+    <span class="kw">override fun</span> <span class="fn">onCreate</span>() {
+        <span class="kw">super</span>.<span class="fn">onCreate</span>()
+        xauth = <span class="fn">XAuth</span>(tenantId = BuildConfig.XAUTH_TENANT_ID)
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Call <code>advice()</code> from a coroutine</h2>
+            <p>Launch in <code>lifecycleScope</code> from any click listener. Ship the bearer over your usual HTTP client.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">TransferActivity.kt</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> com.example.transfer
+
+<span class="kw">import</span> androidx.appcompat.app.AppCompatActivity
+<span class="kw">import</span> androidx.lifecycle.lifecycleScope
+<span class="kw">import</span> com.xentranet.xauth.Decision
+<span class="kw">import</span> kotlinx.coroutines.launch
+
+<span class="kw">class</span> TransferActivity : <span class="fn">AppCompatActivity</span>() {
+    <span class="kw">override fun</span> <span class="fn">onCreate</span>(savedInstanceState: Bundle?) {
+        <span class="kw">super</span>.<span class="fn">onCreate</span>(savedInstanceState)
+        <span class="fn">setContentView</span>(R.layout.activity_transfer)
+
+        <span class="kw">val</span> xauth = (application <span class="kw">as</span> App).xauth
+
+        transferButton.<span class="fn">setOnClickListener</span> {
+            lifecycleScope.<span class="fn">launch</span> {
+                <span class="kw">val</span> advice = xauth.<span class="fn">advice</span>(
+                    action = <span class="str">"transfer"</span>, amount = <span class="num">2999</span>, currency = <span class="str">"USD"</span>
+                )
+                <span class="kw">if</span> (advice.decision != Decision.ALLOW) <span class="kw">return</span>@launch
+
+                httpClient.<span class="fn">post</span>(<span class="str">"https://api.example.com/transfer"</span>) {
+                    <span class="fn">header</span>(<span class="str">"Authorization"</span>, <span class="str">"Bearer ${advice.accessToken}"</span>)
+                    <span class="fn">setBody</span>(<span class="str">"""{"amount":2999}"""</span>)
+                }
+            }
+        }
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Verify on your backend</h2>
+            <p>Any backend SDK with <code>verify()</code> works.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">api/transfer.ts (Node example)</span></div>
+                <div class="term-body"><pre><code><span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+  expect: { action: <span class="str">'transfer'</span>, amount: req.body.amount },
+});</code></pre></div>
+            </div>
+            <p style="margin-top:1.25rem;">Pair with a backend quickstart: <a href="../express/">Express</a>, <a href="../go/">Go</a>, <a href="../spring-boot-api/">Spring Boot</a>, <a href="../aspnet/">ASP.NET</a>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Wire biometric step-up via the device's BiometricPrompt and tune your risk policy.</p>
+        <ul>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#services"><strong>Step-up methods</strong><span>Passkey, push, TOTP, SMS, magic link.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in Go. Add net/http middleware that asserts the action and amount.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / Go</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#00add8;--c2:#007d9c;">GO</div>
+            <div>
+                <h1>Go Quickstart</h1>
+                <p class="lead">Verify X-Auth transaction-bound bearers from any Go HTTP server with a small <code>net/http</code> middleware. Plays well with chi, gin, echo, and stdlib.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Module: github.com/xentranet/x-auth-go</span>
+            <span>Go 1.22+</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Pull the module</h2>
+            <p>Add the SDK to your <code>go.mod</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>go get github.com/xentranet/x-auth-go</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Construct an XAuth client</h2>
+            <p>Read the tenant id from env and construct a client at process start. Reuse it across requests — it's safe for concurrent use.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">internal/xauth/xauth.go</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> xauth
+
+<span class="kw">import</span> (
+    <span class="str">"os"</span>
+
+    <span class="str">"github.com/xentranet/x-auth-go"</span>
+)
+
+<span class="kw">var</span> Client = xauth.<span class="fn">New</span>(xauth.Config{
+    TenantID: os.<span class="fn">Getenv</span>(<span class="str">"XAUTH_TENANT_ID"</span>),
+})</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Wrap sensitive handlers</h2>
+            <p>The middleware reads the bearer, calls <code>Verify()</code>, and stuffs the bound <code>transaction_ctx</code> into the request context.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">internal/middleware/verify.go</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> middleware
+
+<span class="kw">import</span> (
+    <span class="str">"context"</span>
+    <span class="str">"net/http"</span>
+    <span class="str">"strings"</span>
+
+    <span class="str">"yourapp/internal/xauth"</span>
+)
+
+<span class="kw">type</span> ctxKey <span class="kw">struct</span>{}
+
+<span class="kw">func</span> <span class="fn">VerifyTransaction</span>(action <span class="kw">string</span>) <span class="kw">func</span>(http.Handler) http.Handler {
+    <span class="kw">return func</span>(next http.Handler) http.Handler {
+        <span class="kw">return</span> http.<span class="fn">HandlerFunc</span>(<span class="kw">func</span>(w http.ResponseWriter, r *http.Request) {
+            bearer := strings.<span class="fn">TrimPrefix</span>(r.Header.<span class="fn">Get</span>(<span class="str">"Authorization"</span>), <span class="str">"Bearer "</span>)
+
+            ctx, err := xauth.Client.<span class="fn">Verify</span>(r.Context(), bearer, xauth.Expect{
+                Action: action,
+            })
+            <span class="kw">if</span> err != <span class="kw">nil</span> {
+                http.<span class="fn">Error</span>(w, <span class="str">"invalid_transaction"</span>, http.StatusUnauthorized)
+                <span class="kw">return</span>
+            }
+            next.<span class="fn">ServeHTTP</span>(w, r.<span class="fn">WithContext</span>(context.<span class="fn">WithValue</span>(r.Context(), ctxKey{}, ctx)))
+        })
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Mount the route</h2>
+            <p>Apply the middleware to anything sensitive. The frontend ships the bearer it got from <code>advice()</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">cmd/server/main.go</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> main
+
+<span class="kw">import</span> (
+    <span class="str">"net/http"</span>
+
+    <span class="str">"yourapp/internal/middleware"</span>
+)
+
+<span class="kw">func</span> <span class="fn">main</span>() {
+    mux := http.<span class="fn">NewServeMux</span>()
+
+    transfer := http.<span class="fn">HandlerFunc</span>(<span class="kw">func</span>(w http.ResponseWriter, r *http.Request) {
+        <span class="cmt">// transaction_ctx is on the request context</span>
+        w.<span class="fn">Write</span>([]<span class="kw">byte</span>(<span class="str">`{"ok":true}`</span>))
+    })
+
+    mux.<span class="fn">Handle</span>(<span class="str">"/api/transfer"</span>, middleware.<span class="fn">VerifyTransaction</span>(<span class="str">"transfer"</span>)(transfer))
+    http.<span class="fn">ListenAndServe</span>(<span class="str">":8080"</span>, mux)
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Pair this Go backend with any frontend — bearer protocol is identical across SDKs.</p>
+        <ul>
+            <li><a href="../react/"><strong>React frontend</strong><span>SPA pair for this Go backend.</span></a></li>
+            <li><a href="../ios/"><strong>iOS frontend</strong><span>Native Swift app calling this Go backend.</span></a></li>
+            <li><a href="../android/"><strong>Android frontend</strong><span>Native Kotlin app calling this Go backend.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

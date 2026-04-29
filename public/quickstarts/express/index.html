@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Express Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in Express. Add a thin middleware that asserts the action and amount.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / Express</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#68a063;--c2:#3c873a;">EX</div>
+            <div>
+                <h1>Express Quickstart</h1>
+                <p class="lead">Stand up an Express endpoint that verifies an X-Auth bearer and asserts the bound action — in three lines.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>SDK: @xentranet/x-auth</span>
+            <span>Node 18+ · Express 4 / 5</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Install the SDK</h2>
+            <p>The Node SDK runs anywhere Node runs — Express, Fastify, Hono, Lambda.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>npm install @xentranet/x-auth express</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Initialize XAuth at boot</h2>
+            <p>Read your tenant id from env and create a singleton SDK instance.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">src/xauth.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
+
+<span class="kw">export const</span> xauth = XAuth.<span class="fn">init</span>({
+  tenantId: process.env.XAUTH_TENANT_ID!,
+});</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Add a <code>verifyTransaction</code> middleware</h2>
+            <p>Wrap your sensitive routes. The middleware throws on a missing, expired, or action-mismatched bearer — Express turns the throw into <code>401</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">src/middleware.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { Request, Response, NextFunction } <span class="kw">from</span> <span class="str">'express'</span>;
+<span class="kw">import</span> { xauth } <span class="kw">from</span> <span class="str">'./xauth'</span>;
+
+<span class="kw">export const</span> <span class="fn">verifyTransaction</span> = (action: <span class="kw">string</span>) =&gt;
+  <span class="kw">async</span> (req: Request, res: Response, next: NextFunction) =&gt; {
+    <span class="kw">try</span> {
+      <span class="kw">const</span> bearer = req.headers.authorization?.<span class="fn">replace</span>(<span class="str">'Bearer '</span>, <span class="str">''</span>);
+      <span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+        expect: { action, amount: req.body?.amount },
+      });
+      (req <span class="kw">as any</span>).transaction_ctx = transaction_ctx;
+      <span class="fn">next</span>();
+    } <span class="kw">catch</span> (err) {
+      res.<span class="fn">status</span>(401).<span class="fn">json</span>({ error: <span class="str">'invalid_transaction'</span> });
+    }
+  };</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Mount the route</h2>
+            <p>Apply the middleware to any route that performs a sensitive action. The frontend (React, Angular, Vue, mobile) sends a bearer it got from <code>advice()</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">src/server.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> express <span class="kw">from</span> <span class="str">'express'</span>;
+<span class="kw">import</span> { verifyTransaction } <span class="kw">from</span> <span class="str">'./middleware'</span>;
+
+<span class="kw">const</span> app = <span class="fn">express</span>();
+app.<span class="fn">use</span>(express.<span class="fn">json</span>());
+
+app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span class="fn">verifyTransaction</span>(<span class="str">'transfer'</span>), <span class="kw">async</span> (req, res) =&gt; {
+  <span class="kw">const</span> { transaction_ctx } = req <span class="kw">as any</span>;
+  <span class="kw">await</span> ledger.<span class="fn">transfer</span>(transaction_ctx);
+  res.<span class="fn">json</span>({ ok: <span class="kw">true</span> });
+});
+
+app.<span class="fn">listen</span>(3000);</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Pair this backend with any frontend — the bearer protocol is the same.</p>
+        <ul>
+            <li><a href="../react/"><strong>React frontend</strong><span>Pair the React SDK with this Express backend.</span></a></li>
+            <li><a href="../angular/"><strong>Angular frontend</strong><span>Pair Angular's HTTP client with this Express backend.</span></a></li>
+            <li><a href="../ios/"><strong>iOS frontend</strong><span>Native Swift app calling this Express backend.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

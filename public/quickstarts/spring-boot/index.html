@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spring Boot Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in a Spring Boot web app with @Verified.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / Spring Boot</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#6db33f;--c2:#5a9a35;">SB</div>
+            <div>
+                <h1>Spring Boot Quickstart</h1>
+                <p class="lead">Drop the X-Auth Spring Boot starter in. Annotate a controller method with <code>@Verified</code>. Done.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Starter: com.xentranet:x-auth-spring-boot-starter</span>
+            <span>Spring Boot 3.2+</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Add the starter</h2>
+            <p>The starter wires up the SDK, the <code>@Verified</code> aspect, and a request scope binding for <code>TransactionContext</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">build.gradle.kts</span></div>
+                <div class="term-body"><pre><code>dependencies {
+    <span class="fn">implementation</span>(<span class="str">"com.xentranet:x-auth-spring-boot-starter:1.0.0"</span>)
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Configure your tenant id</h2>
+            <p>Set the tenant id via Spring Boot properties.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">application.yml</span></div>
+                <div class="term-body"><pre><code><span class="kw">xauth</span>:
+  <span class="kw">tenant-id</span>: <span class="str">${XAUTH_TENANT_ID}</span></code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Annotate your controller</h2>
+            <p><code>@Verified</code> reads the bearer, calls <code>verify()</code>, and aborts with <code>401</code> on mismatch. Inject the bound <code>TransactionContext</code> directly into the handler.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">TransferController.java</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> com.example.transfer;
+
+<span class="kw">import</span> com.xentranet.xauth.spring.Verified;
+<span class="kw">import</span> com.xentranet.xauth.TransactionContext;
+<span class="kw">import</span> org.springframework.web.bind.annotation.*;
+
+<span class="fn">@RestController</span>
+<span class="fn">@RequestMapping</span>(<span class="str">"/api"</span>)
+<span class="kw">public class</span> TransferController {
+
+    <span class="fn">@PostMapping</span>(<span class="str">"/transfer"</span>)
+    <span class="fn">@Verified</span>(action = <span class="str">"transfer"</span>, expect = { <span class="str">"amount"</span> })
+    <span class="kw">public</span> Map&lt;String, Object&gt; <span class="fn">transfer</span>(
+            <span class="fn">@RequestBody</span> TransferRequest body,
+            TransactionContext ctx) {
+        ledger.<span class="fn">transfer</span>(ctx);
+        <span class="kw">return</span> Map.<span class="fn">of</span>(<span class="str">"ok"</span>, <span class="kw">true</span>);
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Pair with a frontend</h2>
+            <p>Any X-Auth frontend SDK ships a bearer that this controller verifies.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">React example (snippet)</span></div>
+                <div class="term-body"><pre><code><span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="fn">advice</span>({
+  action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
+});
+
+<span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
+  body: <span class="fn">JSON</span>.stringify({ amount: 2999 }),
+});</code></pre></div>
+            </div>
+            <p style="margin-top:1.25rem;">Building a pure REST API (no UI)? See the <a href="../spring-boot-api/">Spring Boot API quickstart</a>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Add custom expectations, plug in CAEP signals, and ship.</p>
+        <ul>
+            <li><a href="../spring-boot-api/"><strong>Spring Boot API</strong><span>Pure REST variant — no UI rendered server-side.</span></a></li>
+            <li><a href="../react/"><strong>React frontend</strong><span>SPA pair for this Spring backend.</span></a></li>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

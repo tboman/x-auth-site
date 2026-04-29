@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quickstarts | X-Auth by XentraNET</title>
+    <meta name="description" content="Integrate X-Auth in minutes. Quickstarts for React, Angular, Vue, Next.js, Express, Go, Java, Spring Boot, PHP, iOS, Android, ASP.NET.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-hero">
+    <div class="container">
+        <div class="eyebrow">Quickstarts</div>
+        <h1 class="gradient-text">Integrate X-Auth.<br>In minutes.</h1>
+        <p class="lead">Bind any sensitive action — login, payment, transfer, profile change — to a transaction-scoped access token. Pick your stack and ship.</p>
+    </div>
+</section>
+
+<section class="qs-section">
+    <div class="container">
+        <h2>Single Page App</h2>
+        <p class="section-desc">Browser apps that call <code>advice()</code> from React/Angular/Vue components and pass the bearer to a backend that runs <code>verify()</code>.</p>
+        <div class="qs-grid">
+            <a class="qs-card" href="./react/" style="--c1:#61dafb;--c2:#21a1c4;">
+                <div class="qs-logo">R</div>
+                <div class="qs-name">React</div>
+                <p class="qs-tag-desc">Provider + <code>useXAuth()</code> hook</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./angular/" style="--c1:#dd0031;--c2:#c3002f;">
+                <div class="qs-logo">NG</div>
+                <div class="qs-name">Angular</div>
+                <p class="qs-tag-desc">Injectable <code>XAuth</code> service</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./vue/" style="--c1:#42b883;--c2:#35495e;">
+                <div class="qs-logo">V</div>
+                <div class="qs-name">Vue</div>
+                <p class="qs-tag-desc">Plugin + <code>useXAuth()</code> composable</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+        </div>
+    </div>
+</section>
+
+<section class="qs-section">
+    <div class="container">
+        <h2>Web App</h2>
+        <p class="section-desc">Server-rendered or full-stack apps. Run <code>advice()</code> on the client, <code>verify()</code> on the server, all in one codebase or split across services.</p>
+        <div class="qs-grid">
+            <a class="qs-card" href="./nextjs/" style="--c1:#ffffff;--c2:#888888;">
+                <div class="qs-logo">N</div>
+                <div class="qs-name">Next.js</div>
+                <p class="qs-tag-desc">Provider + API route <code>verify()</code></p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./express/" style="--c1:#68a063;--c2:#3c873a;">
+                <div class="qs-logo">EX</div>
+                <div class="qs-name">Express</div>
+                <p class="qs-tag-desc">Middleware + JS SDK</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./go/" style="--c1:#00add8;--c2:#007d9c;">
+                <div class="qs-logo">GO</div>
+                <div class="qs-name">Go</div>
+                <p class="qs-tag-desc"><code>net/http</code> middleware</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./java/" style="--c1:#ed8b00;--c2:#b65b00;">
+                <div class="qs-logo">JV</div>
+                <div class="qs-name">Java</div>
+                <p class="qs-tag-desc">Servlet filter, plain Java EE</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./spring-boot/" style="--c1:#6db33f;--c2:#5a9a35;">
+                <div class="qs-logo">SB</div>
+                <div class="qs-name">Spring Boot</div>
+                <p class="qs-tag-desc"><code>@Verified</code> on controllers</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./php/" style="--c1:#777bb4;--c2:#4f5b93;">
+                <div class="qs-logo">PHP</div>
+                <div class="qs-name">PHP</div>
+                <p class="qs-tag-desc">PSR-15 middleware</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+        </div>
+    </div>
+</section>
+
+<section class="qs-section">
+    <div class="container">
+        <h2>Mobile App</h2>
+        <p class="section-desc">Native mobile clients that call <code>advice()</code> from a tap handler and ship the bearer to your backend over HTTPS.</p>
+        <div class="qs-grid">
+            <a class="qs-card" href="./ios/" style="--c1:#f4f4f5;--c2:#a1a1aa;">
+                <div class="qs-logo">iOS</div>
+                <div class="qs-name">iOS (Swift)</div>
+                <p class="qs-tag-desc">Swift Package + async/await</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./android/" style="--c1:#3ddc84;--c2:#0c8a4e;">
+                <div class="qs-logo">AD</div>
+                <div class="qs-name">Android (Kotlin)</div>
+                <p class="qs-tag-desc">Gradle + coroutines</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+        </div>
+    </div>
+</section>
+
+<section class="qs-section">
+    <div class="container">
+        <h2>Backend API</h2>
+        <p class="section-desc">Standalone APIs that <em>only</em> verify transaction-scoped tokens — pair these with any of the SPA or mobile frontends.</p>
+        <div class="qs-grid">
+            <a class="qs-card" href="./spring-boot-api/" style="--c1:#6db33f;--c2:#5a9a35;">
+                <div class="qs-logo">SB</div>
+                <div class="qs-name">Spring Boot API</div>
+                <p class="qs-tag-desc">REST controllers + <code>@Verified</code></p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+            <a class="qs-card" href="./aspnet/" style="--c1:#5c2d91;--c2:#3a1c5d;">
+                <div class="qs-logo">.NET</div>
+                <div class="qs-name">ASP.NET</div>
+                <p class="qs-tag-desc">Attribute-based action filter</p>
+                <div class="qs-tag">Quickstart</div>
+            </a>
+        </div>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Java Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in plain Java with a Servlet filter.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / Java</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#ed8b00;--c2:#b65b00;">JV</div>
+            <div>
+                <h1>Java Quickstart</h1>
+                <p class="lead">Plain Java EE / Jakarta servlets with a Servlet filter that verifies X-Auth bearers. Use the same SDK from any JVM framework.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Artifact: com.xentranet:x-auth-java</span>
+            <span>JDK 17+ · Jakarta Servlet 5+</span>
+            <span>Time: ~7 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Add the dependency</h2>
+            <p>Pull the SDK from Maven Central.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">pom.xml</span></div>
+                <div class="term-body"><pre><code>&lt;<span class="kw">dependency</span>&gt;
+  &lt;groupId&gt;<span class="str">com.xentranet</span>&lt;/groupId&gt;
+  &lt;artifactId&gt;<span class="str">x-auth-java</span>&lt;/artifactId&gt;
+  &lt;version&gt;<span class="str">1.0.0</span>&lt;/version&gt;
+&lt;/<span class="kw">dependency</span>&gt;</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Construct a singleton</h2>
+            <p>Build the SDK once at app start with your tenant id. The client is thread-safe.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">XAuthHolder.java</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> com.example.xauth;
+
+<span class="kw">import</span> com.xentranet.xauth.XAuth;
+
+<span class="kw">public final class</span> XAuthHolder {
+    <span class="kw">public static final</span> XAuth INSTANCE = XAuth.<span class="fn">builder</span>()
+        .<span class="fn">tenantId</span>(System.<span class="fn">getenv</span>(<span class="str">"XAUTH_TENANT_ID"</span>))
+        .<span class="fn">build</span>();
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Add a verifying filter</h2>
+            <p>The filter validates the bearer, asserts the action, and attaches the bound transaction context to the request.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">VerifyFilter.java</span></div>
+                <div class="term-body"><pre><code><span class="kw">package</span> com.example.xauth;
+
+<span class="kw">import</span> com.xentranet.xauth.Expect;
+<span class="kw">import</span> com.xentranet.xauth.TransactionContext;
+<span class="kw">import</span> jakarta.servlet.*;
+<span class="kw">import</span> jakarta.servlet.annotation.WebFilter;
+<span class="kw">import</span> jakarta.servlet.http.HttpServletRequest;
+<span class="kw">import</span> jakarta.servlet.http.HttpServletResponse;
+
+<span class="fn">@WebFilter</span>(urlPatterns = <span class="str">"/api/transfer"</span>)
+<span class="kw">public class</span> VerifyFilter <span class="kw">implements</span> Filter {
+    <span class="fn">@Override</span>
+    <span class="kw">public void</span> <span class="fn">doFilter</span>(ServletRequest req, ServletResponse res, FilterChain chain)
+            <span class="kw">throws</span> ServletException {
+        HttpServletRequest http = (HttpServletRequest) req;
+        String bearer = http.<span class="fn">getHeader</span>(<span class="str">"Authorization"</span>).<span class="fn">replace</span>(<span class="str">"Bearer "</span>, <span class="str">""</span>);
+        <span class="kw">try</span> {
+            TransactionContext ctx = XAuthHolder.INSTANCE.<span class="fn">verify</span>(bearer,
+                Expect.<span class="fn">action</span>(<span class="str">"transfer"</span>));
+            req.<span class="fn">setAttribute</span>(<span class="str">"transaction_ctx"</span>, ctx);
+            chain.<span class="fn">doFilter</span>(req, res);
+        } <span class="kw">catch</span> (Exception e) {
+            ((HttpServletResponse) res).<span class="fn">sendError</span>(401, <span class="str">"invalid_transaction"</span>);
+        }
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Use the bound context in your servlet</h2>
+            <p>Pull the verified <code>TransactionContext</code> off the request and proceed.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">TransferServlet.java</span></div>
+                <div class="term-body"><pre><code><span class="fn">@WebServlet</span>(<span class="str">"/api/transfer"</span>)
+<span class="kw">public class</span> TransferServlet <span class="kw">extends</span> HttpServlet {
+    <span class="fn">@Override</span>
+    <span class="kw">protected void</span> <span class="fn">doPost</span>(HttpServletRequest req, HttpServletResponse res) {
+        TransactionContext ctx = (TransactionContext) req.<span class="fn">getAttribute</span>(<span class="str">"transaction_ctx"</span>);
+        ledger.<span class="fn">transfer</span>(ctx);
+        res.<span class="fn">getWriter</span>().<span class="fn">write</span>(<span class="str">"{\"ok\":true}"</span>);
+    }
+}</code></pre></div>
+            </div>
+            <p style="margin-top:1.25rem;">Using Spring Boot? See the dedicated <a href="../spring-boot/">Spring Boot quickstart</a> with <code>@Verified</code> annotations.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Connect frontends, add custom expectations, and tune your risk policy.</p>
+        <ul>
+            <li><a href="../react/"><strong>React frontend</strong><span>SPA pair for this Java backend.</span></a></li>
+            <li><a href="../spring-boot/"><strong>Spring Boot</strong><span>Same SDK, opinionated wiring.</span></a></li>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

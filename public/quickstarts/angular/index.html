@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Angular Quickstart | X-Auth</title>
+    <meta name="description" content="Integrate X-Auth into an Angular SPA in 5 minutes. Bind sensitive actions to transaction-scoped access tokens.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Single Page App / Angular</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#dd0031;--c2:#c3002f;">NG</div>
+            <div>
+                <h1>Angular Quickstart</h1>
+                <p class="lead">Use X-Auth as a standard Angular service. Inject it where you need it; call <code>advice()</code> from a click handler; ship the bearer to your backend.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>SDK: @xentranet/x-auth-angular</span>
+            <span>Version: 1.x · Angular 17+</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Install the SDK</h2>
+            <p>The Angular SDK ships an injectable <code>XAuth</code> service plus a <code>provideXAuth()</code> helper for standalone-API apps.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>npm install @xentranet/x-auth-angular</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Provide <code>XAuth</code> at the app root</h2>
+            <p>Register the SDK with your tenant id in <code>app.config.ts</code> alongside the rest of your providers.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">src/app/app.config.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { ApplicationConfig } <span class="kw">from</span> <span class="str">'@angular/core'</span>;
+<span class="kw">import</span> { provideRouter } <span class="kw">from</span> <span class="str">'@angular/router'</span>;
+<span class="kw">import</span> { provideHttpClient } <span class="kw">from</span> <span class="str">'@angular/common/http'</span>;
+<span class="kw">import</span> { provideXAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-angular'</span>;
+<span class="kw">import</span> { routes } <span class="kw">from</span> <span class="str">'./app.routes'</span>;
+
+<span class="kw">export const</span> appConfig: ApplicationConfig = {
+  providers: [
+    <span class="fn">provideRouter</span>(routes),
+    <span class="fn">provideHttpClient</span>(),
+    <span class="fn">provideXAuth</span>({ tenantId: <span class="str">'your-app'</span> }),
+  ],
+};</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Inject <code>XAuth</code> and call <code>advice()</code></h2>
+            <p>From any component, inject the service and bind a sensitive action. The SDK transparently runs OIDC step-up if your risk policy demands it.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">src/app/transfer.component.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { Component, inject } <span class="kw">from</span> <span class="str">'@angular/core'</span>;
+<span class="kw">import</span> { HttpClient } <span class="kw">from</span> <span class="str">'@angular/common/http'</span>;
+<span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-angular'</span>;
+
+<span class="fn">@Component</span>({
+  selector: <span class="str">'app-transfer'</span>,
+  template: <span class="str">`&lt;button (click)="transfer()"&gt;Transfer&lt;/button&gt;`</span>,
+  standalone: <span class="kw">true</span>,
+})
+<span class="kw">export class</span> TransferComponent {
+  <span class="kw">private</span> xauth = <span class="fn">inject</span>(XAuth);
+  <span class="kw">private</span> http  = <span class="fn">inject</span>(HttpClient);
+
+  <span class="kw">async</span> <span class="fn">transfer</span>() {
+    <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="kw">this</span>.xauth.<span class="fn">advice</span>({
+      action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
+    });
+    <span class="kw">if</span> (decision !== <span class="str">'ALLOW'</span>) <span class="kw">return</span>;
+
+    <span class="kw">this</span>.http.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, { amount: 2999 }, {
+      headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
+    }).<span class="fn">subscribe</span>();
+  }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Verify on your backend</h2>
+            <p>The bearer your Angular app sends is transaction-bound. Your API verifies it matches the requested action — or rejects with <code>401</code>.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">api/transfer.ts (Node example)</span></div>
+                <div class="term-body"><pre><code><span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+  expect: { action: <span class="str">'transfer'</span>, amount: req.body.amount },
+});
+
+<span class="kw">await</span> ledger.<span class="fn">transfer</span>(transaction_ctx);</code></pre></div>
+            </div>
+            <p style="margin-top:1.25rem;">Pair with a backend quickstart: <a href="../express/">Express</a>, <a href="../go/">Go</a>, <a href="../spring-boot-api/">Spring Boot</a>, <a href="../aspnet/">ASP.NET</a>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Add an HTTP interceptor that auto-binds advice() before sensitive routes — coming in v1.1.</p>
+        <ul>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#services"><strong>Step-up methods</strong><span>Passkey, push, TOTP, SMS, magic link.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

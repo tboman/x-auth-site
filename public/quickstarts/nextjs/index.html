@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Next.js Quickstart | X-Auth</title>
+    <meta name="description" content="Integrate X-Auth into a Next.js app in 5 minutes — App Router, advice() in client components, verify() in route handlers.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / Next.js</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#ffffff;--c2:#888888;">N</div>
+            <div>
+                <h1>Next.js Quickstart</h1>
+                <p class="lead">Drop X-Auth into the App Router. <code>advice()</code> in a client component, <code>verify()</code> in a route handler — same project, same SDK.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>SDK: @xentranet/x-auth-react + @xentranet/x-auth</span>
+            <span>Next 14+ · App Router</span>
+            <span>Time: ~7 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Install both SDKs</h2>
+            <p>The React SDK powers client components; the core SDK runs server-side in route handlers.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>npm install @xentranet/x-auth-react @xentranet/x-auth</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Wrap the layout in <code>XAuthProvider</code></h2>
+            <p>Add a thin client wrapper so the provider renders below your server-rendered <code>html</code>/<code>body</code> shell.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/providers.tsx</span></div>
+                <div class="term-body"><pre><code><span class="str">'use client'</span>;
+<span class="kw">import</span> { XAuthProvider } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-react'</span>;
+
+<span class="kw">export function</span> <span class="fn">Providers</span>({ children }: { children: React.ReactNode }) {
+  <span class="kw">return</span> (
+    &lt;<span class="fn">XAuthProvider</span> tenantId={process.env.NEXT_PUBLIC_XAUTH_TENANT_ID!}&gt;
+      {children}
+    &lt;/<span class="fn">XAuthProvider</span>&gt;
+  );
+}</code></pre></div>
+            </div>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/layout.tsx</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { Providers } <span class="kw">from</span> <span class="str">'./providers'</span>;
+
+<span class="kw">export default function</span> <span class="fn">RootLayout</span>({ children }: { children: React.ReactNode }) {
+  <span class="kw">return</span> &lt;html&gt;&lt;body&gt;&lt;<span class="fn">Providers</span>&gt;{children}&lt;/<span class="fn">Providers</span>&gt;&lt;/body&gt;&lt;/html&gt;;
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Call <code>advice()</code> from a client component</h2>
+            <p>Use <code>useXAuth()</code> in any client component. The returned bearer is bound to the action you described.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/transfer/TransferForm.tsx</span></div>
+                <div class="term-body"><pre><code><span class="str">'use client'</span>;
+<span class="kw">import</span> { useXAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-react'</span>;
+
+<span class="kw">export function</span> <span class="fn">TransferForm</span>() {
+  <span class="kw">const</span> { advice } = <span class="fn">useXAuth</span>();
+
+  <span class="kw">async function</span> <span class="fn">submit</span>(amount: <span class="kw">number</span>) {
+    <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="fn">advice</span>({
+      action: <span class="str">'transfer'</span>, amount, currency: <span class="str">'USD'</span>,
+    });
+    <span class="kw">if</span> (decision !== <span class="str">'ALLOW'</span>) <span class="kw">return</span>;
+
+    <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
+      method: <span class="str">'POST'</span>,
+      headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
+      body: <span class="fn">JSON</span>.stringify({ amount }),
+    });
+  }
+
+  <span class="kw">return</span> &lt;button onClick={() =&gt; submit(2999)}&gt;Transfer&lt;/button&gt;;
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Verify in a route handler</h2>
+            <p>Stand up an App Router endpoint that calls <code>verify()</code> and asserts the bound action+amount match the request body.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/api/transfer/route.ts</span></div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { NextResponse } <span class="kw">from</span> <span class="str">'next/server'</span>;
+<span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
+
+<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: process.env.XAUTH_TENANT_ID! });
+
+<span class="kw">export async function</span> <span class="fn">POST</span>(req: Request) {
+  <span class="kw">const</span> bearer = req.headers.<span class="fn">get</span>(<span class="str">'authorization'</span>)?.<span class="fn">replace</span>(<span class="str">'Bearer '</span>, <span class="str">''</span>);
+  <span class="kw">const</span> body = <span class="kw">await</span> req.<span class="fn">json</span>();
+
+  <span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+    expect: { action: <span class="str">'transfer'</span>, amount: body.amount },
+  });
+
+  <span class="kw">await</span> ledger.<span class="fn">transfer</span>(transaction_ctx);
+  <span class="kw">return</span> NextResponse.<span class="fn">json</span>({ ok: <span class="kw">true</span> });
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Push the verify() into Server Actions, or front it with middleware.</p>
+        <ul>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="../express/"><strong>Express deep dive</strong><span>Same SDK, plain Node — useful for separate API services.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

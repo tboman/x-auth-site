@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PHP Quickstart | X-Auth</title>
+    <meta name="description" content="Verify X-Auth transaction-bound bearers in PHP with a PSR-15 middleware.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../quickstart.css">
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/" class="active">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="../">Quickstarts</a> / Web App / PHP</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#777bb4;--c2:#4f5b93;">PHP</div>
+            <div>
+                <h1>PHP Quickstart</h1>
+                <p class="lead">Verify X-Auth bearers in any PSR-15-compatible PHP framework — Laravel, Slim, Symfony, Mezzio.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Composer: xentranet/x-auth</span>
+            <span>PHP 8.2+ · PSR-15</span>
+            <span>Time: ~5 min</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Install via Composer</h2>
+            <p>Pull the SDK from Packagist.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">terminal</span></div>
+                <div class="term-body"><pre><code>composer require xentranet/x-auth</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Construct the client</h2>
+            <p>Build the SDK once and resolve it from your container.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/XAuthFactory.php</span></div>
+                <div class="term-body"><pre><code><span class="cmt">&lt;?php</span>
+<span class="kw">declare</span>(strict_types=<span class="num">1</span>);
+
+<span class="kw">namespace</span> App;
+
+<span class="kw">use</span> Xentranet\XAuth\XAuth;
+
+<span class="kw">final class</span> XAuthFactory
+{
+    <span class="kw">public static function</span> <span class="fn">create</span>(): XAuth
+    {
+        <span class="kw">return new</span> XAuth([
+            <span class="str">'tenant_id'</span> =&gt; getenv(<span class="str">'XAUTH_TENANT_ID'</span>),
+        ]);
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Add a verifying middleware</h2>
+            <p>Implement <code>MiddlewareInterface</code> and short-circuit with <code>401</code> on a missing or mismatched bearer.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">app/Middleware/VerifyTransaction.php</span></div>
+                <div class="term-body"><pre><code><span class="cmt">&lt;?php</span>
+<span class="kw">namespace</span> App\Middleware;
+
+<span class="kw">use</span> Psr\Http\Message\ResponseInterface;
+<span class="kw">use</span> Psr\Http\Message\ServerRequestInterface;
+<span class="kw">use</span> Psr\Http\Server\MiddlewareInterface;
+<span class="kw">use</span> Psr\Http\Server\RequestHandlerInterface;
+<span class="kw">use</span> Xentranet\XAuth\XAuth;
+
+<span class="kw">final class</span> VerifyTransaction <span class="kw">implements</span> MiddlewareInterface
+{
+    <span class="kw">public function</span> <span class="fn">__construct</span>(
+        <span class="kw">private</span> XAuth $xauth,
+        <span class="kw">private string</span> $action,
+    ) {}
+
+    <span class="kw">public function</span> <span class="fn">process</span>(ServerRequestInterface $req, RequestHandlerInterface $next): ResponseInterface
+    {
+        $bearer = str_replace(<span class="str">'Bearer '</span>, <span class="str">''</span>, $req-&gt;<span class="fn">getHeaderLine</span>(<span class="str">'Authorization'</span>));
+        <span class="kw">try</span> {
+            $ctx = $this-&gt;xauth-&gt;<span class="fn">verify</span>($bearer, [
+                <span class="str">'expect'</span> =&gt; [<span class="str">'action'</span> =&gt; $this-&gt;action],
+            ]);
+            <span class="kw">return</span> $next-&gt;<span class="fn">handle</span>($req-&gt;<span class="fn">withAttribute</span>(<span class="str">'transaction_ctx'</span>, $ctx));
+        } <span class="kw">catch</span> (\Throwable $e) {
+            <span class="kw">return new</span> \Nyholm\Psr7\<span class="fn">Response</span>(<span class="num">401</span>, [], <span class="str">'invalid_transaction'</span>);
+        }
+    }
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Mount the route</h2>
+            <p>Register the middleware on any sensitive endpoint. The handler can read the bound <code>transaction_ctx</code> off the request attributes.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">routes.php (Slim example)</span></div>
+                <div class="term-body"><pre><code><span class="cmt">&lt;?php</span>
+$app-&gt;<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span class="kw">function</span> ($req, $res) {
+    $ctx = $req-&gt;<span class="fn">getAttribute</span>(<span class="str">'transaction_ctx'</span>);
+    $ledger-&gt;<span class="fn">transfer</span>($ctx);
+    $res-&gt;<span class="fn">getBody</span>()-&gt;<span class="fn">write</span>(<span class="str">'{"ok":true}'</span>);
+    <span class="kw">return</span> $res;
+})-&gt;<span class="fn">add</span>(<span class="kw">new</span> VerifyTransaction($container-&gt;<span class="fn">get</span>(XAuth::<span class="kw">class</span>), <span class="str">'transfer'</span>));</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Pair with any X-Auth frontend.</p>
+        <ul>
+            <li><a href="../react/"><strong>React frontend</strong><span>SPA pair for this PHP backend.</span></a></li>
+            <li><a href="../vue/"><strong>Vue frontend</strong><span>SPA pair for this PHP backend.</span></a></li>
+            <li><a href="/#how-it-works"><strong>Risk tiers &amp; decisions</strong><span>How <code>/v1/advice</code> returns ALLOW / STEP_UP / DENY.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>Enterprise rollouts, custom risk signals.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="../">All Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>
