@@ -250,6 +250,54 @@
         .fn  { color: #60a5fa; }
         .cmt { color: #3f4555; font-style: italic; }
 
+        /* Code-sample tabs (CSS-only via radios) */
+        .code-pair {
+            max-width: 760px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+        .code-pair .terminal-shell { max-width: 100%; }
+        .code-pair > input[type="radio"] {
+            position: absolute;
+            left: -9999px;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .tab-bar {
+            background: #0e0e13;
+            padding: 0 0.75rem;
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+        }
+        .tab-bar label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--muted);
+            padding: 0.8rem 1rem;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            white-space: nowrap;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab-bar label:hover { color: #cdd0db; }
+        .tab-panel { display: none; margin: 0; }
+        #lang-js:checked      ~ .terminal-shell .tab-panel[data-lang="js"],
+        #lang-swift:checked   ~ .terminal-shell .tab-panel[data-lang="swift"],
+        #lang-kotlin:checked  ~ .terminal-shell .tab-panel[data-lang="kotlin"],
+        #lang-angular:checked ~ .terminal-shell .tab-panel[data-lang="angular"] { display: block; }
+        #lang-js:checked      ~ .terminal-shell .tab-bar label[for="lang-js"],
+        #lang-swift:checked   ~ .terminal-shell .tab-bar label[for="lang-swift"],
+        #lang-kotlin:checked  ~ .terminal-shell .tab-bar label[for="lang-kotlin"],
+        #lang-angular:checked ~ .terminal-shell .tab-bar label[for="lang-angular"] {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
         /* ── Stats ── */
         .stats-band {
             border-top: 1px solid var(--border);
@@ -965,34 +1013,122 @@
             <a href="#apps" class="btn btn-primary">X-Auth for Apps</a>
             <a href="#agents" class="btn btn-ghost">X-Auth for Agents</a>
         </div>
-        <div class="terminal-shell">
-            <div class="term-bar">
-                <div class="dot dot-r"></div>
-                <div class="dot dot-y"></div>
-                <div class="dot dot-g"></div>
-                <span class="term-label">x-auth — frontend advice(), backend verify()</span>
-            </div>
-            <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
+        <div class="code-pair">
+            <input type="radio" name="lang" id="lang-js" checked>
+            <input type="radio" name="lang" id="lang-swift">
+            <input type="radio" name="lang" id="lang-kotlin">
+            <input type="radio" name="lang" id="lang-angular">
+
+            <div class="terminal-shell">
+                <div class="term-bar">
+                    <div class="dot dot-r"></div>
+                    <div class="dot dot-y"></div>
+                    <div class="dot dot-g"></div>
+                    <span class="term-label">x-auth — frontend integration</span>
+                </div>
+                <div class="tab-bar">
+                    <label for="lang-js">JavaScript</label>
+                    <label for="lang-swift">iOS (Swift)</label>
+                    <label for="lang-kotlin">Android (Kotlin)</label>
+                    <label for="lang-angular">Angular</label>
+                </div>
+                <div class="term-body">
+<pre class="tab-panel" data-lang="js"><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
 
 <span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
 
-<span class="cmt">// Frontend — advice() runs any required OIDC step-up and returns</span>
-<span class="cmt">// a transaction-scoped access_token, bound to this exact action.</span>
-<span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> xauth.<span class="fn">advice</span>({
-  action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
-});
-
-<span class="kw">if</span> (decision === <span class="str">'ALLOW'</span>) {
-  <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
-    headers: { authorization: <span class="str">`Bearer ${access_token}`</span> },
+document.<span class="fn">querySelector</span>(<span class="str">'#transfer'</span>).onclick = <span class="kw">async</span> () =&gt; {
+  <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> xauth.<span class="fn">advice</span>({
+    action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
   });
-}
 
-<span class="cmt">// Your backend — verify() echoes back the bound transaction_ctx.</span>
-<span class="cmt">// `expect` asserts the token matches THIS action (or it throws).</span>
-<span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
-  expect: { action: <span class="str">'transfer'</span>, amount: body.amount },
+  <span class="kw">if</span> (decision === <span class="str">'ALLOW'</span>) {
+    <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
+      headers: { authorization: <span class="str">`Bearer ${access_token}`</span> },
+    });
+  }
+};</code></pre>
+<pre class="tab-panel" data-lang="swift"><code><span class="kw">import</span> XAuth
+
+<span class="kw">let</span> xauth = <span class="fn">XAuth</span>(tenantId: <span class="str">"your-app"</span>)
+
+<span class="cmt">// Bind the user's tap to a transaction-scoped access token.</span>
+<span class="kw">@IBAction func</span> <span class="fn">onTransfer</span>(_ sender: UIButton) {
+    <span class="fn">Task</span> {
+        <span class="kw">let</span> advice = <span class="kw">try await</span> xauth.<span class="fn">advice</span>(
+            action: <span class="str">"transfer"</span>, amount: 2999, currency: <span class="str">"USD"</span>
+        )
+        <span class="kw">guard</span> advice.decision == .allow <span class="kw">else</span> { <span class="kw">return</span> }
+
+        <span class="kw">var</span> req = <span class="fn">URLRequest</span>(url: <span class="fn">URL</span>(string: <span class="str">"/api/transfer"</span>)!)
+        req.<span class="fn">setValue</span>(<span class="str">"Bearer \(advice.accessToken)"</span>,
+                     forHTTPHeaderField: <span class="str">"Authorization"</span>)
+        _ = <span class="kw">try await</span> URLSession.shared.<span class="fn">data</span>(<span class="kw">for</span>: req)
+    }
+}</code></pre>
+<pre class="tab-panel" data-lang="kotlin"><code><span class="kw">import</span> com.xentranet.xauth.XAuth
+
+<span class="kw">private val</span> xauth = <span class="fn">XAuth</span>(tenantId = <span class="str">"your-app"</span>)
+
+<span class="cmt">// Coroutine-scoped advice() call from a button click.</span>
+transferButton.<span class="fn">setOnClickListener</span> {
+    lifecycleScope.<span class="fn">launch</span> {
+        <span class="kw">val</span> advice = xauth.<span class="fn">advice</span>(
+            action = <span class="str">"transfer"</span>, amount = 2999, currency = <span class="str">"USD"</span>
+        )
+        <span class="kw">if</span> (advice.decision != Decision.ALLOW) <span class="kw">return</span>@launch
+
+        httpClient.<span class="fn">post</span>(<span class="str">"/api/transfer"</span>) {
+            <span class="fn">header</span>(<span class="str">"Authorization"</span>, <span class="str">"Bearer ${advice.accessToken}"</span>)
+        }
+    }
+}</code></pre>
+<pre class="tab-panel" data-lang="angular"><code><span class="kw">import</span> { Component, inject } <span class="kw">from</span> <span class="str">'@angular/core'</span>;
+<span class="kw">import</span> { HttpClient } <span class="kw">from</span> <span class="str">'@angular/common/http'</span>;
+<span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-angular'</span>;
+
+<span class="fn">@Component</span>({ selector: <span class="str">'app-transfer'</span> })
+<span class="kw">export class</span> TransferComponent {
+  <span class="kw">private</span> xauth = <span class="fn">inject</span>(XAuth);
+  <span class="kw">private</span> http  = <span class="fn">inject</span>(HttpClient);
+
+  <span class="kw">async</span> <span class="fn">onTransfer</span>() {
+    <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="kw">this</span>.xauth.<span class="fn">advice</span>({
+      action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
+    });
+    <span class="kw">if</span> (decision !== <span class="str">'ALLOW'</span>) <span class="kw">return</span>;
+
+    <span class="kw">this</span>.http.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, {}, {
+      headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
+    }).<span class="fn">subscribe</span>();
+  }
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="terminal-shell">
+                <div class="term-bar">
+                    <div class="dot dot-r"></div>
+                    <div class="dot dot-y"></div>
+                    <div class="dot dot-g"></div>
+                    <span class="term-label">x-auth — backend verification (Node.js)</span>
+                </div>
+                <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
+
+<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
+
+app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span class="kw">async</span> (req, res) =&gt; {
+  <span class="kw">const</span> bearer = req.headers.authorization?.<span class="fn">replace</span>(<span class="str">'Bearer '</span>, <span class="str">''</span>);
+
+  <span class="cmt">// Throws if the token is invalid, expired, or for a different action.</span>
+  <span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
+    expect: { action: <span class="str">'transfer'</span>, amount: req.body.amount },
+  });
+
+  <span class="kw">await</span> ledger.<span class="fn">transfer</span>(transaction_ctx);
+  res.<span class="fn">json</span>({ ok: <span class="kw">true</span> });
 });</code></pre></div>
+            </div>
         </div>
     </div>
 </section>
