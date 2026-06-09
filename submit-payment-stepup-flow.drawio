@@ -1,0 +1,208 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="submit-payment-stepup" name="SUBMIT_PAYMENT Step-Up Flow">
+    <mxGraphModel adaptiveColors="auto" dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1520" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="SUBMIT_PAYMENT — Threshold-based Transaction Protection (/v1/advice: transaction_ctx + device_ctx → assurance gap → ACR step-up)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="20" y="10" width="1260" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="a1" value="User&#10;(browser)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="30" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" value="3rd-Party App&#10;(Relying Party)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="230" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" value="transaction-service&#10;(/v1/advice)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="430" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="a4" value="risk-service&#10;(/v1/assurance)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="630" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="a5" value="authentication-service&#10;(OIDC OP)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="830" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="a6" value="authenticator-service&#10;(WebAuthn / push)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="1030" y="50" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="ll1" style="endArrow=none;dashed=1;html=1;strokeColor=#6c8ebf;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="100" as="sourcePoint" />
+            <mxPoint x="100" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ll2" style="endArrow=none;dashed=1;html=1;strokeColor=#82b366;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="100" as="sourcePoint" />
+            <mxPoint x="300" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ll3" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="500" y="100" as="sourcePoint" />
+            <mxPoint x="500" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ll4" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="700" y="100" as="sourcePoint" />
+            <mxPoint x="700" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ll5" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="100" as="sourcePoint" />
+            <mxPoint x="900" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ll6" style="endArrow=none;dashed=1;html=1;strokeColor=#d79b00;dashPattern=1 4" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="100" as="sourcePoint" />
+            <mxPoint x="1100" y="1100" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase1" value="① Threshold determination &amp; assurance evaluation" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=2;fontColor=#555555" vertex="1" parent="1">
+          <mxGeometry x="30" y="118" width="360" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="m1" value="1: submitPayment(amount, cart)" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="150" as="sourcePoint" />
+            <mxPoint x="300" y="150" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m2" value="2: POST /v1/advice   body: { transaction_ctx: {...}, device_ctx: {...} }   (see blob A)" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="190" as="sourcePoint" />
+            <mxPoint x="500" y="190" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3" value="3: evaluate transaction_ctx&#10;→ required_assurance_threshold (AAL / ACR)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=center;verticalAlign=middle" vertex="1" parent="1">
+          <mxGeometry x="420" y="215" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p4" value="4: enrich device_ctx from request&#10;(remote_ip, UA, TLS/JA3, headers, geo)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=center;verticalAlign=middle" vertex="1" parent="1">
+          <mxGeometry x="420" y="265" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="m5" value="5: POST /v1/assurance   { device_ctx_enriched, subject, required_assurance_threshold, history_hint }   (see blob C)" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="500" y="335" as="sourcePoint" />
+            <mxPoint x="700" y="335" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m6" value="6: { current_assurance, factors[], device_trust, confidence }" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="700" y="375" as="sourcePoint" />
+            <mxPoint x="500" y="375" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p7" value="7: compare current vs required&#10;gap → challenge level (acr=phr)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=center;verticalAlign=middle" vertex="1" parent="1">
+          <mxGeometry x="420" y="400" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="m8" value="8: { decision, required_acr, current_acr, challenge_id, challenge_ttl_s, reasons[] }   (see blob B)" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="500" y="470" as="sourcePoint" />
+            <mxPoint x="300" y="470" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase2" value="② OIDC step-up (acr_values enforced)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=2;fontColor=#555555" vertex="1" parent="1">
+          <mxGeometry x="30" y="495" width="300" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="m9" value="9: 302 /authorize?acr_values=phr&amp;claims={acr:essential}&amp;state" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="525" as="sourcePoint" />
+            <mxPoint x="100" y="525" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m10" value="10: GET /authorize?acr_values=phr" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="565" as="sourcePoint" />
+            <mxPoint x="900" y="565" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m11" value="11: initiate(acr=phr, user, allow_credentials)" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="605" as="sourcePoint" />
+            <mxPoint x="1100" y="605" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m12" value="12: WebAuthn challenge (passkey / biometric)" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="645" as="sourcePoint" />
+            <mxPoint x="100" y="645" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m13" value="13: signed assertion" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="685" as="sourcePoint" />
+            <mxPoint x="1100" y="685" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m14" value="14: verified, acr_achieved=phr, amr=[&quot;pwd&quot;,&quot;hwk&quot;]" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="725" as="sourcePoint" />
+            <mxPoint x="900" y="725" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m15" value="15: 302 redirect_uri?code=...&amp;state=..." style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="765" as="sourcePoint" />
+            <mxPoint x="100" y="765" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m16" value="16: GET /callback?code=..." style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="805" as="sourcePoint" />
+            <mxPoint x="300" y="805" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m17" value="17: POST /token  { code, client_auth }" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="845" as="sourcePoint" />
+            <mxPoint x="900" y="845" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m18" value="18: { id_token(acr=phr, amr, auth_time, nonce, sid), access_token, refresh_token }" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="900" y="885" as="sourcePoint" />
+            <mxPoint x="300" y="885" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase3" value="③ Re-evaluate &amp; authorize the transaction" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=2;fontColor=#555555" vertex="1" parent="1">
+          <mxGeometry x="30" y="910" width="300" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="m19" value="19: POST /v1/sessions/{sid}/upgrade  { id_token, challenge_id, nonce }" style="endArrow=classic;html=1;rounded=0;strokeColor=#333333;fontSize=11;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="940" as="sourcePoint" />
+            <mxPoint x="500" y="940" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p20" value="20: verify id_token (sig, aud, iss, nonce)&#10;acr_achieved ≥ required, auth_time fresh" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=center;verticalAlign=middle" vertex="1" parent="1">
+          <mxGeometry x="420" y="965" width="160" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="m21" value="21: { decision: ALLOW, session: { id, upgraded_at, acr, expires_at }, evidence_id }" style="endArrow=open;html=1;rounded=0;dashed=1;strokeColor=#1f7a1f;strokeWidth=2;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="500" y="1030" as="sourcePoint" />
+            <mxPoint x="300" y="1030" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="m22" value="22: Payment confirmed ✓" style="endArrow=classic;html=1;rounded=0;strokeColor=#1f7a1f;strokeWidth=2;fontSize=11;fontStyle=1;labelBackgroundColor=#ffffff" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="300" y="1070" as="sourcePoint" />
+            <mxPoint x="100" y="1070" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="blob_a" value="Blob A — /v1/advice  REQUEST&#10;──────────────────────────────&#10;transaction_ctx  (generic policy input)&#10;{&#10;  action: &quot;SUBMIT_PAYMENT&quot;,&#10;  subject:  { user_id, tenant_id,&#10;              roles: [&quot;customer&quot;] },&#10;  resource: { merchant_id, cart_hash },&#10;  attributes: {&#10;    amount: 1299.00, currency: &quot;USD&quot;,&#10;    mcc: &quot;5411&quot;,&#10;    payment_instrument: &quot;card_vm&quot; },&#10;  session:  { id, age_s, last_auth_at,&#10;              last_auth_acr }&#10;}&#10;&#10;device_ctx  (client-supplied)&#10;{&#10;  device_id,&#10;  binding:     { key_id, dpop_proof },&#10;  client:      { sdk, sdk_version,&#10;                 platform, os_version },&#10;  fingerprint: { canvas_hash, webgl,&#10;                 timezone, screen },&#10;  cookies:     { _xa_sid, _xa_dt }&#10;}&#10;&#10;device_ctx  (server-enriched by tx-svc)&#10;{&#10;  request:    { remote_ip, xff,&#10;                user_agent, accept_lang,&#10;                tls_ja3, tls_version },&#10;  network:    { asn, geoip:&#10;                { country, region, city },&#10;                is_tor, is_vpn, is_dc },&#10;  reputation: { ip_score, ua_anomaly,&#10;                bot_score },&#10;  received_at: iso-8601&#10;}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;verticalAlign=top;fontFamily=Courier New" vertex="1" parent="1">
+          <mxGeometry x="1200" y="120" width="310" height="500" as="geometry" />
+        </mxCell>
+        <mxCell id="blob_b" value="Blob B — /v1/advice  RESPONSE&#10;──────────────────────────────&#10;{&#10;  decision: STEP_UP | ALLOW | DENY,&#10;  required_acr:  &quot;urn:x-auth:acr:phr&quot;,&#10;  current_acr:   &quot;urn:x-auth:acr:mfa&quot;,&#10;  required_assurance_threshold: 3,&#10;  current_assurance:  2,&#10;  challenge_id:    &quot;chl_01HX…&quot;,&#10;  challenge_ttl_s: 300,&#10;  nonce:           &quot;n_01HX…&quot;,&#10;  reasons: [&#10;    &quot;threshold_exceeded&quot;,&#10;    &quot;device_unbound&quot;,&#10;    &quot;new_geo&quot;&#10;  ],&#10;  evidence_id: &quot;ev_01HX…&quot;&#10;}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;verticalAlign=top;fontFamily=Courier New" vertex="1" parent="1">
+          <mxGeometry x="1200" y="640" width="310" height="220" as="geometry" />
+        </mxCell>
+        <mxCell id="blob_c" value="Blob C — /v1/assurance  (tx-svc → risk-svc)&#10;──────────────────────────────&#10;REQUEST:&#10;{&#10;  device_ctx_enriched,&#10;  subject:            { user_id, tenant_id },&#10;  required_assurance_threshold: 3,&#10;  history_hint:       { session_id }&#10;}&#10;&#10;RESPONSE:&#10;{&#10;  current_assurance: 2,&#10;  factors: [&#10;    { kind:&quot;device_binding&quot;, score:0.8 },&#10;    { kind:&quot;ip_reputation&quot;,  score:0.6 },&#10;    { kind:&quot;behavioral&quot;,     score:0.7 }&#10;  ],&#10;  device_trust: &quot;known&quot;,&#10;  confidence:   0.91&#10;}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;verticalAlign=top;fontFamily=Courier New" vertex="1" parent="1">
+          <mxGeometry x="1200" y="880" width="310" height="260" as="geometry" />
+        </mxCell>
+        <mxCell id="deny_note" value="If acr_achieved &lt; required at step 20, tx-svc returns { decision: DENY, reason: &quot;acr_insufficient&quot; } at step 21." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;verticalAlign=top" vertex="1" parent="1">
+          <mxGeometry x="600" y="1040" width="540" height="50" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

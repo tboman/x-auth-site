@@ -1,0 +1,60 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="xauth-apps" name="X-Auth for Apps — Services">
+    <mxGraphModel adaptiveColors="auto" dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="X-Auth for Apps — Service Topology" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="320" y="20" width="520" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="public-zone" value="Public (internet-facing)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#6C8EBF;dashed=1;verticalAlign=top;fontStyle=2;fontSize=11;fontColor=#6C8EBF;align=left;spacingLeft=10" vertex="1" parent="1">
+          <mxGeometry x="250" y="60" width="290" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="internal-zone" value="Internal (service-to-service only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#82B366;dashed=1;verticalAlign=top;fontStyle=2;fontSize=11;fontColor=#82B366;align=left;spacingLeft=10" vertex="1" parent="1">
+          <mxGeometry x="600" y="60" width="290" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="client" value="&lt;b&gt;Client Application&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;font-size:10px&quot;&gt;Web / mobile / API consumer&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;verticalAlign=middle;align=center;spacingTop=6" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="170" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="txn" value="&lt;b&gt;transaction-service&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;font-size:10px;color:#555&quot;&gt;:8080 · orchestrator&lt;/span&gt;&lt;hr size=&quot;1&quot;/&gt;&lt;div style=&quot;text-align:left;font-size:10px;padding:4px 8px&quot;&gt;POST /v1/advice&lt;br/&gt;POST /v1/authorize&lt;br/&gt;POST /v1/step-up/verify&lt;br/&gt;GET&amp;nbsp;&amp;nbsp;/v1/transactions/{id}&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;verticalAlign=top;align=center;spacingTop=6" vertex="1" parent="1">
+          <mxGeometry x="280" y="100" width="230" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="authn" value="&lt;b&gt;authentication-service&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;font-size:10px;color:#555&quot;&gt;:8082 · OIDC provider&lt;/span&gt;&lt;hr size=&quot;1&quot;/&gt;&lt;div style=&quot;text-align:left;font-size:10px;padding:4px 8px&quot;&gt;GET&amp;nbsp;&amp;nbsp;/.well-known/openid-configuration&lt;br/&gt;GET&amp;nbsp;&amp;nbsp;/v1/authorize&lt;br/&gt;POST /v1/token&lt;br/&gt;POST /v1/sessions/{id}/upgrade&lt;br/&gt;CRUD /v1/users · /v1/sessions&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;verticalAlign=top;align=center;spacingTop=6" vertex="1" parent="1">
+          <mxGeometry x="280" y="400" width="230" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="risk" value="&lt;b&gt;risk-service&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;font-size:10px;color:#555&quot;&gt;:8081 · scoring + policy&lt;/span&gt;&lt;hr size=&quot;1&quot;/&gt;&lt;div style=&quot;text-align:left;font-size:10px;padding:4px 8px&quot;&gt;POST /v1/evaluations&lt;br/&gt;&lt;br/&gt;Scorers:&lt;br/&gt;&amp;nbsp;· device&amp;nbsp;&amp;nbsp;· behavior&lt;br/&gt;&amp;nbsp;· network&amp;nbsp;· user&lt;br/&gt;Policy engine&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;fontSize=12;verticalAlign=top;align=center;spacingTop=6" vertex="1" parent="1">
+          <mxGeometry x="630" y="100" width="230" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="authr" value="&lt;b&gt;authenticator-service&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;font-size:10px;color:#555&quot;&gt;:8083 · step-up challenges&lt;/span&gt;&lt;hr size=&quot;1&quot;/&gt;&lt;div style=&quot;text-align:left;font-size:10px;padding:4px 8px&quot;&gt;CRUD /v1/authenticators&lt;br/&gt;POST /v1/challenges&lt;br/&gt;POST /v1/challenges/{id}/verify&lt;br/&gt;&lt;br/&gt;Adapters: webauthn · totp&lt;br/&gt;push · sms · magic_link&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;fontSize=12;verticalAlign=top;align=center;spacingTop=6" vertex="1" parent="1">
+          <mxGeometry x="630" y="400" width="230" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-txn" value="risk advice &amp; step-up" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#6C8EBF;fontSize=10" edge="1" parent="1" source="client" target="txn">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-client-authn" value="OIDC authorize / token" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#6C8EBF;fontSize=10" edge="1" parent="1" source="client" target="authn">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-txn-risk" value="POST /v1/evaluations" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#666666;fontSize=10" edge="1" parent="1" source="txn" target="risk">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-txn-authr" value="POST /v1/challenges&#10;+ /verify" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#666666;fontSize=10" edge="1" parent="1" source="txn" target="authr">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="570" y="230" />
+              <mxPoint x="570" y="450" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-authn-authr" value="GET /v1/authenticators" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#666666;fontSize=10" edge="1" parent="1" source="authn" target="authr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e-txn-authn" value="POST /v1/sessions/{id}/upgrade&#10;(after step-up verify)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.3;exitY=1;exitDx=0;exitDy=0;entryX=0.3;entryY=0;entryDx=0;entryDy=0;endArrow=classic;strokeColor=#B85450;fontSize=10;dashed=1" edge="1" parent="1" source="txn" target="authn">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br/&gt;&lt;span style=&quot;color:#6C8EBF&quot;&gt;━━━&lt;/span&gt; public HTTP&amp;nbsp;&amp;nbsp;&lt;span style=&quot;color:#666&quot;&gt;━━━&lt;/span&gt; internal RPC&amp;nbsp;&amp;nbsp;&lt;span style=&quot;color:#B85450&quot;&gt;╴╴╴&lt;/span&gt; async session upgrade" style="text;html=1;strokeColor=#CCCCCC;fillColor=#FAFAFA;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=11;spacingLeft=10;spacingRight=10" vertex="1" parent="1">
+          <mxGeometry x="40" y="600" width="850" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

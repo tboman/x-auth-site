@@ -73,3 +73,6 @@ bin/
 *.test
 *.out
 vendor/
+
+# Claude Code local session state
+.claude/
