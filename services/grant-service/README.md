@@ -10,9 +10,13 @@ section 4's `grant-service` contract.
 
 ## Scope
 
-Phase 1: in-memory, tenant-scoped storage for grants and an append-only in-memory
-audit log. Storage is swappable via the `GrantStore` / `AuditStore` interfaces in
-`internal/storage.go` — phase 2 will add Postgres.
+Tenant-scoped grant store plus an append-only audit log. Storage is swappable via
+the `GrantStore` / `AuditStore` interfaces in `internal/storage.go`:
+
+- **`MemGrantStore` / `MemAuditStore`** — phase-1 in-memory implementations. Used
+  when `PG_DSN` is unset (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation of both interfaces (see
+  `docs/postgres.md`; migrations live in `services/grant-service/migrations/`).
 
 ### Invariants
 
@@ -24,7 +28,8 @@ audit log. Storage is swappable via the `GrantStore` / `AuditStore` interfaces i
   - `expired` if `now >= expires_at`
   - `active` otherwise
 - The audit log is append-only: no update, no delete endpoints. Once an event is
-  written it is immutable.
+  written it is immutable. The Postgres backend issues no UPDATE/DELETE against
+  `audit_events`; GDPR erasure is handled by pseudonymization, not row deletion.
 
 ## Endpoints
 
@@ -78,19 +83,56 @@ tenant's grant.
 
 Results are sorted by `created_at` descending (most recent first).
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8183` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_GRANT_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `GRANT_PG_DSN` | _(unset)_ | DSN used by the `TestPG*` integration tests. Unset -> tests skip. |
+
 ## Run locally
 
-From the repo root:
+Without Postgres (in-memory fallback):
 
 ```bash
 go run ./services/grant-service/cmd
-# listens on :8183 by default, or $PORT if set
+# listens on :8183 by default, or $PORT if set; grants and audit log are ephemeral
 ```
 
-Run tests:
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=grant_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/grant-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/grant_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/grant_db?sslmode=disable" \
+     -f services/grant-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/grant_db?sslmode=disable" \
+  go run ./services/grant-service/cmd
+```
+
+Run tests (unit only, no DB needed):
 
 ```bash
 go test ./services/grant-service/...
+```
+
+Run PG-backed integration tests too:
+
+```bash
+GRANT_PG_DSN="postgres://postgres:postgres@localhost:5432/grant_db?sslmode=disable" \
+  go test ./services/grant-service/... -run PG
 ```
 
 ## Example cURL round-trip

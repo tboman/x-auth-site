@@ -20,9 +20,21 @@ When an AI chat owner installs `mcp.x-auth.com` as a tool, broker-service:
 Every bound install is tracked here and can be individually revoked, which cascades
 to grant revocation and identity release.
 
+## Storage
+
+Storage is swappable via the `Storage` interface in `internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation following the shared pattern in
+  [`docs/postgres.md`](../../docs/postgres.md). Schema lives in `migrations/`
+  (tables: `installs`, `dcr_clients`, `auth_codes`, `tokens`). Auth codes and the
+  phase-1 opaque tokens are persisted as plain rows — no Redis yet; TTLs are
+  enforced at the handler layer.
+
 ## Phase 1 scope
 
-- [x] Install CRUD + revoke, in-memory storage
+- [x] Install CRUD + revoke
 - [x] Orchestration against persona/pool/grant services
 - [x] OAuth/OIDC discovery documents (RFC 8414, OpenID Connect Discovery)
 - [x] RFC 7591 Dynamic Client Registration (`POST /register`)
@@ -35,7 +47,7 @@ to grant revocation and identity release.
 
 - JWT signing / JWKS publication — phase 1 tokens are opaque UUID strings
 - Real MCP protocol handling
-- Persistent storage
+- ~~Persistent storage~~ — landed: Postgres-backed `PGStorage` (see **Storage** above)
 - Initial-access-token-gated DCR
 - Service-to-service mTLS / JWT
 - Scope intersection per OAuth semantics
@@ -114,7 +126,23 @@ POST /token with code=<uuid>
 If any downstream call fails, compensation runs best-effort (release identity,
 mark install revoked) and the client receives 502 with `error: downstream_error`.
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8182` | |
+| `PERSONA_SERVICE_URL` | `http://localhost:8180` | |
+| `POOL_SERVICE_URL` | `http://localhost:8181` | |
+| `GRANT_SERVICE_URL` | `http://localhost:8183` | |
+| `BROKER_ISSUER` | `http://localhost:8182` | public base URL in discovery documents |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_BROKER_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `BROKER_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
 ## Local run
+
+Without Postgres (in-memory fallback):
 
 ```bash
 # from repo root
@@ -126,6 +154,26 @@ PORT=8182 SERVICE_NAME=broker-service \
     GRANT_SERVICE_URL=http://localhost:8183 \
     BROKER_ISSUER=http://localhost:8182 \
     go run ./services/broker-service/cmd
+```
+
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=broker_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/broker-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
+     -f services/broker-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
+  go run ./services/broker-service/cmd
 ```
 
 ## Example: end-to-end install via cURL
@@ -174,8 +222,16 @@ curl -sS -X POST http://localhost:8182/v1/installs/<INSTALL_ID>/revoke \
 
 ## Tests
 
+Unit tests (no DB needed — they mock the three sister service clients and use
+`MemStorage`; no network calls are made):
+
 ```bash
 go test ./services/broker-service/...
 ```
 
-Tests mock the three sister service clients; no network calls are made.
+Run the PG-backed integration tests too:
+
+```bash
+BROKER_PG_DSN="postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
+  go test ./services/broker-service/... -run PG
+```

@@ -10,15 +10,40 @@ import (
 // Callers translate this to a 404.
 var ErrNotFound = errors.New("not found")
 
+// Storage is the authenticator-service persistence contract. Phase 1 provides
+// the in-memory Store; phase 2 adds the Postgres-backed PGStorage (see
+// docs/postgres.md). Both enforce tenant isolation on every read/write and
+// return ErrNotFound for cross-tenant access.
+//
+// The method set is frozen from phase 1, including its quirks: the Put* and
+// List* methods cannot report errors. The in-memory implementation never
+// fails; the Postgres implementation logs and degrades (dropped put / empty
+// list). Widening those signatures is phase-2.1 work.
+type Storage interface {
+	Now() time.Time
+
+	PutAuthenticator(a Authenticator)
+	GetAuthenticator(tenantID, id string) (Authenticator, error)
+	ListAuthenticators(tenantID, userID string) []Authenticator
+	ListActiveAuthenticators(tenantID, userID string) []Authenticator
+	DisableAuthenticator(tenantID, id string) error
+
+	PutChallenge(c Challenge)
+	GetChallenge(tenantID, id string) (Challenge, error)
+	UpdateChallenge(tenantID, id string, mutator func(*Challenge)) (Challenge, error)
+}
+
 // Store is an in-memory, goroutine-safe repository for authenticators and
-// challenges. Phase 1 only — a PostgreSQL-backed implementation will replace
-// it without changing call sites (see ARCHITECTURE.md §6.3).
+// challenges. Phase-1 Storage implementation — PGStorage is the phase-2
+// PostgreSQL replacement; call sites pick one via the Storage interface.
 type Store struct {
 	mu             sync.RWMutex
 	authenticators map[string]Authenticator // key: authenticator id
 	challenges     map[string]Challenge     // key: challenge id
 	now            func() time.Time
 }
+
+var _ Storage = (*Store)(nil)
 
 // NewStore builds an empty Store. now is used for all timestamps; tests
 // inject a fake clock. Pass nil for wall-clock time.

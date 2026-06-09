@@ -10,8 +10,13 @@ section 4's `persona-service` contract.
 
 ## Scope
 
-Phase 1: in-memory, tenant-scoped CRUD. Storage is swappable via the `Storage` interface
-in `internal/storage.go` — phase 2 will add Postgres.
+Tenant-scoped persona CRUD. Storage is swappable via the `Storage` interface in
+`internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation (mirrors transaction-service's
+  reference rollout; see `docs/postgres.md`).
 
 ## Endpoints
 
@@ -48,19 +53,56 @@ storage layer: a persona created under tenant A is invisible (404) to tenant B.
 - `token_ttl_seconds` — optional, defaults to 900, max 86400
 - `tenant_id` — **never** accepted in the request body; always read from `X-Tenant-Id`
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8180` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_PERSONA_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `PERSONA_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
 ## Run locally
 
-From the repo root:
+Without Postgres (in-memory fallback):
 
 ```bash
 go run ./services/persona-service/cmd
-# listens on :8180 by default, or $PORT if set
+# listens on :8180 by default, or $PORT if set; personas are ephemeral
 ```
 
-Run tests:
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=persona_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/persona-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" \
+     -f services/persona-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" \
+  go run ./services/persona-service/cmd
+```
+
+Run tests (unit only, no DB needed):
 
 ```bash
 go test ./services/persona-service/...
+```
+
+Run PG-backed integration tests too:
+
+```bash
+PERSONA_PG_DSN="postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" \
+  go test ./services/persona-service/... -run PG
 ```
 
 ## Example cURL round-trip

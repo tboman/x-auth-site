@@ -34,14 +34,22 @@ When an end-user signs into a tenant's application via X-Auth:
 - [x] In-memory, tenant-scoped, thread-safe storage
 - [x] Unit tests with a mock authenticator-service client
 
-**Deferred to phase 2** (every `TODO(phase-2)` comment in the codebase):
+**Phase 2** adds PostgreSQL-backed storage (see `docs/postgres.md`). Storage is
+swappable via the `Storage` interface in `internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation (`internal/pgstorage.go`,
+  schema in `migrations/`). The default `cli_default` dev client is seeded by the
+  migration, mirroring `MemStorage`'s constructor seed.
+
+**Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - JWT signing / JWKS publication — phase 1 tokens are opaque UUID strings
 - `id_token` issuance
 - PKCE enforcement and strict client authentication
 - Real first-factor verification (today `POST /v1/sessions` trusts the internal caller)
 - Real social-provider OAuth2 handshakes
-- PostgreSQL-backed storage (see ARCHITECTURE.md §6)
 - Service-to-service signed tokens from transaction-service
 - Soft-delete users with GDPR-safe pseudonymisation
 
@@ -125,6 +133,39 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | `PORT` | `8082` | Listen port (Cloud Run sets this) |
 | `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` | Base URL for authenticator-service |
 | `AUTH_ISSUER` | `http://localhost:8082` | Public base URL advertised in discovery docs |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_AUTHENTICATION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `AUTHN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
+## Run locally
+
+Without Postgres (in-memory fallback):
+
+```bash
+go run ./services/authentication-service/cmd
+# listens on :8082, users/sessions/tokens are ephemeral
+```
+
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=auth_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/authentication-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
+     -f services/authentication-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
+  go run ./services/authentication-service/cmd
+```
 
 ## cURL quickstart
 
@@ -195,8 +236,17 @@ curl -s -i "http://localhost:8082/v1/social/google/authorize?tenant_id=ten_acme&
 
 ## Testing
 
+Unit tests only (no DB needed — PG integration tests skip):
+
 ```bash
 go test ./services/authentication-service/...
+```
+
+Run the PG-backed integration tests too (Postgres up + migration applied):
+
+```bash
+AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
+  go test ./services/authentication-service/... -run PG
 ```
 
 Tests cover: health, discovery, user CRUD, cross-tenant isolation, duplicate

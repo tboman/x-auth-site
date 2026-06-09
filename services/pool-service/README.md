@@ -10,6 +10,16 @@ Owns the two domain entities defined in [`REQUIREMENTS.md`](../../REQUIREMENTS.m
 
 Port: **8181** (local dev). Visibility: **internal** (Cloud Run `--ingress=internal`).
 
+## Scope
+
+Tenant-scoped pool/identity store. Storage is swappable via the `Storage` interface
+in `internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation (follows the transaction-service
+  reference rollout; see `docs/postgres.md`).
+
 ## Endpoints
 
 All `/v1/*` routes require the `X-Tenant-Id` header. `/healthz` is public.
@@ -43,14 +53,44 @@ If no identity is available (all `claimed` or `revoked`) — **409**. Returned i
 still reflects the in-memory row shape, so subsequent `/release` / `/revoke` calls
 address the same record.
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8181` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_POOL_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `POOL_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
 ## Running locally
 
-From repo root:
+Without Postgres (in-memory fallback), from repo root:
 
 ```bash
 make run-pool
 # or
 PORT=8181 SERVICE_NAME=pool-service go run ./services/pool-service/cmd
+```
+
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=pool_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/pool-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" \
+     -f services/pool-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" \
+  go run ./services/pool-service/cmd
 ```
 
 ## Example session
@@ -78,15 +118,28 @@ curl -sS -X POST http://localhost:8181/v1/identities/$IDENT/release \
 
 ## Tests
 
+Run tests (unit only, no DB needed):
+
 ```bash
 go test ./services/pool-service/...
 ```
 
-## Phase 1 notes
+Run PG-backed integration tests too:
 
-- Storage is in-memory (`internal.MemStorage`). Postgres impl is phase 2.
+```bash
+POOL_PG_DSN="postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" \
+  go test ./services/pool-service/... -run PG
+```
+
+## Storage notes
+
 - `persona_ids` referenced at create-time are **not** validated against persona-service
-  in phase 1 — the pool just stores the UUIDs it's given.
-- Claim atomicity is guaranteed by a single mutex acquisition in `MemStorage.ClaimIdentity`.
-- Tenant isolation is enforced inside `MemStorage`: cross-tenant reads/writes return
-  `ErrPoolNotFound` / `ErrIdentityNotFound`.
+  — the pool just stores the UUIDs it's given.
+- Claim atomicity: a single mutex acquisition in `MemStorage.ClaimIdentity`; in
+  `PGStorage` a single conditional `UPDATE` whose candidate row is picked with
+  `FOR UPDATE SKIP LOCKED`, so concurrent claimers never receive the same identity.
+- Tenant isolation is enforced inside both storage impls: cross-tenant reads/writes
+  return `ErrPoolNotFound` / `ErrIdentityNotFound`. Identities are tenant-scoped via
+  their pool (no `tenant_id` column on `identities`).
+- Deleting a pool cascades to its identities (explicit loop in `MemStorage`,
+  `ON DELETE CASCADE` FK in Postgres).

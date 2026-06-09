@@ -10,14 +10,14 @@ import (
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
-// AuthenticatorHandlers wires authenticator-CRUD endpoints onto a Store.
+// AuthenticatorHandlers wires authenticator-CRUD endpoints onto a Storage.
 type AuthenticatorHandlers struct {
 	log   *slog.Logger
-	store *Store
+	store Storage
 }
 
 // NewAuthenticatorHandlers constructs a handler bundle.
-func NewAuthenticatorHandlers(log *slog.Logger, store *Store) *AuthenticatorHandlers {
+func NewAuthenticatorHandlers(log *slog.Logger, store Storage) *AuthenticatorHandlers {
 	return &AuthenticatorHandlers{log: log, store: store}
 }
 

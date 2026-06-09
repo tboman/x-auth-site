@@ -1,9 +1,17 @@
 # authenticator-service
 
 Internal (cluster-only) service that owns user authenticators and the challenge
-lifecycle for X-Auth for Apps. Phase 1 is in-memory + vendor-stub; it speaks the
-same REST contracts a real deployment will, so transaction-service and
+lifecycle for X-Auth for Apps. Adapters are still phase-1 vendor stubs; it speaks
+the same REST contracts a real deployment will, so transaction-service and
 authentication-service can be exercised end to end.
+
+Storage is swappable via the `Storage` interface in `internal/storage.go`:
+
+- **`Store`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation, following the
+  transaction-service reference rollout (see `docs/postgres.md`). Schema lives
+  in `migrations/` (`authenticators` + `challenges` tables).
 
 ## Responsibilities
 
@@ -61,11 +69,56 @@ adapter` comment at the swap point.
 | `sms` | `SMS OTP sent to +15551234 (stub)` | `response.code == "123456"` |
 | `magic_link` | `Magic link sent to user@example.com (stub)` | `response.token == "stub_magic_token"` |
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8083` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_AUTHENTICATOR_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `AUTHENTICATOR_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
 ## Run locally
+
+Without Postgres (in-memory fallback):
 
 ```bash
 go run ./services/authenticator-service/cmd
-# listens on :8083 (override with PORT)
+# listens on :8083 (override with PORT), authenticators/challenges are ephemeral
+```
+
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=authr_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/authenticator-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/authr_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/authr_db?sslmode=disable" \
+     -f services/authenticator-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/authr_db?sslmode=disable" \
+  go run ./services/authenticator-service/cmd
+```
+
+Run tests (unit only, no DB needed):
+
+```bash
+go test ./services/authenticator-service/...
+```
+
+Run PG-backed integration tests too:
+
+```bash
+AUTHENTICATOR_PG_DSN="postgres://postgres:postgres@localhost:5432/authr_db?sslmode=disable" \
+  go test ./services/authenticator-service/... -run PG
 ```
 
 ## Try it out
@@ -98,4 +151,5 @@ curl -s $H localhost:8083/v1/challenges/ch_...
 
 Tests live in `internal/handlers_test.go` and cover the full lifecycle,
 cross-tenant isolation, lockout after three failures, lazy expiry, and each
-adapter's stub contract.
+adapter's stub contract. `internal/pgstorage_test.go` adds PG-backed storage
+integration tests, gated on `AUTHENTICATOR_PG_DSN`.

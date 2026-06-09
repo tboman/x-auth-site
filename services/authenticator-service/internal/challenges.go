@@ -13,13 +13,13 @@ import (
 // ChallengeHandlers wires the challenge dispatch/verify endpoints.
 type ChallengeHandlers struct {
 	log      *slog.Logger
-	store    *Store
+	store    Storage
 	registry *Registry
 }
 
 // NewChallengeHandlers constructs a handler bundle. registry provides the
 // per-method adapters; tests can inject a custom one.
-func NewChallengeHandlers(log *slog.Logger, store *Store, registry *Registry) *ChallengeHandlers {
+func NewChallengeHandlers(log *slog.Logger, store Storage, registry *Registry) *ChallengeHandlers {
 	return &ChallengeHandlers{log: log, store: store, registry: registry}
 }
 

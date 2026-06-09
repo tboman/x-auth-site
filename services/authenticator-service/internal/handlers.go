@@ -11,7 +11,7 @@ import (
 // Router builds the authenticator-service HTTP handler. /healthz is mounted
 // without tenant middleware so infra probes don't need to know about tenants;
 // every other route goes through tenantx.Middleware.
-func Router(log *slog.Logger, store *Store, registry *Registry) http.Handler {
+func Router(log *slog.Logger, store Storage, registry *Registry) http.Handler {
 	auth := NewAuthenticatorHandlers(log, store)
 	chal := NewChallengeHandlers(log, store, registry)
 

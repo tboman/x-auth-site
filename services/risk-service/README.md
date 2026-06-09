@@ -10,9 +10,15 @@ This service is internal — `transaction-service` is the only caller in phase 1
 
 ## Scope
 
-Phase 1: in-memory, tenant-scoped. Storage is swappable via the `Storage`
-interface in `internal/storage.go` — phase 2 will add a Postgres-backed
-implementation, richer scorers, and CAEP/SSF event emission.
+Tenant-scoped evaluation store and policy CRUD. Storage is swappable via the
+`Storage` interface in `internal/storage.go`:
+
+- **`MemStorage`** — phase-1 in-memory implementation. Used when `PG_DSN` is unset
+  (developer laptops, unit tests, short-lived CI).
+- **`PGStorage`** — phase-2 Postgres implementation (mirrors the
+  `transaction-service` reference rollout; see `docs/postgres.md`).
+
+Richer scorers and CAEP/SSF event emission remain phase-2 follow-ups.
 
 The scorers here are deliberately simple, deterministic, and testable. The
 thresholds and mock blocklists exist to make behaviour predictable while the
@@ -111,19 +117,56 @@ Example policy:
 }
 ```
 
+## Environment
+
+| Var | Default | Notes |
+|---|---|---|
+| `PORT` | `8081` | |
+| `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PG_DSN_RISK_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
+| `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `RISK_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+
 ## Run locally
 
-From the repo root:
+Without Postgres (in-memory fallback):
 
 ```bash
 go run ./services/risk-service/cmd
-# listens on :8081 by default, or $PORT if set
+# listens on :8081 by default, or $PORT if set; evaluations/policies are ephemeral
 ```
 
-Run tests:
+With Postgres (phase 2):
+
+```bash
+# 1. Start Postgres
+docker run --rm -d --name xauth-pg \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=risk_db -p 5432:5432 postgres:16
+
+# 2. Apply the migration (choose one)
+migrate -path services/risk-service/migrations \
+        -database "postgres://postgres:postgres@localhost:5432/risk_db?sslmode=disable" up
+# or:
+psql "postgres://postgres:postgres@localhost:5432/risk_db?sslmode=disable" \
+     -f services/risk-service/migrations/000001_init.up.sql
+
+# 3. Run the service
+PG_DSN="postgres://postgres:postgres@localhost:5432/risk_db?sslmode=disable" \
+  go run ./services/risk-service/cmd
+```
+
+Run tests (unit only, no DB needed):
 
 ```bash
 go test ./services/risk-service/...
+```
+
+Run PG-backed integration tests too:
+
+```bash
+RISK_PG_DSN="postgres://postgres:postgres@localhost:5432/risk_db?sslmode=disable" \
+  go test ./services/risk-service/... -run PG
 ```
 
 ## cURL examples
