@@ -74,19 +74,30 @@ func (s *PGStorage) Get(tenantID, id string) (Persona, error) {
 	return p, err
 }
 
-// List returns all personas owned by tenantID, ordered by (created_at ASC, id ASC) —
-// the same deterministic ordering MemStorage.List produces. The Storage contract has
-// no pagination yet; when it grows limit/cursor parameters this becomes a keyset
-// query like transaction-service's List.
-func (s *PGStorage) List(tenantID string) ([]Persona, error) {
-	const q = `
+// List returns up to `limit` personas for tenantID, ordered by created_at DESC,
+// id DESC. If cursor is non-zero, only rows strictly older than the cursor are
+// returned — same keyset-pagination contract as MemStorage (and transaction-service).
+// The idx_personas_tenant_created index (tenant_id, created_at, id) serves this via
+// a backward index scan, so no DESC index variant is required.
+func (s *PGStorage) List(tenantID string, limit int, cursor time.Time) ([]Persona, error) {
+	base := `
 		SELECT id, tenant_id, name, scopes, claims,
 		       token_ttl_seconds, created_at, updated_at
 		  FROM personas
 		 WHERE tenant_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	args := []any{tenantID}
+	if !cursor.IsZero() {
+		base += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	base += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		base += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), base, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list: %w", err)
 	}

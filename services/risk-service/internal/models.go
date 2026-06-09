@@ -173,15 +173,24 @@ type UpdatePolicyRequest struct {
 	Rules *[]PolicyRule `json:"rules,omitempty"`
 }
 
-// ListPoliciesResponse is the envelope for GET /v1/policies.
+// ListPoliciesResponse is the envelope for GET /v1/policies. NextCursor is
+// set when a full page was returned: pass it back as ?cursor= to fetch the
+// next (strictly older) page.
 type ListPoliciesResponse struct {
-	Items []Policy `json:"items"`
+	Items      []Policy `json:"items"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 // Validation bounds.
 const (
 	MaxNameLen        = 100
 	MaxRulesPerPolicy = 50
+)
+
+// Pagination bounds for GET /v1/policies.
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
 )
 
 // ValidTier reports whether s is one of low/medium/high.

@@ -15,7 +15,7 @@ var ErrNotFound = errors.New("persona not found")
 type Storage interface {
 	Create(p Persona) (Persona, error)
 	Get(tenantID, id string) (Persona, error)
-	List(tenantID string) ([]Persona, error)
+	List(tenantID string, limit int, cursor time.Time) ([]Persona, error)
 	Update(p Persona) (Persona, error)
 	Delete(tenantID, id string) error
 }
@@ -52,22 +52,32 @@ func (s *MemStorage) Get(tenantID, id string) (Persona, error) {
 	return p, nil
 }
 
-// List returns all personas owned by tenantID, sorted by CreatedAt ascending for determinism.
-func (s *MemStorage) List(tenantID string) ([]Persona, error) {
+// List returns up to `limit` personas owned by tenantID, ordered by CreatedAt desc.
+// If `cursor` is non-zero, only personas strictly older than the cursor are returned,
+// providing stable keyset pagination without storing offsets.
+func (s *MemStorage) List(tenantID string, limit int, cursor time.Time) ([]Persona, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	out := make([]Persona, 0)
 	for _, p := range s.data {
-		if p.TenantID == tenantID {
-			out = append(out, p)
+		if p.TenantID != tenantID {
+			continue
 		}
+		if !cursor.IsZero() && !p.CreatedAt.Before(cursor) {
+			continue
+		}
+		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return out[i].ID > out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

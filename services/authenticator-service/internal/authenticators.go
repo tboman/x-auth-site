@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -54,7 +55,11 @@ func (h *AuthenticatorHandlers) Enroll(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	h.store.PutAuthenticator(a)
+	if err := h.store.PutAuthenticator(a); err != nil {
+		h.log.Error("authenticator_put_failed", "err", err, "id", a.ID, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to store authenticator")
+		return
+	}
 	h.log.Info("authenticator_enrolled", "id", a.ID, "user_id", a.UserID, "method", a.Method, "tenant_id", tenantID)
 	httpx.WriteJSON(w, http.StatusCreated, a)
 }
@@ -73,7 +78,12 @@ func (h *AuthenticatorHandlers) List(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "user_id query param is required")
 		return
 	}
-	items := h.store.ListAuthenticators(tenantID, userID)
+	items, err := h.store.ListAuthenticators(tenantID, userID)
+	if err != nil {
+		h.log.Error("authenticator_list_failed", "err", err, "user_id", userID, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list authenticators")
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, ListResponse{Items: items})
 }
 
@@ -92,7 +102,12 @@ func (h *AuthenticatorHandlers) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := h.store.GetAuthenticator(tenantID, id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not_found", "authenticator not found")
+		if errors.Is(err, ErrNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "authenticator not found")
+			return
+		}
+		h.log.Error("authenticator_get_failed", "err", err, "id", id, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to read authenticator")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, a)
@@ -113,7 +128,12 @@ func (h *AuthenticatorHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.store.DisableAuthenticator(tenantID, id); err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not_found", "authenticator not found")
+		if errors.Is(err, ErrNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "authenticator not found")
+			return
+		}
+		h.log.Error("authenticator_disable_failed", "err", err, "id", id, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to disable authenticator")
 		return
 	}
 	h.log.Info("authenticator_disabled", "id", id, "tenant_id", tenantID)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,22 +64,61 @@ func (h *UserHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, created)
 }
 
-// List handles GET /v1/users. Returns every user belonging to the header tenant.
-// Response shape: {"users": [...]} — wrapping in an object leaves room to add
-// pagination metadata without a breaking change.
+// List handles GET /v1/users. Keyset-paginated, newest first. Supports:
+//   - limit (int, default 100, max 500)
+//   - cursor (RFC3339 timestamp; results are strictly older than this)
+//
+// Response shape: {"users": [...], "next_cursor": "..."} — next_cursor is only
+// present when a full page was returned (same contract as transaction-service's
+// GET /v1/transactions).
 func (h *UserHandlers) List(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
 		return
 	}
-	users, err := h.Store.ListUsers(tenantID)
+
+	q := r.URL.Query()
+
+	limit := DefaultListLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_limit",
+				"limit must be a positive integer")
+			return
+		}
+		if n > MaxListLimit {
+			n = MaxListLimit
+		}
+		limit = n
+	}
+
+	var cursor time.Time
+	if v := q.Get("cursor"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_cursor",
+				"cursor must be an RFC3339 timestamp")
+			return
+		}
+		cursor = t
+	}
+
+	users, err := h.Store.ListUsers(tenantID, limit, cursor)
 	if err != nil {
 		h.Logger.Error("user_list_failed", "err", err, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list users")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"users": users})
+
+	resp := ListUsersResponse{Users: users}
+	// If we returned a full page, provide a cursor for the next page. Callers
+	// that do not need pagination can ignore next_cursor.
+	if len(users) == limit && limit > 0 {
+		resp.NextCursor = users[len(users)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // Get handles GET /v1/users/{id}. 404 if the user does not exist or belongs to

@@ -23,7 +23,10 @@ type Storage interface {
 	CreateInstall(i Install) (Install, error)
 	GetInstall(tenantID, id string) (Install, error)
 	UpdateInstall(i Install) (Install, error)
-	ListInstalls(tenantID string) ([]Install, error)
+	// ListInstalls returns up to `limit` installs for tenantID ordered by
+	// CreatedAt desc, id desc. A non-zero cursor restricts the result to rows
+	// strictly older than the cursor (keyset pagination). limit <= 0 means no cap.
+	ListInstalls(tenantID string, limit int, cursor time.Time) ([]Install, error)
 
 	// DCR clients
 	PutClient(c DCRClient) error
@@ -37,6 +40,11 @@ type Storage interface {
 	PutToken(t TokenRecord) error
 	GetToken(accessToken string) (TokenRecord, error)
 	DeleteToken(accessToken string) error
+
+	// Maintenance. PurgeExpired removes tokens and auth codes whose TTLs have
+	// lapsed as of `now` and returns the total number of entries removed. The
+	// predicates mirror read-time enforcement exactly (see implementations).
+	PurgeExpired(now time.Time) (int, error)
 }
 
 // MemStorage is an in-memory, thread-safe Storage implementation.
@@ -91,22 +99,32 @@ func (s *MemStorage) UpdateInstall(i Install) (Install, error) {
 	return i, nil
 }
 
-// ListInstalls returns every install belonging to tenantID, sorted by CreatedAt asc.
-func (s *MemStorage) ListInstalls(tenantID string) ([]Install, error) {
+// ListInstalls returns up to `limit` installs owned by tenantID, ordered by
+// CreatedAt desc, id desc. If `cursor` is non-zero, only installs strictly older
+// than the cursor are returned — stable keyset pagination without offsets, same
+// contract as transaction-service's MemStorage.List.
+func (s *MemStorage) ListInstalls(tenantID string, limit int, cursor time.Time) ([]Install, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Install, 0)
 	for _, i := range s.installs {
-		if i.TenantID == tenantID {
-			out = append(out, i)
+		if i.TenantID != tenantID {
+			continue
 		}
+		if !cursor.IsZero() && !i.CreatedAt.Before(cursor) {
+			continue
+		}
+		out = append(out, i)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return out[i].ID > out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 
@@ -184,4 +202,33 @@ func (s *MemStorage) DeleteToken(accessToken string) error {
 	}
 	delete(s.tokens, accessToken)
 	return nil
+}
+
+// PurgeExpired sweeps the token and auth-code maps, removing entries whose TTLs
+// have lapsed as of `now`. The predicates mirror read-time enforcement exactly:
+//   - tokens: /userinfo rejects a bearer when now is after TokenRecord.ExpiresAt
+//     (oidc.go), so any record with ExpiresAt before now is dead weight;
+//   - auth codes: codes carry no stored expiry — /token rejects them when
+//     time.Since(CreatedAt) exceeds AuthCodeTTLSeconds, so the purge cutoff is
+//     CreatedAt older than now-AuthCodeTTLSeconds.
+//
+// Returns the total number of entries removed across both maps.
+func (s *MemStorage) PurgeExpired(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for k, t := range s.tokens {
+		if now.After(t.ExpiresAt) {
+			delete(s.tokens, k)
+			removed++
+		}
+	}
+	codeCutoff := now.Add(-time.Duration(AuthCodeTTLSeconds) * time.Second)
+	for k, ac := range s.codes {
+		if ac.CreatedAt.Before(codeCutoff) {
+			delete(s.codes, k)
+			removed++
+		}
+	}
+	return removed, nil
 }

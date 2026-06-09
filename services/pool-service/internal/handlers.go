@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,17 +111,30 @@ func (s *Server) handleCreatePool(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, created)
 }
 
+// handleListPools handles GET /v1/pools. Supports:
+//   - limit (int, default 100, max 500)
+//   - cursor (RFC3339 timestamp; results are strictly older than this)
 func (s *Server) handleListPools(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := tenantFromRequest(w, r)
 	if !ok {
 		return
 	}
-	pools, err := s.Storage.ListPools(tenant)
+	limit, cursor, ok := paginationFromRequest(w, r)
+	if !ok {
+		return
+	}
+	pools, err := s.Storage.ListPools(tenant, limit, cursor)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, PoolListResponse{Items: pools})
+	resp := PoolListResponse{Items: pools}
+	// If we returned a full page, provide a cursor for the next page. Callers that
+	// do not need pagination can ignore next_cursor.
+	if len(pools) == limit && limit > 0 {
+		resp.NextCursor = pools[len(pools)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleGetPool(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +224,9 @@ func (s *Server) handleAddIdentity(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, created)
 }
 
+// handleListIdentities handles GET /v1/pools/{id}/identities. Supports:
+//   - limit (int, default 100, max 500)
+//   - cursor (RFC3339 timestamp; results are strictly older than this)
 func (s *Server) handleListIdentities(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := tenantFromRequest(w, r)
 	if !ok {
@@ -220,7 +237,11 @@ func (s *Server) handleListIdentities(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
 		return
 	}
-	idents, err := s.Storage.ListIdentities(tenant, poolID)
+	limit, cursor, ok := paginationFromRequest(w, r)
+	if !ok {
+		return
+	}
+	idents, err := s.Storage.ListIdentities(tenant, poolID, limit, cursor)
 	if err != nil {
 		if errors.Is(err, ErrPoolNotFound) {
 			httpx.WriteError(w, http.StatusNotFound, "pool_not_found", "pool not found")
@@ -229,7 +250,13 @@ func (s *Server) handleListIdentities(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, IdentityListResponse{Items: idents})
+	resp := IdentityListResponse{Items: idents}
+	// If we returned a full page, provide a cursor for the next page. Callers that
+	// do not need pagination can ignore next_cursor.
+	if len(idents) == limit && limit > 0 {
+		resp.NextCursor = idents[len(idents)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +356,41 @@ func tenantFromRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
 		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
 	}
 	return tenant, ok
+}
+
+// paginationFromRequest parses the shared `limit` / `cursor` query params used by the
+// list endpoints, mirroring the transaction-service contract: limit defaults to
+// DefaultListLimit, is capped at MaxListLimit, and must be a positive integer; cursor
+// must be an RFC3339 timestamp. On a bad param it writes the structured 400
+// (invalid_limit / invalid_cursor) and returns ok=false.
+func paginationFromRequest(w http.ResponseWriter, r *http.Request) (int, time.Time, bool) {
+	q := r.URL.Query()
+
+	limit := DefaultListLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_limit",
+				"limit must be a positive integer")
+			return 0, time.Time{}, false
+		}
+		if n > MaxListLimit {
+			n = MaxListLimit
+		}
+		limit = n
+	}
+
+	var cursor time.Time
+	if v := q.Get("cursor"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_cursor",
+				"cursor must be an RFC3339 timestamp")
+			return 0, time.Time{}, false
+		}
+		cursor = t
+	}
+	return limit, cursor, true
 }
 
 // decodeJSON decodes a request body using httpx.ReadJSON and normalises empty-body errors.

@@ -18,10 +18,10 @@ import (
 // mutator-based challenge updates — so the HTTP layer can swap implementations
 // without behavioural drift.
 //
-// One deviation from the transaction-service reference: the phase-1 Storage
-// interface has error-less Put*/List* signatures, so PGStorage carries a logger
-// and reports failures there instead of returning them (dropped put / empty
-// list). Widening those signatures is phase-2.1 work.
+// Phase 2.1 widened the Storage signatures, so Put*/List* failures are now
+// returned to the caller (handlers translate them to 500 internal_error)
+// instead of the old log-and-degrade behaviour. The logger is retained for
+// operational context on the storage side.
 type PGStorage struct {
 	pool *pgxpool.Pool
 	log  *slog.Logger
@@ -31,7 +31,7 @@ var _ Storage = (*PGStorage)(nil)
 
 // NewPGStorage returns a Storage backed by the given pgx pool. Callers retain
 // ownership of the pool (e.g. close it on shutdown). log may be nil, in which
-// case slog.Default() is used for the error-less Storage methods.
+// case slog.Default() is used.
 func NewPGStorage(pool *pgxpool.Pool, log *slog.Logger) *PGStorage {
 	if log == nil {
 		log = slog.Default()
@@ -53,14 +53,12 @@ func (s *PGStorage) Now() time.Time { return time.Now().UTC() }
 // Authenticator operations
 // -----------------------------------------------------------------------------
 
-// PutAuthenticator upserts the authenticator row. The Storage signature cannot
-// surface failures, so errors are logged and the put is dropped (same contract
-// hazard the in-memory Store never trips).
-func (s *PGStorage) PutAuthenticator(a Authenticator) {
+// PutAuthenticator upserts the authenticator row, returning any persistence
+// failure to the caller.
+func (s *PGStorage) PutAuthenticator(a Authenticator) error {
 	meta, err := encodeJSONMap(a.Metadata)
 	if err != nil {
-		s.log.Error("pgstorage_put_authenticator", "id", a.ID, "err", err)
-		return
+		return fmt.Errorf("pgstorage put_authenticator encode metadata: %w", err)
 	}
 	const q = `
 		INSERT INTO authenticators (
@@ -79,8 +77,9 @@ func (s *PGStorage) PutAuthenticator(a Authenticator) {
 		a.ID, a.TenantID, a.UserID, a.Method, meta, a.Status,
 		a.CreatedAt.UTC(), a.UpdatedAt.UTC(),
 	); err != nil {
-		s.log.Error("pgstorage_put_authenticator", "id", a.ID, "err", err)
+		return fmt.Errorf("pgstorage put_authenticator: %w", err)
 	}
+	return nil
 }
 
 // GetAuthenticator fetches by id within a tenant. Cross-tenant reads return
@@ -101,16 +100,16 @@ func (s *PGStorage) GetAuthenticator(tenantID, id string) (Authenticator, error)
 // ListAuthenticators returns every authenticator for a user within a tenant,
 // including soft-deleted (`disabled`) ones so callers can audit history.
 // Rows come back ordered by (created_at DESC, id DESC) for determinism.
-func (s *PGStorage) ListAuthenticators(tenantID, userID string) []Authenticator {
+func (s *PGStorage) ListAuthenticators(tenantID, userID string) ([]Authenticator, error) {
 	return s.listAuthenticators(tenantID, userID, false)
 }
 
 // ListActiveAuthenticators returns only `active` authenticators for a user.
-func (s *PGStorage) ListActiveAuthenticators(tenantID, userID string) []Authenticator {
+func (s *PGStorage) ListActiveAuthenticators(tenantID, userID string) ([]Authenticator, error) {
 	return s.listAuthenticators(tenantID, userID, true)
 }
 
-func (s *PGStorage) listAuthenticators(tenantID, userID string, activeOnly bool) []Authenticator {
+func (s *PGStorage) listAuthenticators(tenantID, userID string, activeOnly bool) ([]Authenticator, error) {
 	q := authenticatorCols + ` WHERE tenant_id = $1 AND user_id = $2`
 	args := []any{tenantID, userID}
 	if activeOnly {
@@ -119,28 +118,24 @@ func (s *PGStorage) listAuthenticators(tenantID, userID string, activeOnly bool)
 	}
 	q += ` ORDER BY created_at DESC, id DESC`
 
-	// Errors can't be surfaced through the List* signatures; log and return the
-	// same empty slice the in-memory Store would for an unknown user.
 	out := make([]Authenticator, 0)
 	rows, err := s.pool.Query(bgCtx(), q, args...)
 	if err != nil {
-		s.log.Error("pgstorage_list_authenticators", "tenant_id", tenantID, "user_id", userID, "err", err)
-		return out
+		return nil, fmt.Errorf("pgstorage list_authenticators: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		a, err := scanAuthenticator(rows)
 		if err != nil {
-			s.log.Error("pgstorage_list_authenticators", "tenant_id", tenantID, "user_id", userID, "err", err)
-			return out
+			return nil, fmt.Errorf("pgstorage list_authenticators scan: %w", err)
 		}
 		out = append(out, a)
 	}
 	if err := rows.Err(); err != nil {
-		s.log.Error("pgstorage_list_authenticators", "tenant_id", tenantID, "user_id", userID, "err", err)
+		return nil, fmt.Errorf("pgstorage list_authenticators rows: %w", err)
 	}
-	return out
+	return out, nil
 }
 
 // DisableAuthenticator soft-deletes by flipping status to `disabled`. Idempotent:
@@ -167,9 +162,9 @@ func (s *PGStorage) DisableAuthenticator(tenantID, id string) error {
 // Challenge operations
 // -----------------------------------------------------------------------------
 
-// PutChallenge upserts the challenge row. Same error-less contract caveat as
-// PutAuthenticator.
-func (s *PGStorage) PutChallenge(c Challenge) {
+// PutChallenge upserts the challenge row, returning any persistence failure
+// to the caller.
+func (s *PGStorage) PutChallenge(c Challenge) error {
 	const q = `
 		INSERT INTO challenges (
 			id, tenant_id, user_id, method, authenticator_id,
@@ -192,8 +187,9 @@ func (s *PGStorage) PutChallenge(c Challenge) {
 		nullable(c.Prompt), c.Status, c.Attempts,
 		c.CreatedAt.UTC(), c.ExpiresAt.UTC(), nullableTime(c.CompletedAt),
 	); err != nil {
-		s.log.Error("pgstorage_put_challenge", "id", c.ID, "err", err)
+		return fmt.Errorf("pgstorage put_challenge: %w", err)
 	}
+	return nil
 }
 
 // GetChallenge fetches by id within a tenant. Cross-tenant reads return
@@ -263,6 +259,25 @@ func (s *PGStorage) UpdateChallenge(tenantID, id string, mutator func(*Challenge
 		return Challenge{}, fmt.Errorf("pgstorage update_challenge commit: %w", err)
 	}
 	return c, nil
+}
+
+// PurgeExpired deletes challenges that can never be verified again: `pending`
+// rows past expires_at and rows already lazily flipped to `expired`. The
+// pending arm is served by the partial index idx_challenge_pending_expiry the
+// migration created for exactly this sweeper. Same retention choice as the
+// in-memory Store: `completed` / `failed` rows are kept as the step-up audit
+// trail — age-based retention for those is a separate compliance concern.
+func (s *PGStorage) PurgeExpired(now time.Time) (int, error) {
+	const q = `
+		DELETE FROM challenges
+		 WHERE (status = $1 AND expires_at <= $2)
+		    OR status = $3
+	`
+	tag, err := s.pool.Exec(bgCtx(), q, ChallengeStatusPending, now.UTC(), ChallengeStatusExpired)
+	if err != nil {
+		return 0, fmt.Errorf("pgstorage purge_expired: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // -----------------------------------------------------------------------------

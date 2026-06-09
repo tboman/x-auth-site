@@ -32,6 +32,27 @@ storage layer: a persona created under tenant A is invisible (404) to tenant B.
 | PATCH | `/v1/personas/{id}` | 200, 400, 404 |
 | DELETE | `/v1/personas/{id}` | 204, 400, 404 |
 
+### List pagination
+
+`GET /v1/personas` returns personas newest-first (`created_at` DESC, `id` DESC as
+tiebreaker) inside an `{"items": [...], "next_cursor": "..."}` envelope, using keyset
+pagination — same contract as transaction-service's `GET /v1/transactions`:
+
+- `limit` — page size; positive integer, default 100, capped at 500. Non-numeric or
+  non-positive values are rejected with 400 `invalid_limit`.
+- `cursor` — RFC3339 timestamp; only personas strictly older than the cursor are
+  returned. Malformed values are rejected with 400 `invalid_cursor`.
+- `next_cursor` — present in the response only when a full page was returned; it is
+  the `created_at` of the last item (RFC3339Nano). Pass it back as `cursor` to fetch
+  the next page.
+
+```bash
+curl -s 'http://localhost:8180/v1/personas?limit=2' -H 'X-Tenant-Id: tenant-a'
+# -> {"items":[...2 personas...],"next_cursor":"2026-04-20T12:00:00.123456Z"}
+curl -s 'http://localhost:8180/v1/personas?limit=2&cursor=2026-04-20T12:00:00.123456Z' \
+  -H 'X-Tenant-Id: tenant-a'
+```
+
 ### Persona shape
 
 ```json

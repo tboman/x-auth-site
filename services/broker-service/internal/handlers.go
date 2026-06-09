@@ -78,6 +78,7 @@ func Router(d Deps) http.Handler {
 	// tenantx.Middleware on only these routes without firing it for OIDC traffic.
 	v1 := http.NewServeMux()
 	v1.HandleFunc("POST /v1/installs", installs.Create)
+	v1.HandleFunc("GET /v1/installs", installs.List)
 	v1.HandleFunc("GET /v1/installs/{id}", installs.Get)
 	v1.HandleFunc("POST /v1/installs/{id}/revoke", installs.Revoke)
 	mux.Handle("/v1/", tenantx.Middleware(v1))

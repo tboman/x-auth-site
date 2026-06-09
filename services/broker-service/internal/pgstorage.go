@@ -106,17 +106,30 @@ func (s *PGStorage) UpdateInstall(i Install) (Install, error) {
 	return i, nil
 }
 
-// ListInstalls returns every install belonging to tenantID, sorted by CreatedAt
-// asc with id as tiebreaker — same ordering contract as MemStorage.ListInstalls.
-func (s *PGStorage) ListInstalls(tenantID string) ([]Install, error) {
-	const q = `
+// ListInstalls returns up to `limit` installs for tenantID, ordered by
+// created_at DESC, id DESC. If cursor is non-zero, only rows strictly older than
+// the cursor are returned — same keyset-pagination contract as MemStorage and as
+// transaction-service. The (tenant_id, created_at, id) index from 000001 serves
+// this scan in both directions.
+func (s *PGStorage) ListInstalls(tenantID string, limit int, cursor time.Time) ([]Install, error) {
+	q := `
 		SELECT id, tenant_id, runtime, persona_id, identity_id,
 		       client_id, status, created_at, updated_at
 		  FROM installs
 		 WHERE tenant_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	args := []any{tenantID}
+	if !cursor.IsZero() {
+		q += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list_installs: %w", err)
 	}
@@ -341,6 +354,36 @@ func (s *PGStorage) DeleteToken(accessToken string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Maintenance
+// -----------------------------------------------------------------------------
+
+// PurgeExpired deletes expired token and auth-code rows, returning the total
+// rows removed. The predicates mirror read-time enforcement exactly:
+//   - tokens have a stored expiry (tokens.expires_at); /userinfo rejects a
+//     bearer when now is after ExpiresAt, so `expires_at < now` rows are dead;
+//   - auth_codes have no stored expiry — /token rejects a code when
+//     time.Since(created_at) exceeds AuthCodeTTLSeconds, so the equivalent
+//     delete predicate is `created_at < now - AuthCodeTTLSeconds`.
+func (s *PGStorage) PurgeExpired(now time.Time) (int, error) {
+	total := 0
+	tag, err := s.pool.Exec(bgCtx(),
+		`DELETE FROM tokens WHERE expires_at < $1`, now.UTC())
+	if err != nil {
+		return total, fmt.Errorf("pgstorage purge_expired tokens: %w", err)
+	}
+	total += int(tag.RowsAffected())
+
+	codeCutoff := now.UTC().Add(-time.Duration(AuthCodeTTLSeconds) * time.Second)
+	tag, err = s.pool.Exec(bgCtx(),
+		`DELETE FROM auth_codes WHERE created_at < $1`, codeCutoff)
+	if err != nil {
+		return total, fmt.Errorf("pgstorage purge_expired auth_codes: %w", err)
+	}
+	total += int(tag.RowsAffected())
+	return total, nil
 }
 
 // -----------------------------------------------------------------------------

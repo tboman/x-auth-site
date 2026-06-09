@@ -39,6 +39,22 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Pagination bounds for GET /v1/users — the same keyset-pagination contract as
+// transaction-service's GET /v1/transactions.
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
+)
+
+// ListUsersResponse is the envelope returned by GET /v1/users. next_cursor is
+// only present when a full page was returned and carries the last item's
+// created_at (RFC3339Nano); pass it back as ?cursor= to fetch strictly older
+// users.
+type ListUsersResponse struct {
+	Users      []User `json:"users"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
 // CreateUserRequest is the JSON body for POST /v1/users. tenant_id is sourced
 // from the X-Tenant-Id header, not the body.
 type CreateUserRequest struct {

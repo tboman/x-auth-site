@@ -10,9 +10,11 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xentranet/x-auth/pkg/config"
 	"github.com/xentranet/x-auth/pkg/httpx"
@@ -53,6 +55,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Background sweeper: tokens and auth codes only have their TTLs enforced at
+	// read time, so without this they grow unbounded. Runs against whichever
+	// storage backend was resolved above and stops with the signal-aware ctx.
+	go runPurgeSweeper(ctx, logger, store)
+
 	handler := internal.Router(internal.Deps{
 		Store:      store,
 		Logger:     logger,
@@ -65,5 +72,38 @@ func main() {
 	if err := httpx.Run(ctx, logger, addr, handler); err != nil {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
+	}
+}
+
+// runPurgeSweeper periodically deletes expired tokens and auth codes via
+// Storage.PurgeExpired. The interval comes from PURGE_INTERVAL (a Go duration,
+// default 5m — see the README env table); an unparsable or non-positive value
+// falls back to the default rather than aborting startup. The loop exits cleanly
+// when ctx is cancelled (SIGINT/SIGTERM).
+func runPurgeSweeper(ctx context.Context, logger *slog.Logger, store internal.Storage) {
+	const defaultInterval = 5 * time.Minute
+	raw := config.Env("PURGE_INTERVAL", defaultInterval.String())
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		logger.Warn("purge_interval_invalid", "value", raw, "fallback", defaultInterval.String())
+		interval = defaultInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	logger.Info("purge_sweeper_started", "interval", interval.String())
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("purge_sweeper_stopped")
+			return
+		case <-ticker.C:
+			n, err := store.PurgeExpired(time.Now().UTC())
+			if err != nil {
+				logger.Error("purge_expired_failed", "err", err)
+				continue
+			}
+			logger.Info("purge_expired", "removed", n)
+		}
 	}
 }

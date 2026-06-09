@@ -89,18 +89,97 @@ func TestPGStoragePoolRoundTrip(t *testing.T) {
 		t.Fatalf("cross-tenant get should be ErrPoolNotFound, got %v", err)
 	}
 
-	// List is ordered by created_at ASC, id ASC.
+	// List is ordered by created_at DESC, id DESC — newest first.
 	older := seedPool(t, s, 1, nil, now.Add(-time.Hour))
-	pools, err := s.ListPools("tenant-a")
+	pools, err := s.ListPools("tenant-a", 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(pools) != 2 || pools[0].ID != older.ID {
+	if len(pools) != 2 || pools[0].ID != p.ID || pools[1].ID != older.ID {
 		t.Fatalf("list order wrong: %+v", pools)
 	}
 	// nil persona_ids round-trips as an empty (non-nil) slice.
-	if pools[0].PersonaIDs == nil || len(pools[0].PersonaIDs) != 0 {
-		t.Fatalf("nil persona_ids should round-trip as []: %+v", pools[0].PersonaIDs)
+	if pools[1].PersonaIDs == nil || len(pools[1].PersonaIDs) != 0 {
+		t.Fatalf("nil persona_ids should round-trip as []: %+v", pools[1].PersonaIDs)
+	}
+}
+
+func TestPGStorageListPoolsKeyset(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	var seeded []Pool
+	for i := 0; i < 3; i++ {
+		seeded = append(seeded, seedPool(t, s, 1, nil, now.Add(time.Duration(i)*time.Minute)))
+	}
+
+	// Page 1: two newest, DESC.
+	page1, err := s.ListPools("tenant-a", 2, time.Time{})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].ID != seeded[2].ID || page1[1].ID != seeded[1].ID {
+		t.Fatalf("page1 wrong: %+v", page1)
+	}
+
+	// Page 2: strictly older than the last item of page 1.
+	page2, err := s.ListPools("tenant-a", 2, page1[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].ID != seeded[0].ID {
+		t.Fatalf("page2 wrong: %+v", page2)
+	}
+
+	// Cursor older than everything -> empty page, not an error.
+	empty, err := s.ListPools("tenant-a", 2, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("empty page: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty page, got %+v", empty)
+	}
+}
+
+func TestPGStorageListIdentitiesKeyset(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p := seedPool(t, s, 5, nil, now)
+
+	var seeded []Identity
+	for i := 0; i < 3; i++ {
+		ts := now.Add(time.Duration(i) * time.Minute)
+		ident, err := s.AddIdentity("tenant-a", p.ID, Identity{
+			ID: uuid.NewString(), PoolID: p.ID, SubjectID: "agent-keyset",
+			Status: StatusAvailable, CreatedAt: ts, UpdatedAt: ts,
+		})
+		if err != nil {
+			t.Fatalf("seed identity %d: %v", i, err)
+		}
+		seeded = append(seeded, ident)
+	}
+
+	// Page 1: two newest, DESC.
+	page1, err := s.ListIdentities("tenant-a", p.ID, 2, time.Time{})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].ID != seeded[2].ID || page1[1].ID != seeded[1].ID {
+		t.Fatalf("page1 wrong: %+v", page1)
+	}
+
+	// Page 2: strictly older than the last item of page 1.
+	page2, err := s.ListIdentities("tenant-a", p.ID, 2, page1[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 1 || page2[0].ID != seeded[0].ID {
+		t.Fatalf("page2 wrong: %+v", page2)
+	}
+
+	// Pagination params don't weaken tenant scoping.
+	if _, err := s.ListIdentities("tenant-b", p.ID, 2, time.Time{}); !errors.Is(err, ErrPoolNotFound) {
+		t.Fatalf("cross-tenant keyset list should be ErrPoolNotFound, got %v", err)
 	}
 }
 
@@ -155,14 +234,14 @@ func TestPGStorageAddIdentityPoolFull(t *testing.T) {
 		t.Fatalf("cross-tenant add should be ErrPoolNotFound, got %v", err)
 	}
 
-	idents, err := s.ListIdentities("tenant-a", p.ID)
+	idents, err := s.ListIdentities("tenant-a", p.ID, 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list identities: %v", err)
 	}
 	if len(idents) != 1 || idents[0].SubjectID != "agent-001" {
 		t.Fatalf("list mismatch: %+v", idents)
 	}
-	if _, err := s.ListIdentities("tenant-b", p.ID); !errors.Is(err, ErrPoolNotFound) {
+	if _, err := s.ListIdentities("tenant-b", p.ID, 0, time.Time{}); !errors.Is(err, ErrPoolNotFound) {
 		t.Fatalf("cross-tenant list should be ErrPoolNotFound, got %v", err)
 	}
 }

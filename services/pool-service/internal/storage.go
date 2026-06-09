@@ -28,15 +28,18 @@ var (
 // is enforced inside the implementation — every call that reads/writes a Pool or
 // Identity verifies the tenant_id.
 type Storage interface {
-	// Pool CRUD
+	// Pool CRUD. ListPools returns up to `limit` pools ordered by CreatedAt desc
+	// (id desc as tiebreaker); a non-zero `cursor` returns only pools strictly
+	// older than the cursor (keyset pagination).
 	CreatePool(p Pool) (Pool, error)
 	GetPool(tenantID, id string) (Pool, error)
-	ListPools(tenantID string) ([]Pool, error)
+	ListPools(tenantID string, limit int, cursor time.Time) ([]Pool, error)
 	DeletePool(tenantID, id string) error
 
-	// Identity ops (all tenant-scoped via pool lookup)
+	// Identity ops (all tenant-scoped via pool lookup). ListIdentities paginates
+	// with the same keyset contract as ListPools.
 	AddIdentity(tenantID, poolID string, ident Identity) (Identity, error)
-	ListIdentities(tenantID, poolID string) ([]Identity, error)
+	ListIdentities(tenantID, poolID string, limit int, cursor time.Time) ([]Identity, error)
 	GetIdentity(tenantID, id string) (Identity, error)
 
 	// ClaimIdentity atomically picks one available identity from a pool whose
@@ -92,22 +95,31 @@ func (s *MemStorage) GetPool(tenantID, id string) (Pool, error) {
 	return p, nil
 }
 
-// ListPools returns all pools owned by tenantID, sorted by CreatedAt asc for determinism.
-func (s *MemStorage) ListPools(tenantID string) ([]Pool, error) {
+// ListPools returns up to `limit` pools owned by tenantID, ordered by CreatedAt desc
+// (id desc as tiebreaker). If `cursor` is non-zero, only pools strictly older than the
+// cursor are returned, providing stable keyset pagination without storing offsets.
+func (s *MemStorage) ListPools(tenantID string, limit int, cursor time.Time) ([]Pool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Pool, 0)
 	for _, p := range s.pools {
-		if p.TenantID == tenantID {
-			out = append(out, p)
+		if p.TenantID != tenantID {
+			continue
 		}
+		if !cursor.IsZero() && !p.CreatedAt.Before(cursor) {
+			continue
+		}
+		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return out[i].ID > out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 
@@ -147,8 +159,12 @@ func (s *MemStorage) AddIdentity(tenantID, poolID string, ident Identity) (Ident
 	return ident, nil
 }
 
-// ListIdentities returns every identity in poolID (tenant-scoped), sorted by CreatedAt asc.
-func (s *MemStorage) ListIdentities(tenantID, poolID string) ([]Identity, error) {
+// ListIdentities returns up to `limit` identities in poolID (tenant-scoped), ordered by
+// CreatedAt desc (id desc as tiebreaker). If `cursor` is non-zero, only identities
+// strictly older than the cursor are returned (keyset pagination). Note: the claim
+// path (ClaimIdentity) intentionally keeps its oldest-first ASC pick — only the list
+// endpoint pages newest-first.
+func (s *MemStorage) ListIdentities(tenantID, poolID string, limit int, cursor time.Time) ([]Identity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, ok := s.pools[poolID]
@@ -157,16 +173,23 @@ func (s *MemStorage) ListIdentities(tenantID, poolID string) ([]Identity, error)
 	}
 	out := make([]Identity, 0)
 	for _, ident := range s.identities {
-		if ident.PoolID == poolID {
-			out = append(out, ident)
+		if ident.PoolID != poolID {
+			continue
 		}
+		if !cursor.IsZero() && !ident.CreatedAt.Before(cursor) {
+			continue
+		}
+		out = append(out, ident)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return out[i].ID > out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

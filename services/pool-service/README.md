@@ -28,16 +28,39 @@ All `/v1/*` routes require the `X-Tenant-Id` header. `/healthz` is public.
 |---|---|---|
 | GET | `/healthz` | Liveness probe |
 | POST | `/v1/pools` | Create pool `{name, size, persona_ids}` |
-| GET | `/v1/pools` | List pools (tenant-scoped) |
+| GET | `/v1/pools` | List pools (tenant-scoped, paginated) |
 | GET | `/v1/pools/{id}` | Read pool |
 | DELETE | `/v1/pools/{id}` | Delete pool (cascades to identities) |
 | POST | `/v1/pools/{id}/identities` | Add identity `{subject_id}` — 409 if pool full |
-| GET | `/v1/pools/{id}/identities` | List pool identities |
+| GET | `/v1/pools/{id}/identities` | List pool identities (paginated) |
 | POST | `/v1/pools/{id}/claim` | Atomically claim a free identity `{persona_id, install_id}` |
 | POST | `/v1/identities/{id}/release` | Mark available; clears `claimed_by_install_id`. Idempotent |
 | POST | `/v1/identities/{id}/revoke` | Terminal: mark revoked |
 
 Error bodies are `{"error": "<snake_case_code>", "message": "..."}`.
+
+### Pagination
+
+Both list endpoints use keyset pagination (same contract as transaction-service):
+
+- `limit` — page size, integer. Default **100**, capped at **500**. Non-positive or
+  non-numeric values are a 400 `invalid_limit`.
+- `cursor` — RFC3339 timestamp; only items **strictly older** than the cursor are
+  returned. Malformed values are a 400 `invalid_cursor`.
+
+Items are ordered `created_at DESC, id DESC` (newest first). The response envelope is
+`{"items": [...], "next_cursor": "..."}` — `next_cursor` (the last item's `created_at`,
+RFC3339Nano) is present only when a full page was returned; pass it back as `?cursor=`
+to fetch the next page.
+
+```bash
+curl -sS 'http://localhost:8181/v1/pools?limit=2' -H 'X-Tenant-Id: acme'
+# -> {"items":[...2 pools...],"next_cursor":"2026-04-20T12:00:02Z"}
+curl -sS 'http://localhost:8181/v1/pools?limit=2&cursor=2026-04-20T12:00:02Z' -H 'X-Tenant-Id: acme'
+```
+
+Pagination affects the **list** endpoints only — the claim path still hands out the
+*oldest* available identity (ASC pick), see below.
 
 ## Claim semantics
 

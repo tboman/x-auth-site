@@ -41,8 +41,8 @@ type PolicyEvalResult struct {
 // all other matches contribute tier_floor candidates, and the highest floor
 // wins.
 //
-// Policies are evaluated in the order ListPolicies returns them (sorted by
-// CreatedAt). The order is observable only through MatchedPolicies — the
+// Policies are evaluated in the order ListPolicies returns them (newest
+// first). The order is observable only through MatchedPolicies — the
 // decision itself is order-independent because deny wins globally and
 // tier_floor uses max().
 func EvaluatePolicies(req EvaluateRequest, derivedTier string, policies []Policy) PolicyEvalResult {

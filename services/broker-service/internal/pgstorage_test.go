@@ -129,7 +129,7 @@ func TestPGStorageUpdateInstallPreservesCreatedAt(t *testing.T) {
 func TestPGStorageListInstallsOrdered(t *testing.T) {
 	s := newPGStorage(t)
 	base := time.Now().UTC().Truncate(time.Microsecond)
-	// Insert out of chronological order; ListInstalls must return CreatedAt asc.
+	// Insert out of chronological order; ListInstalls must return CreatedAt desc.
 	for _, offset := range []int{2, 0, 1} {
 		ts := base.Add(time.Duration(offset) * time.Second)
 		_, err := s.CreateInstall(Install{
@@ -150,7 +150,7 @@ func TestPGStorageListInstallsOrdered(t *testing.T) {
 		t.Fatalf("seed tenant-b: %v", err)
 	}
 
-	got, err := s.ListInstalls("tenant-a")
+	got, err := s.ListInstalls("tenant-a", 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -158,9 +158,114 @@ func TestPGStorageListInstallsOrdered(t *testing.T) {
 		t.Fatalf("want 3 installs, got %d", len(got))
 	}
 	for n := 1; n < len(got); n++ {
-		if got[n].CreatedAt.Before(got[n-1].CreatedAt) {
-			t.Fatalf("not sorted asc: %v before %v", got[n].CreatedAt, got[n-1].CreatedAt)
+		if got[n].CreatedAt.After(got[n-1].CreatedAt) {
+			t.Fatalf("not sorted desc: %v after %v", got[n].CreatedAt, got[n-1].CreatedAt)
 		}
+	}
+}
+
+func TestPGStorageListInstallsKeyset(t *testing.T) {
+	s := newPGStorage(t)
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	ids := make([]string, 5)
+	for n := 0; n < 5; n++ {
+		ids[n] = uuid.NewString()
+		ts := base.Add(time.Duration(n) * time.Second)
+		if _, err := s.CreateInstall(Install{
+			ID: ids[n], TenantID: "tenant-a", Runtime: RuntimeCustom,
+			PersonaID: "p", ClientID: "c", Status: InstallStatusPending,
+			CreatedAt: ts, UpdatedAt: ts,
+		}); err != nil {
+			t.Fatalf("seed %d: %v", n, err)
+		}
+	}
+
+	// Page 1: limit applies, newest first.
+	page1, err := s.ListInstalls("tenant-a", 2, time.Time{})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].ID != ids[4] || page1[1].ID != ids[3] {
+		t.Fatalf("page 1: want [%s %s], got %+v", ids[4], ids[3], page1)
+	}
+
+	// Page 2: rows strictly older than the last CreatedAt of page 1.
+	page2, err := s.ListInstalls("tenant-a", 2, page1[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(page2) != 2 || page2[0].ID != ids[2] || page2[1].ID != ids[1] {
+		t.Fatalf("page 2: want [%s %s], got %+v", ids[2], ids[1], page2)
+	}
+
+	// Page 3: final partial page.
+	page3, err := s.ListInstalls("tenant-a", 2, page2[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page 3: %v", err)
+	}
+	if len(page3) != 1 || page3[0].ID != ids[0] {
+		t.Fatalf("page 3: want [%s], got %+v", ids[0], page3)
+	}
+}
+
+func TestPGStoragePurgeExpired(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// Tokens: one expired, one live.
+	if err := s.PutToken(TokenRecord{
+		AccessToken: "tok-expired", InstallID: "i1", TenantID: "t",
+		ExpiresAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("put expired token: %v", err)
+	}
+	if err := s.PutToken(TokenRecord{
+		AccessToken: "tok-live", InstallID: "i1", TenantID: "t",
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("put live token: %v", err)
+	}
+
+	// Auth codes: one past the AuthCodeTTLSeconds window, one fresh.
+	if err := s.PutAuthCode(AuthCode{
+		Code: "code-expired", TenantID: "t", Runtime: RuntimeClaude,
+		PersonaID: "p", ClientID: "c",
+		CreatedAt: now.Add(-time.Duration(AuthCodeTTLSeconds+60) * time.Second),
+	}); err != nil {
+		t.Fatalf("put expired code: %v", err)
+	}
+	if err := s.PutAuthCode(AuthCode{
+		Code: "code-live", TenantID: "t", Runtime: RuntimeClaude,
+		PersonaID: "p", ClientID: "c", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("put live code: %v", err)
+	}
+
+	removed, err := s.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2 (one token + one code)", removed)
+	}
+
+	if _, err := s.GetToken("tok-expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired token should be gone, got %v", err)
+	}
+	if _, err := s.GetToken("tok-live"); err != nil {
+		t.Fatalf("live token should survive the purge: %v", err)
+	}
+	if _, err := s.ConsumeAuthCode("code-expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired code should be gone, got %v", err)
+	}
+	if _, err := s.ConsumeAuthCode("code-live"); err != nil {
+		t.Fatalf("live code should survive the purge: %v", err)
+	}
+
+	// Idempotent: a second sweep finds nothing left to remove.
+	removed, err = s.PurgeExpired(now)
+	if err != nil || removed != 0 {
+		t.Fatalf("second purge: removed=%d err=%v, want 0/nil", removed, err)
 	}
 }
 

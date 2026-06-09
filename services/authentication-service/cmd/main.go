@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/xentranet/x-auth/pkg/config"
 	"github.com/xentranet/x-auth/pkg/httpx"
@@ -48,6 +49,38 @@ func main() {
 		logger.Error("db_connect_failed", "err", err)
 		os.Exit(1)
 	}
+
+	// Background sweeper: tokens and auth codes are TTL-checked only at read
+	// time, so without a sweep the stores grow unbounded. PurgeExpired removes
+	// expired tokens, stale auth codes, and long-expired sessions on every tick
+	// (interval from PURGE_INTERVAL, default 5m) until the signal-aware ctx is
+	// cancelled. Works identically against MemStorage and PGStorage.
+	purgeInterval := 5 * time.Minute
+	if v := config.Env("PURGE_INTERVAL", ""); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			logger.Warn("purge_interval_invalid", "value", v, "fallback", purgeInterval.String())
+		} else {
+			purgeInterval = d
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(purgeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				removed, err := store.PurgeExpired(time.Now().UTC())
+				if err != nil {
+					logger.Error("purge_expired_failed", "err", err)
+					continue
+				}
+				logger.Info("purge_expired", "removed", removed, "interval", purgeInterval.String())
+			}
+		}
+	}()
 
 	authenticator := internal.NewHTTPAuthenticatorClient(authenticatorURL)
 

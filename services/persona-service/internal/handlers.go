@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,20 +115,57 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, saved)
 }
 
-// List handles GET /v1/personas.
+// List handles GET /v1/personas. Supports:
+//   - limit (int, default 100, max 500)
+//   - cursor (RFC3339 timestamp; results are strictly older than this)
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
 		return
 	}
-	items, err := h.Store.List(tenantID)
+
+	q := r.URL.Query()
+
+	limit := DefaultListLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_limit",
+				"limit must be a positive integer")
+			return
+		}
+		if n > MaxListLimit {
+			n = MaxListLimit
+		}
+		limit = n
+	}
+
+	var cursor time.Time
+	if v := q.Get("cursor"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_cursor",
+				"cursor must be an RFC3339 timestamp")
+			return
+		}
+		cursor = t
+	}
+
+	items, err := h.Store.List(tenantID, limit, cursor)
 	if err != nil {
 		h.Logger.Error("persona_list_failed", "err", err, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list personas")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, ListResponse{Items: items})
+
+	resp := ListResponse{Items: items}
+	// If we returned a full page, provide a cursor for the next page. Callers that
+	// do not need pagination can ignore next_cursor.
+	if len(items) == limit && limit > 0 {
+		resp.NextCursor = items[len(items)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // Get handles GET /v1/personas/{id}.

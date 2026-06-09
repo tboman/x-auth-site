@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -65,7 +66,12 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	active := h.store.ListActiveAuthenticators(tenantID, req.UserID)
+	active, err := h.store.ListActiveAuthenticators(tenantID, req.UserID)
+	if err != nil {
+		h.log.Error("challenge_list_authenticators_failed", "err", err, "user_id", req.UserID, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list authenticators")
+		return
+	}
 	method, authr, ok := selectAuthenticator(req.Methods, active)
 	if !ok {
 		httpx.WriteError(w, http.StatusConflict, "no_authenticator_available",
@@ -100,7 +106,11 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chal.Prompt = prompt
-	h.store.PutChallenge(chal)
+	if err := h.store.PutChallenge(chal); err != nil {
+		h.log.Error("challenge_put_failed", "err", err, "challenge_id", chal.ID, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to store challenge")
+		return
+	}
 	h.log.Info("challenge_dispatched",
 		"challenge_id", chal.ID,
 		"method", method,
@@ -136,7 +146,12 @@ func (h *ChallengeHandlers) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := h.store.GetChallenge(tenantID, id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+		if errors.Is(err, ErrNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+			return
+		}
+		h.log.Error("challenge_get_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to read challenge")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, c)
@@ -170,7 +185,12 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 
 	c, err := h.store.GetChallenge(tenantID, id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+		if errors.Is(err, ErrNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+			return
+		}
+		h.log.Error("challenge_get_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to read challenge")
 		return
 	}
 
@@ -183,11 +203,16 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Lazy expiry: we flip `pending` → `expired` the first time a stale
-	// challenge is touched. Keeps phase 1 free of a background sweeper.
+	// challenge is touched (the background sweeper purges stale rows too, but
+	// the lazy flip keeps a verify between sweeps correct). If persisting the
+	// flip fails we still answer 410 — the challenge IS expired regardless, the
+	// flip is idempotent bookkeeping a later verify or sweep will redo.
 	if !h.store.Now().Before(c.ExpiresAt) {
-		_, _ = h.store.UpdateChallenge(tenantID, id, func(ch *Challenge) {
+		if _, err := h.store.UpdateChallenge(tenantID, id, func(ch *Challenge) {
 			ch.Status = ChallengeStatusExpired
-		})
+		}); err != nil {
+			h.log.Error("challenge_expire_flip_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
+		}
 		httpx.WriteError(w, http.StatusGone, "challenge_expired", "challenge has expired")
 		return
 	}
@@ -218,8 +243,15 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if err != nil {
-		// Extremely unlikely — challenge was in the store a moment ago.
-		httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+		if errors.Is(err, ErrNotFound) {
+			// Extremely unlikely — challenge was in the store a moment ago.
+			httpx.WriteError(w, http.StatusNotFound, "not_found", "challenge not found")
+			return
+		}
+		// The attempt counter / terminal status failed to persist — we must not
+		// report a verification result that isn't on record.
+		h.log.Error("challenge_update_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to update challenge")
 		return
 	}
 

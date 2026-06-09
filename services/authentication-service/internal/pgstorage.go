@@ -84,16 +84,33 @@ func (s *PGStorage) GetUserByEmail(tenantID, email string) (User, error) {
 	return u, err
 }
 
-// ListUsers returns every user for tenantID, sorted by CreatedAt asc, id
-// tie-break — the same ordering contract as MemStorage.
-func (s *PGStorage) ListUsers(tenantID string) ([]User, error) {
-	const q = `
+// ListUsers returns up to limit users for tenantID, newest first (created_at
+// desc, id desc tie-break). A non-zero cursor restricts results to rows
+// strictly older than the cursor (keyset pagination — same contract as
+// transaction-service). limit <= 0 means "no limit".
+//
+// The keyset predicate + ordering is served by the existing
+// idx_users_tenant_created (tenant_id, created_at, id) index via a backward
+// index scan — equality on tenant_id, reversed order on (created_at, id) — so
+// no additional index/migration is required.
+func (s *PGStorage) ListUsers(tenantID string, limit int, cursor time.Time) ([]User, error) {
+	base := `
 		SELECT id, tenant_id, email, name, created_at, updated_at
 		  FROM users
 		 WHERE tenant_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	args := []any{tenantID}
+	if !cursor.IsZero() {
+		base += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	base += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		base += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), base, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list_users: %w", err)
 	}
@@ -389,6 +406,45 @@ func (s *PGStorage) GetClient(clientID string) (OIDCClient, error) {
 	}
 	c.CreatedAt = c.CreatedAt.UTC()
 	return c, nil
+}
+
+// ---- Maintenance ----
+
+// PurgeExpired runs the Postgres equivalent of MemStorage.PurgeExpired — see
+// the predicate rationale documented there. In short:
+//
+//   - tokens:     expires_at < now            (read paths reject these anyway)
+//   - auth_codes: created_at < now − AuthCodeTTL  (code grant rejects as expired)
+//   - sessions:   expires_at < now − RefreshTokenTTL (grace window: an expired
+//     session may still be legitimately referenced by a live refresh token,
+//     which itself lives at most RefreshTokenTTL; only past that is it dead)
+//
+// Returns the total rows deleted across the three tables.
+func (s *PGStorage) PurgeExpired(now time.Time) (int, error) {
+	now = now.UTC()
+	total := 0
+
+	tag, err := s.pool.Exec(bgCtx(), `DELETE FROM tokens WHERE expires_at < $1`, now)
+	if err != nil {
+		return total, fmt.Errorf("pgstorage purge_expired tokens: %w", err)
+	}
+	total += int(tag.RowsAffected())
+
+	codeDeadline := now.Add(-time.Duration(AuthCodeTTLSeconds) * time.Second)
+	tag, err = s.pool.Exec(bgCtx(), `DELETE FROM auth_codes WHERE created_at < $1`, codeDeadline)
+	if err != nil {
+		return total, fmt.Errorf("pgstorage purge_expired auth_codes: %w", err)
+	}
+	total += int(tag.RowsAffected())
+
+	sessDeadline := now.Add(-time.Duration(RefreshTokenTTLSeconds) * time.Second)
+	tag, err = s.pool.Exec(bgCtx(), `DELETE FROM sessions WHERE expires_at < $1`, sessDeadline)
+	if err != nil {
+		return total, fmt.Errorf("pgstorage purge_expired sessions: %w", err)
+	}
+	total += int(tag.RowsAffected())
+
+	return total, nil
 }
 
 // -----------------------------------------------------------------------------

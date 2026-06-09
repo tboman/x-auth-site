@@ -41,6 +41,22 @@ the storage layer — an evaluation or policy written for tenant A is invisible
 | PATCH | `/v1/policies/{id}` | 200, 400, 404 |
 | DELETE | `/v1/policies/{id}` | 204, 400, 404 |
 
+`GET /v1/policies` is keyset-paginated (same contract as transaction-service's
+`GET /v1/transactions`):
+
+- `limit` — page size; positive integer, default `100`, capped at `500`.
+  Non-numeric or non-positive values are rejected with `400 invalid_limit`.
+- `cursor` — RFC3339 timestamp; returns only policies strictly older than it
+  (`400 invalid_cursor` if unparseable).
+
+Results are ordered `created_at DESC, id DESC` (newest first). When a full
+page is returned, the response includes `next_cursor` (the last item's
+`created_at`, RFC3339Nano) to pass back as `?cursor=` for the next page:
+
+```json
+{ "items": [ … ], "next_cursor": "2026-04-20T12:00:00.000000001Z" }
+```
+
 ### Evaluation shape
 
 ```json

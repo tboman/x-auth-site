@@ -30,7 +30,8 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
   [`docs/postgres.md`](../../docs/postgres.md). Schema lives in `migrations/`
   (tables: `installs`, `dcr_clients`, `auth_codes`, `tokens`). Auth codes and the
   phase-1 opaque tokens are persisted as plain rows — no Redis yet; TTLs are
-  enforced at the handler layer.
+  enforced at the handler layer, and a background sweeper deletes expired rows
+  every `PURGE_INTERVAL` (see **Environment**) so the tables don't grow unbounded.
 
 ## Phase 1 scope
 
@@ -80,6 +81,7 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/v1/installs` | manual install creation — bypasses OIDC, returns `pending` install |
+| GET | `/v1/installs` | list installs newest-first; keyset pagination via `limit` (default 100, max 500) and `cursor` (RFC3339). Returns `{"installs": [...], "next_cursor": "..."}`; `next_cursor` is present only when the page is full |
 | GET | `/v1/installs/{id}` | read an install (tenant-scoped) |
 | POST | `/v1/installs/{id}/revoke` | mark revoked, release identity, revoke grants — idempotent |
 
@@ -136,6 +138,7 @@ mark install revoked) and the client receives 502 with `error: downstream_error`
 | `GRANT_SERVICE_URL` | `http://localhost:8183` | |
 | `BROKER_ISSUER` | `http://localhost:8182` | public base URL in discovery documents |
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
+| `PURGE_INTERVAL` | `5m` | Go duration between expired-artifact sweeps (tokens past `expires_at`, auth codes older than the 300s code TTL). Each sweep logs `purge_expired` with the removed count. Invalid values fall back to `5m`. |
 | `PG_DSN_BROKER_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `BROKER_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |

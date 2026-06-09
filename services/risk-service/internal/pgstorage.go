@@ -146,16 +146,30 @@ func (s *PGStorage) GetPolicy(tenantID, id string) (Policy, error) {
 	return p, err
 }
 
-// ListPolicies returns every policy belonging to tenantID, ordered by
-// created_at ASC, id ASC — same contract as MemStorage.ListPolicies.
-func (s *PGStorage) ListPolicies(tenantID string) ([]Policy, error) {
-	const q = `
+// ListPolicies returns up to `limit` policies belonging to tenantID, ordered
+// created_at DESC, id DESC — same keyset contract as MemStorage.ListPolicies.
+// A non-zero cursor returns only rows strictly older than it; limit <= 0
+// disables the cap (the evaluation overlay loads every tenant policy this way).
+// The existing idx_policy_tenant_created (tenant_id, created_at, id) btree
+// serves this via a backward index scan — no DESC index needed.
+func (s *PGStorage) ListPolicies(tenantID string, limit int, cursor time.Time) ([]Policy, error) {
+	base := `
 		SELECT id, tenant_id, name, rules, created_at, updated_at
 		  FROM risk_policies
 		 WHERE tenant_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	args := []any{tenantID}
+	if !cursor.IsZero() {
+		base += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	base += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		base += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), base, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list_policies: %w", err)
 	}

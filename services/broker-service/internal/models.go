@@ -89,6 +89,21 @@ const (
 	AuthCodeTTLSeconds     = 300
 )
 
+// Pagination bounds for GET /v1/installs — same contract as
+// transaction-service's GET /v1/transactions.
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
+)
+
+// InstallListResponse is the envelope returned by GET /v1/installs. NextCursor is
+// only set when a full page was returned; pass it back as ?cursor= to fetch the
+// next (strictly older) page.
+type InstallListResponse struct {
+	Installs   []Install `json:"installs"`
+	NextCursor string    `json:"next_cursor,omitempty"`
+}
+
 // ValidRuntime reports whether s is one of the four supported runtime strings.
 func ValidRuntime(s string) bool {
 	switch s {

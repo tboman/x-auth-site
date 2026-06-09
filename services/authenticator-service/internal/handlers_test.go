@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -232,10 +233,12 @@ func TestListReturnsOnlyOwnTenant(t *testing.T) {
 
 	// Drop a cross-tenant record directly into the store; listing for the same
 	// user id via the HTTP layer must not see it.
-	store.PutAuthenticator(Authenticator{
+	if err := store.PutAuthenticator(Authenticator{
 		ID: "authr_other", TenantID: "ten_other", UserID: "u1", Method: MethodTOTP,
 		Status: AuthenticatorStatusActive, CreatedAt: clock.now(), UpdatedAt: clock.now(),
-	})
+	}); err != nil {
+		t.Fatalf("seed cross-tenant authenticator: %v", err)
+	}
 
 	resp := do(t, srv, http.MethodGet, "/v1/authenticators?user_id=u1", nil)
 	var list ListResponse
@@ -520,6 +523,168 @@ func TestVerifyWrongTenantIs404(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("want 404 cross-tenant, got %d", resp.StatusCode)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Storage failure → 500 (phase 2.1 widened Storage signatures)
+// -----------------------------------------------------------------------------
+
+// errStorageDown simulates a Postgres outage behind the Storage interface.
+var errStorageDown = errors.New("storage down")
+
+// failingStore wraps a healthy in-memory Store but fails every write
+// (PutAuthenticator / PutChallenge / PurgeExpired) and — when failLists is
+// set — the List* reads too. Reads not overridden delegate to the embedded
+// Store so tests can seed state and exercise specific failure points.
+type failingStore struct {
+	*Store
+	failLists bool
+}
+
+func (f *failingStore) PutAuthenticator(Authenticator) error { return errStorageDown }
+func (f *failingStore) PutChallenge(Challenge) error         { return errStorageDown }
+func (f *failingStore) PurgeExpired(time.Time) (int, error)  { return 0, errStorageDown }
+
+func (f *failingStore) ListAuthenticators(tenantID, userID string) ([]Authenticator, error) {
+	if f.failLists {
+		return nil, errStorageDown
+	}
+	return f.Store.ListAuthenticators(tenantID, userID)
+}
+
+func (f *failingStore) ListActiveAuthenticators(tenantID, userID string) ([]Authenticator, error) {
+	if f.failLists {
+		return nil, errStorageDown
+	}
+	return f.Store.ListActiveAuthenticators(tenantID, userID)
+}
+
+// newFailingServer builds a Router on top of a failingStore.
+func newFailingServer(t *testing.T, failLists bool) (*httptest.Server, *failingStore) {
+	t.Helper()
+	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	store := &failingStore{Store: NewStore(clock.now), failLists: failLists}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log)))
+	t.Cleanup(srv.Close)
+	return srv, store
+}
+
+// assertInternalError checks the response is a 500 with code internal_error.
+func assertInternalError(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("want 500 on storage failure, got %d", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	decode(t, resp, &body)
+	if body.Error != "internal_error" {
+		t.Fatalf("want error=internal_error, got %q", body.Error)
+	}
+}
+
+// TestEnrollStorageFailureIs500 pins the phase-2.1 fix: a failed
+// PutAuthenticator must surface as 500 internal_error, not a phantom 201
+// claiming the enrollment was stored.
+func TestEnrollStorageFailureIs500(t *testing.T) {
+	srv, _ := newFailingServer(t, false)
+	resp := do(t, srv, http.MethodPost, "/v1/authenticators", EnrollRequest{
+		UserID: "u1", Method: MethodTOTP,
+	})
+	assertInternalError(t, resp)
+}
+
+func TestListStorageFailureIs500(t *testing.T) {
+	srv, _ := newFailingServer(t, true)
+	resp := do(t, srv, http.MethodGet, "/v1/authenticators?user_id=u1", nil)
+	assertInternalError(t, resp)
+}
+
+func TestChallengeCreateListFailureIs500(t *testing.T) {
+	srv, _ := newFailingServer(t, true)
+	resp := do(t, srv, http.MethodPost, "/v1/challenges", ChallengeRequest{
+		UserID: "u1", Methods: []string{MethodTOTP},
+	})
+	assertInternalError(t, resp)
+}
+
+// TestChallengeCreatePutFailureIs500 seeds an active authenticator into the
+// healthy embedded store (so method selection and adapter dispatch succeed)
+// and asserts the failed PutChallenge yields 500, not a phantom 201 with a
+// challenge_id that was never persisted.
+func TestChallengeCreatePutFailureIs500(t *testing.T) {
+	srv, store := newFailingServer(t, false)
+	if err := store.Store.PutAuthenticator(Authenticator{
+		ID: "authr_seed", TenantID: testTenant, UserID: "u1", Method: MethodTOTP,
+		Status:    AuthenticatorStatusActive,
+		CreatedAt: store.Now(), UpdatedAt: store.Now(),
+	}); err != nil {
+		t.Fatalf("seed authenticator: %v", err)
+	}
+	resp := do(t, srv, http.MethodPost, "/v1/challenges", ChallengeRequest{
+		UserID: "u1", Methods: []string{MethodTOTP},
+	})
+	assertInternalError(t, resp)
+}
+
+// -----------------------------------------------------------------------------
+// Expired-challenge purge (in-memory)
+// -----------------------------------------------------------------------------
+
+// TestStorePurgeExpired pins the purge predicate: pending-past-expiry and
+// lazily-flipped `expired` rows go; live pending and terminal completed/failed
+// rows (the audit trail) stay.
+func TestStorePurgeExpired(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	store := NewStore(clock.now)
+	now := clock.now()
+
+	seed := []Challenge{
+		{ID: "ch_live", TenantID: testTenant, Status: ChallengeStatusPending,
+			CreatedAt: now, ExpiresAt: now.Add(time.Minute)}, // kept: pending, still live
+		{ID: "ch_stale", TenantID: testTenant, Status: ChallengeStatusPending,
+			CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Second)}, // purged: pending past expiry
+		{ID: "ch_boundary", TenantID: testTenant, Status: ChallengeStatusPending,
+			CreatedAt: now.Add(-ChallengeTTL), ExpiresAt: now}, // purged: expires_at == now (verify treats now >= expires_at as expired)
+		{ID: "ch_flipped", TenantID: testTenant, Status: ChallengeStatusExpired,
+			CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Hour)}, // purged: already flipped to expired
+		{ID: "ch_done", TenantID: testTenant, Status: ChallengeStatusCompleted,
+			CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Hour)}, // kept: audit trail
+		{ID: "ch_locked", TenantID: testTenant, Status: ChallengeStatusFailed,
+			CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Hour)}, // kept: audit trail
+	}
+	for _, c := range seed {
+		if err := store.PutChallenge(c); err != nil {
+			t.Fatalf("seed %s: %v", c.ID, err)
+		}
+	}
+
+	n, err := store.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("want 3 purged, got %d", n)
+	}
+
+	for _, id := range []string{"ch_live", "ch_done", "ch_locked"} {
+		if _, err := store.GetChallenge(testTenant, id); err != nil {
+			t.Fatalf("%s should survive purge, got %v", id, err)
+		}
+	}
+	for _, id := range []string{"ch_stale", "ch_boundary", "ch_flipped"} {
+		if _, err := store.GetChallenge(testTenant, id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s should be purged, got %v", id, err)
+		}
+	}
+
+	// Purge is idempotent: a second sweep finds nothing.
+	n, err = store.PurgeExpired(now)
+	if err != nil || n != 0 {
+		t.Fatalf("second purge: want (0, nil), got (%d, %v)", n, err)
 	}
 }
 

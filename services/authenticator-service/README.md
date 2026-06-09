@@ -77,6 +77,7 @@ adapter` comment at the swap point.
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PG_DSN_AUTHENTICATOR_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `PURGE_INTERVAL` | `5m` | Go duration; how often the background sweeper deletes expired challenges (pending past `expires_at`, plus lazily-flipped `expired` rows). Completed/failed challenges are kept as the step-up audit trail. Each sweep logs `purge_expired` with the row count. |
 | `AUTHENTICATOR_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
 
 ## Run locally

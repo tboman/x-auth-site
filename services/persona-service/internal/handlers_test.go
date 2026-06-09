@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xentranet/x-auth/pkg/logx"
 )
@@ -186,5 +187,117 @@ func TestGetUnknownReturns404(t *testing.T) {
 	rec := doJSON(t, newServer(t), http.MethodGet, "/v1/personas/does-not-exist", testTenant, nil)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", rec.Code)
+	}
+}
+
+func TestListRejectsInvalidLimit(t *testing.T) {
+	h := newServer(t)
+	for _, q := range []string{"?limit=abc", "?limit=0", "?limit=-1"} {
+		rec := doJSON(t, h, http.MethodGet, "/v1/personas"+q, testTenant, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d", q, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "invalid_limit") {
+			t.Fatalf("%s: want invalid_limit error, got %s", q, rec.Body.String())
+		}
+	}
+}
+
+func TestListRejectsInvalidCursor(t *testing.T) {
+	rec := doJSON(t, newServer(t), http.MethodGet, "/v1/personas?cursor=notatime", testTenant, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_cursor") {
+		t.Fatalf("want invalid_cursor error, got %s", rec.Body.String())
+	}
+}
+
+// spyStorage wraps MemStorage and records the limit passed to List, so the
+// handler's limit defaulting/capping can be asserted directly.
+type spyStorage struct {
+	*MemStorage
+	lastLimit int
+}
+
+func (s *spyStorage) List(tenantID string, limit int, cursor time.Time) ([]Persona, error) {
+	s.lastLimit = limit
+	return s.MemStorage.List(tenantID, limit, cursor)
+}
+
+func TestListLimitDefaultAndCap(t *testing.T) {
+	spy := &spyStorage{MemStorage: NewMemStorage()}
+	h := NewHandlers(spy, logx.New("persona-service-test")).Router()
+
+	// No limit param -> DefaultListLimit.
+	rec := doJSON(t, h, http.MethodGet, "/v1/personas", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: want 200, got %d", rec.Code)
+	}
+	if spy.lastLimit != DefaultListLimit {
+		t.Fatalf("default limit: want %d, got %d", DefaultListLimit, spy.lastLimit)
+	}
+
+	// Oversized limit -> capped at MaxListLimit, not rejected.
+	rec = doJSON(t, h, http.MethodGet, "/v1/personas?limit=9999", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capped list: want 200, got %d", rec.Code)
+	}
+	if spy.lastLimit != MaxListLimit {
+		t.Fatalf("capped limit: want %d, got %d", MaxListLimit, spy.lastLimit)
+	}
+}
+
+func TestListPaginationTwoPageWalk(t *testing.T) {
+	h := newServer(t)
+
+	// Seed 3 personas with distinct CreatedAt values (the handler stamps time.Now,
+	// so pause between creates to avoid identical timestamps).
+	for i := 0; i < 3; i++ {
+		rec := doJSON(t, h, http.MethodPost, "/v1/personas", testTenant, map[string]any{"name": "p"})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed %d: want 201, got %d", i, rec.Code)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	rec := doJSON(t, h, http.MethodGet, "/v1/personas?limit=2", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	var page1 ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &page1); err != nil {
+		t.Fatalf("unmarshal page1: %v", err)
+	}
+	if len(page1.Items) != 2 {
+		t.Fatalf("first page want 2 items, got %d", len(page1.Items))
+	}
+	// Newest first.
+	if page1.Items[0].CreatedAt.Before(page1.Items[1].CreatedAt) {
+		t.Fatalf("expected created_at DESC ordering: %v then %v",
+			page1.Items[0].CreatedAt, page1.Items[1].CreatedAt)
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("expected next_cursor when page is full")
+	}
+
+	rec = doJSON(t, h, http.MethodGet, "/v1/personas?limit=2&cursor="+page1.NextCursor, testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list page2: %d", rec.Code)
+	}
+	var page2 ListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &page2); err != nil {
+		t.Fatalf("unmarshal page2: %v", err)
+	}
+	if len(page2.Items) != 1 {
+		t.Fatalf("second page want 1 item, got %d", len(page2.Items))
+	}
+	if page2.NextCursor != "" {
+		t.Fatalf("final page should not emit a cursor, got %q", page2.NextCursor)
+	}
+	// No overlap between pages.
+	seen := map[string]bool{page1.Items[0].ID: true, page1.Items[1].ID: true}
+	if seen[page2.Items[0].ID] {
+		t.Fatalf("page 2 repeated item %s from page 1", page2.Items[0].ID)
 	}
 }

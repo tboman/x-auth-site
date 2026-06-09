@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -479,6 +480,99 @@ func TestPolicyRejectsBadRule(t *testing.T) {
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad field: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// ---------- Policy list pagination ----------
+
+func TestListPoliciesInvalidLimit(t *testing.T) {
+	h, _ := newRouter(t, midDayClock())
+	for _, v := range []string{"abc", "0", "-5", "1.5"} {
+		rec := doJSON(t, h, http.MethodGet, "/v1/policies?limit="+v, testTenant, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("limit=%s: want 400, got %d (%s)", v, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestListPoliciesInvalidCursor(t *testing.T) {
+	h, _ := newRouter(t, midDayClock())
+	rec := doJSON(t, h, http.MethodGet, "/v1/policies?cursor=not-a-timestamp", testTenant, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// Limits above MaxListLimit are capped rather than rejected.
+func TestListPoliciesLimitCapped(t *testing.T) {
+	h, store := newRouter(t, midDayClock())
+	base := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < MaxListLimit+10; i++ {
+		_, _ = store.CreatePolicy(Policy{
+			ID:        fmt.Sprintf("pol_%05d", i),
+			TenantID:  testTenant,
+			Name:      "p",
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+			UpdatedAt: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	rec := doJSON(t, h, http.MethodGet, "/v1/policies?limit=99999", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var list ListPoliciesResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list.Items) != MaxListLimit {
+		t.Fatalf("want %d items (capped), got %d", MaxListLimit, len(list.Items))
+	}
+	if list.NextCursor == "" {
+		t.Fatal("expected next_cursor when page is full")
+	}
+}
+
+// Walk two keyset pages: newest first, next_cursor on the full page, no
+// cursor on the final partial page, no cross-tenant leakage.
+func TestListPoliciesTwoPageWalk(t *testing.T) {
+	h, store := newRouter(t, midDayClock())
+	base := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
+	ids := []string{"pol_old", "pol_mid", "pol_new"} // ascending CreatedAt
+	for i, id := range ids {
+		_, _ = store.CreatePolicy(Policy{
+			ID: id, TenantID: testTenant, Name: "p",
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			UpdatedAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	// Another tenant's policy must not appear on any page.
+	_, _ = store.CreatePolicy(Policy{
+		ID: "pol_other", TenantID: "tenant-b", Name: "p",
+		CreatedAt: base.Add(time.Hour), UpdatedAt: base.Add(time.Hour),
+	})
+
+	rec := doJSON(t, h, http.MethodGet, "/v1/policies?limit=2", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page 1: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var page1 ListPoliciesResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &page1)
+	if len(page1.Items) != 2 || page1.Items[0].ID != "pol_new" || page1.Items[1].ID != "pol_mid" {
+		t.Fatalf("page 1 mismatch (want newest first): %+v", page1.Items)
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("expected next_cursor when page is full")
+	}
+
+	rec = doJSON(t, h, http.MethodGet, "/v1/policies?limit=2&cursor="+page1.NextCursor, testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page 2: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var page2 ListPoliciesResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &page2)
+	if len(page2.Items) != 1 || page2.Items[0].ID != "pol_old" {
+		t.Fatalf("page 2 mismatch: %+v", page2.Items)
+	}
+	if page2.NextCursor != "" {
+		t.Fatal("final page should not emit a cursor")
 	}
 }
 

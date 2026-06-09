@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,16 +72,28 @@ func (s *PGStorage) GetPool(tenantID, id string) (Pool, error) {
 	return p, err
 }
 
-// ListPools returns all pools owned by tenantID, ordered by created_at ASC, id ASC —
-// the same deterministic order MemStorage produces.
-func (s *PGStorage) ListPools(tenantID string) ([]Pool, error) {
-	const q = `
+// ListPools returns up to `limit` pools owned by tenantID using keyset pagination:
+// ordered by created_at DESC, id DESC, returning only rows strictly older than a
+// non-zero cursor — the same deterministic order MemStorage produces. The query is
+// served by idx_pools_tenant_created via a backward index scan.
+func (s *PGStorage) ListPools(tenantID string, limit int, cursor time.Time) ([]Pool, error) {
+	q := `
 		SELECT id, tenant_id, name, size, persona_ids, created_at, updated_at
 		  FROM pools
 		 WHERE tenant_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	args := []any{tenantID}
+	if !cursor.IsZero() {
+		q += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list_pools: %w", err)
 	}
@@ -166,20 +179,33 @@ func (s *PGStorage) AddIdentity(tenantID, poolID string, ident Identity) (Identi
 	return ident, nil
 }
 
-// ListIdentities returns every identity in poolID (tenant-scoped), ordered by
-// created_at ASC, id ASC.
-func (s *PGStorage) ListIdentities(tenantID, poolID string) ([]Identity, error) {
+// ListIdentities returns up to `limit` identities in poolID (tenant-scoped) using
+// keyset pagination: ordered by created_at DESC, id DESC, returning only rows
+// strictly older than a non-zero cursor. Served by idx_identities_pool_created via
+// a backward index scan. Note: ClaimIdentity intentionally keeps its oldest-first
+// ASC pick — only this list endpoint pages newest-first.
+func (s *PGStorage) ListIdentities(tenantID, poolID string, limit int, cursor time.Time) ([]Identity, error) {
 	// Tenant-scope via the pool, and distinguish "pool missing" from "pool empty".
 	if _, err := s.GetPool(tenantID, poolID); err != nil {
 		return nil, err
 	}
-	const q = `
+	q := `
 		SELECT id, pool_id, subject_id, status, claimed_by_install_id, created_at, updated_at
 		  FROM identities
 		 WHERE pool_id = $1
-		 ORDER BY created_at ASC, id ASC
 	`
-	rows, err := s.pool.Query(bgCtx(), q, poolID)
+	args := []any{poolID}
+	if !cursor.IsZero() {
+		q += ` AND created_at < $2`
+		args = append(args, cursor.UTC())
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT $%d`, len(args)+1)
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(bgCtx(), q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgstorage list_identities: %w", err)
 	}

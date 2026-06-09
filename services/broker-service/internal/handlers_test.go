@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // mockClients is an in-process stand-in for HTTPClients. Each method is backed by
@@ -204,7 +206,7 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	}
 
 	// Install should now be active with the claimed identity id filled in.
-	installs, _ := store.ListInstalls("tenant-1")
+	installs, _ := store.ListInstalls("tenant-1", 0, time.Time{})
 	if len(installs) != 1 {
 		t.Fatalf("expected 1 install, got %d", len(installs))
 	}
@@ -269,7 +271,7 @@ func TestTokenGrantFailureReleasesIdentity(t *testing.T) {
 		t.Fatalf("expected compensation release call, got %d", mc.ReleaseCalls)
 	}
 	// Install should exist but be revoked.
-	installs, _ := store.ListInstalls("tenant-x")
+	installs, _ := store.ListInstalls("tenant-x", 0, time.Time{})
 	if len(installs) != 1 {
 		t.Fatalf("expected 1 install, got %d", len(installs))
 	}
@@ -380,6 +382,155 @@ func TestInstallsRequireTenantHeader(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 without tenant header, got %d", w.Code)
+	}
+}
+
+// --- GET /v1/installs: keyset pagination ---
+
+// seedInstalls inserts n installs for tenantID with strictly increasing CreatedAt
+// (1s apart) and predictable ids ins-0..ins-(n-1).
+func seedInstalls(t *testing.T, store Storage, tenantID string, n int) time.Time {
+	t.Helper()
+	base := time.Now().UTC().Add(-time.Duration(n) * time.Minute).Truncate(time.Millisecond)
+	for k := 0; k < n; k++ {
+		ts := base.Add(time.Duration(k) * time.Second)
+		if _, err := store.CreateInstall(Install{
+			ID: fmt.Sprintf("ins-%d", k), TenantID: tenantID, Runtime: RuntimeClaude,
+			PersonaID: "p", ClientID: "c", Status: InstallStatusPending,
+			CreatedAt: ts, UpdatedAt: ts,
+		}); err != nil {
+			t.Fatalf("seed install %d: %v", k, err)
+		}
+	}
+	return base
+}
+
+func TestListInstallsTwoPageWalk(t *testing.T) {
+	r, store := newTestRouter(t, &mockClients{})
+	seedInstalls(t, store, "tenant-1", 3)
+
+	// Page 1: newest two, full page -> cursor emitted.
+	req := httptest.NewRequest(http.MethodGet, "/v1/installs?limit=2", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list page 1: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var page1 InstallListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &page1); err != nil {
+		t.Fatalf("list page 1: invalid JSON: %v", err)
+	}
+	if len(page1.Installs) != 2 {
+		t.Fatalf("page 1: want 2 installs, got %d", len(page1.Installs))
+	}
+	if page1.Installs[0].ID != "ins-2" || page1.Installs[1].ID != "ins-1" {
+		t.Fatalf("page 1 not newest-first: %s, %s", page1.Installs[0].ID, page1.Installs[1].ID)
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1: expected next_cursor when page is full")
+	}
+
+	// Page 2: strictly older than the cursor.
+	req = httptest.NewRequest(http.MethodGet, "/v1/installs?limit=2&cursor="+url.QueryEscape(page1.NextCursor), nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list page 2: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var page2 InstallListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &page2); err != nil {
+		t.Fatalf("list page 2: invalid JSON: %v", err)
+	}
+	if len(page2.Installs) != 1 || page2.Installs[0].ID != "ins-0" {
+		t.Fatalf("page 2: want [ins-0], got %+v", page2.Installs)
+	}
+	if page2.NextCursor != "" {
+		t.Fatalf("page 2: final partial page should not emit a cursor, got %q", page2.NextCursor)
+	}
+}
+
+func TestListInstallsInvalidParams(t *testing.T) {
+	r, _ := newTestRouter(t, &mockClients{})
+	cases := []struct {
+		query    string
+		wantCode string
+	}{
+		{"limit=0", "invalid_limit"},
+		{"limit=-3", "invalid_limit"},
+		{"limit=abc", "invalid_limit"},
+		{"cursor=not-a-timestamp", "invalid_cursor"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/v1/installs?"+tc.query, nil)
+		req.Header.Set("X-Tenant-Id", "tenant-1")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d (%s)", tc.query, w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp["error"] != tc.wantCode {
+			t.Fatalf("%s: error = %v, want %s", tc.query, resp["error"], tc.wantCode)
+		}
+	}
+}
+
+// --- MemStorage.PurgeExpired removes expired artifacts, keeps live ones ---
+
+func TestMemPurgeExpired(t *testing.T) {
+	store := NewMemStorage()
+	now := time.Now().UTC()
+
+	// Tokens: one expired, one live.
+	_ = store.PutToken(TokenRecord{
+		AccessToken: "tok-expired", InstallID: "i1", TenantID: "t",
+		ExpiresAt: now.Add(-time.Minute),
+	})
+	_ = store.PutToken(TokenRecord{
+		AccessToken: "tok-live", InstallID: "i1", TenantID: "t",
+		ExpiresAt: now.Add(10 * time.Minute),
+	})
+
+	// Auth codes: one past the AuthCodeTTLSeconds window, one fresh.
+	_ = store.PutAuthCode(AuthCode{
+		Code: "code-expired", TenantID: "t", Runtime: RuntimeClaude,
+		PersonaID: "p", ClientID: "c",
+		CreatedAt: now.Add(-time.Duration(AuthCodeTTLSeconds+60) * time.Second),
+	})
+	_ = store.PutAuthCode(AuthCode{
+		Code: "code-live", TenantID: "t", Runtime: RuntimeClaude,
+		PersonaID: "p", ClientID: "c",
+		CreatedAt: now,
+	})
+
+	removed, err := store.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2 (one token + one code)", removed)
+	}
+
+	if _, err := store.GetToken("tok-expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired token should be gone, got %v", err)
+	}
+	if _, err := store.GetToken("tok-live"); err != nil {
+		t.Fatalf("live token should survive the purge: %v", err)
+	}
+	if _, err := store.ConsumeAuthCode("code-expired"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired code should be gone, got %v", err)
+	}
+	if _, err := store.ConsumeAuthCode("code-live"); err != nil {
+		t.Fatalf("live code should survive the purge: %v", err)
+	}
+
+	// Idempotent: a second sweep finds nothing.
+	removed, err = store.PurgeExpired(now)
+	if err != nil || removed != 0 {
+		t.Fatalf("second purge: removed=%d err=%v, want 0/nil", removed, err)
 	}
 }
 

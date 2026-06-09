@@ -25,10 +25,13 @@ type Storage interface {
 	GetEvaluation(tenantID, id string) (RiskEvaluation, error)
 	UserHasPriorEvaluation(tenantID, userID string) bool
 
-	// Policies — standard CRUD.
+	// Policies — standard CRUD. ListPolicies is keyset-paginated: limit caps
+	// the page size (limit <= 0 means unbounded — used by the evaluation
+	// overlay, which needs every tenant policy), and a non-zero cursor returns
+	// only policies strictly older than it, ordered created_at DESC, id DESC.
 	CreatePolicy(p Policy) (Policy, error)
 	GetPolicy(tenantID, id string) (Policy, error)
-	ListPolicies(tenantID string) ([]Policy, error)
+	ListPolicies(tenantID string, limit int, cursor time.Time) ([]Policy, error)
 	UpdatePolicy(p Policy) (Policy, error)
 	DeletePolicy(tenantID, id string) error
 }
@@ -102,22 +105,32 @@ func (s *MemStorage) GetPolicy(tenantID, id string) (Policy, error) {
 	return p, nil
 }
 
-// ListPolicies returns every policy belonging to tenantID, sorted by CreatedAt asc.
-func (s *MemStorage) ListPolicies(tenantID string) ([]Policy, error) {
+// ListPolicies returns up to `limit` policies owned by tenantID, ordered by
+// CreatedAt desc, ID desc. If `cursor` is non-zero, only policies strictly
+// older than the cursor are returned, providing stable keyset pagination
+// without storing offsets. limit <= 0 disables the cap.
+func (s *MemStorage) ListPolicies(tenantID string, limit int, cursor time.Time) ([]Policy, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Policy, 0)
 	for _, p := range s.policies {
-		if p.TenantID == tenantID {
-			out = append(out, p)
+		if p.TenantID != tenantID {
+			continue
 		}
+		if !cursor.IsZero() && !p.CreatedAt.Before(cursor) {
+			continue
+		}
+		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+			return out[i].ID > out[j].ID
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

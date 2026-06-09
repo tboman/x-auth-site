@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockAuthenticator is an in-process stand-in for HTTPAuthenticatorClient. Each
@@ -172,6 +174,211 @@ func TestUserDuplicateEmail(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("duplicate create: expected 409, got %d", w.Code)
+	}
+}
+
+// --- GET /v1/users keyset pagination ---
+
+func TestUserListPagination(t *testing.T) {
+	r, store := newTestRouter(t)
+
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 3; i++ {
+		ts := base.Add(time.Duration(i) * time.Second)
+		if _, err := store.CreateUser(User{
+			ID: fmt.Sprintf("usr_%02d", i), TenantID: "ten_a",
+			Email: fmt.Sprintf("u%d@example.com", i), CreatedAt: ts, UpdatedAt: ts,
+		}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	// Page 1: newest first, full page carries next_cursor.
+	req := httptest.NewRequest(http.MethodGet, "/v1/users?limit=2", nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page1: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var page1 ListUsersResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &page1); err != nil {
+		t.Fatalf("page1: bad JSON: %v", err)
+	}
+	if len(page1.Users) != 2 {
+		t.Fatalf("page1: want 2 users, got %d", len(page1.Users))
+	}
+	if page1.Users[0].ID != "usr_02" || page1.Users[1].ID != "usr_01" {
+		t.Fatalf("page1: wrong order: %s, %s", page1.Users[0].ID, page1.Users[1].ID)
+	}
+	if page1.NextCursor == "" {
+		t.Fatalf("page1: expected next_cursor when page is full")
+	}
+
+	// Page 2 via cursor: strictly older users only; short page emits no cursor.
+	req = httptest.NewRequest(http.MethodGet,
+		"/v1/users?limit=2&cursor="+url.QueryEscape(page1.NextCursor), nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page2: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var page2 ListUsersResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &page2)
+	if len(page2.Users) != 1 || page2.Users[0].ID != "usr_00" {
+		t.Fatalf("page2: want only usr_00, got %+v", page2.Users)
+	}
+	if page2.NextCursor != "" {
+		t.Fatalf("page2: final short page should not emit a cursor")
+	}
+}
+
+// --- GET /v1/users rejects malformed limit / cursor ---
+
+func TestUserListInvalidParams(t *testing.T) {
+	r, _ := newTestRouter(t)
+	for _, tc := range []struct{ query, wantCode string }{
+		{"limit=abc", "invalid_limit"},
+		{"limit=0", "invalid_limit"},
+		{"limit=-5", "invalid_limit"},
+		{"cursor=not-a-timestamp", "invalid_cursor"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/users?"+tc.query, nil)
+		req.Header.Set("X-Tenant-Id", "ten_a")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d", tc.query, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), tc.wantCode) {
+			t.Fatalf("%s: body %q missing error code %q", tc.query, w.Body.String(), tc.wantCode)
+		}
+	}
+}
+
+// --- PurgeExpired sweeps dead artefacts and keeps live ones (mem) ---
+
+func TestPurgeExpiredMem(t *testing.T) {
+	r, store := newTestRouter(t)
+	now := time.Now().UTC()
+
+	// Mint a real token pair via /authorize -> /token so we can prove a purged
+	// token stops authenticating end-to-end.
+	authURL := "/authorize?" + url.Values{
+		"client_id":    {DefaultClientID},
+		"redirect_uri": {"http://localhost:3000/callback"},
+		"tenant_id":    {"ten_a"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodGet, authURL, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	code := loc.Query().Get("code")
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {DefaultClientID}}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var tok struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &tok)
+
+	// Sanity: the access token authenticates before the purge.
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("userinfo before purge: expected 200, got %d", w.Code)
+	}
+
+	// Force-expire the access token record (PutToken upserts by hash).
+	rec, err := store.GetTokenByHash(HashToken(tok.AccessToken))
+	if err != nil {
+		t.Fatalf("get access token record: %v", err)
+	}
+	rec.ExpiresAt = now.Add(-time.Minute)
+	if err := store.PutToken(rec); err != nil {
+		t.Fatalf("expire access token: %v", err)
+	}
+
+	// Seed the remaining purge candidates and survivors directly.
+	if err := store.PutAuthCode(AuthCode{
+		Code: "stale-code", ClientID: DefaultClientID, TenantID: "ten_a", UserID: "usr_x",
+		RedirectURI: "http://localhost:3000/callback",
+		CreatedAt:   now.Add(-time.Duration(AuthCodeTTLSeconds+60) * time.Second),
+	}); err != nil {
+		t.Fatalf("seed stale code: %v", err)
+	}
+	if err := store.PutAuthCode(AuthCode{
+		Code: "fresh-code", ClientID: DefaultClientID, TenantID: "ten_a", UserID: "usr_x",
+		RedirectURI: "http://localhost:3000/callback", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed fresh code: %v", err)
+	}
+	// Dead session: expired longer ago than the refresh-token grace window.
+	if _, err := store.CreateSession(Session{
+		ID: "ses_dead", TenantID: "ten_a", UserID: "usr_x", RiskLevel: RiskLow,
+		CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour),
+		ExpiresAt: now.Add(-time.Duration(RefreshTokenTTLSeconds)*time.Second - time.Hour),
+	}); err != nil {
+		t.Fatalf("seed dead session: %v", err)
+	}
+	// Recently-expired session: within the grace window — must survive (a live
+	// refresh token may still legitimately reference it).
+	if _, err := store.CreateSession(Session{
+		ID: "ses_recent", TenantID: "ten_a", UserID: "usr_x", RiskLevel: RiskLow,
+		CreatedAt: now.Add(-2 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
+		ExpiresAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed recent session: %v", err)
+	}
+
+	// Expect exactly: expired access token + stale code + dead session = 3.
+	// (The refresh token and the OIDC-flow session are live and must survive.)
+	removed, err := store.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 3 {
+		t.Fatalf("removed = %d, want 3", removed)
+	}
+
+	// Purged artefacts are gone...
+	if _, err := store.GetTokenByHash(HashToken(tok.AccessToken)); err != ErrNotFound {
+		t.Fatalf("expired access token should be purged, got %v", err)
+	}
+	if _, err := store.ConsumeAuthCode("stale-code"); err != ErrNotFound {
+		t.Fatalf("stale code should be purged, got %v", err)
+	}
+	if _, err := store.GetSession("ten_a", "ses_dead"); err != ErrNotFound {
+		t.Fatalf("dead session should be purged, got %v", err)
+	}
+
+	// ...live ones are kept.
+	if _, err := store.GetTokenByHash(HashToken(tok.RefreshToken)); err != nil {
+		t.Fatalf("live refresh token should be kept: %v", err)
+	}
+	if _, err := store.ConsumeAuthCode("fresh-code"); err != nil {
+		t.Fatalf("fresh code should be kept: %v", err)
+	}
+	if _, err := store.GetSession("ten_a", "ses_recent"); err != nil {
+		t.Fatalf("recently expired session should be kept (grace window): %v", err)
+	}
+
+	// And the purged access token no longer authenticates.
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo after purge: expected 401, got %d", w.Code)
 	}
 }
 

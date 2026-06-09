@@ -132,18 +132,68 @@ func TestPGStorageListOrdering(t *testing.T) {
 		t.Fatalf("seed other tenant: %v", err)
 	}
 
-	items, err := s.List("tenant-a")
+	items, err := s.List("tenant-a", 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(items) != 3 {
 		t.Fatalf("want 3 personas, got %d", len(items))
 	}
-	// CreatedAt ascending, same as MemStorage.List.
+	// CreatedAt descending (newest first), same as MemStorage.List.
 	for i, want := range ids {
-		if items[i].ID != want {
-			t.Fatalf("ordering mismatch at %d: got %s want %s", i, items[i].ID, want)
+		got := items[len(items)-1-i].ID
+		if got != want {
+			t.Fatalf("ordering mismatch at %d: got %s want %s", i, got, want)
 		}
+	}
+}
+
+func TestPGStorageListKeysetPagination(t *testing.T) {
+	s := newPGStorage(t)
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	ids := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		ids[i] = uuid.NewString()
+		ts := base.Add(time.Duration(i) * time.Second)
+		if _, err := s.Create(Persona{
+			ID: ids[i], TenantID: "tenant-a", Name: "p", Scopes: []string{},
+			TokenTTLSeconds: DefaultTokenTTLSeconds, CreatedAt: ts, UpdatedAt: ts,
+		}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	first, err := s.List("tenant-a", 2, time.Time{})
+	if err != nil {
+		t.Fatalf("list page1: %v", err)
+	}
+	if len(first) != 2 {
+		t.Fatalf("first page want 2 got %d", len(first))
+	}
+	// Newest first: ids[4], ids[3].
+	if first[0].ID != ids[4] || first[1].ID != ids[3] {
+		t.Fatalf("first page ordering mismatch: got [%s %s] want [%s %s]",
+			first[0].ID, first[1].ID, ids[4], ids[3])
+	}
+
+	second, err := s.List("tenant-a", 2, first[len(first)-1].CreatedAt)
+	if err != nil {
+		t.Fatalf("list page2: %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("second page want 2 got %d", len(second))
+	}
+	if second[0].ID != ids[2] || second[1].ID != ids[1] {
+		t.Fatalf("second page ordering mismatch: got [%s %s] want [%s %s]",
+			second[0].ID, second[1].ID, ids[2], ids[1])
+	}
+
+	third, err := s.List("tenant-a", 2, second[len(second)-1].CreatedAt)
+	if err != nil {
+		t.Fatalf("list page3: %v", err)
+	}
+	if len(third) != 1 || third[0].ID != ids[0] {
+		t.Fatalf("third page want exactly [%s], got %+v", ids[0], third)
 	}
 }
 

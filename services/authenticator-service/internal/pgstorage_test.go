@@ -45,9 +45,25 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
 	}
 	t.Cleanup(func() { pool.Close() })
-	// Discard logs: the error-less Put*/List* paths log instead of returning,
-	// and the tests assert on observable state, not log output.
+	// Discard logs: the tests assert on returned errors and observable state,
+	// not log output.
 	return NewPGStorage(pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+// mustPutAuthenticator / mustPutChallenge fail the test on a write error so
+// seeding code stays terse.
+func mustPutAuthenticator(t *testing.T, s *PGStorage, a Authenticator) {
+	t.Helper()
+	if err := s.PutAuthenticator(a); err != nil {
+		t.Fatalf("put authenticator %s: %v", a.ID, err)
+	}
+}
+
+func mustPutChallenge(t *testing.T, s *PGStorage, c Challenge) {
+	t.Helper()
+	if err := s.PutChallenge(c); err != nil {
+		t.Fatalf("put challenge %s: %v", c.ID, err)
+	}
 }
 
 func TestPGStorageAuthenticatorRoundTrip(t *testing.T) {
@@ -64,7 +80,7 @@ func TestPGStorageAuthenticatorRoundTrip(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	s.PutAuthenticator(a)
+	mustPutAuthenticator(t, s, a)
 
 	got, err := s.GetAuthenticator("tenant-a", id)
 	if err != nil {
@@ -88,7 +104,7 @@ func TestPGStorageAuthenticatorRoundTrip(t *testing.T) {
 	// Put is an upsert — re-putting with a new status overwrites in place.
 	a.Status = AuthenticatorStatusDisabled
 	a.UpdatedAt = now.Add(time.Minute)
-	s.PutAuthenticator(a)
+	mustPutAuthenticator(t, s, a)
 	got, err = s.GetAuthenticator("tenant-a", id)
 	if err != nil {
 		t.Fatalf("get after upsert: %v", err)
@@ -120,10 +136,13 @@ func TestPGStorageListAuthenticators(t *testing.T) {
 			CreatedAt: base, UpdatedAt: base},
 	}
 	for _, a := range seed {
-		s.PutAuthenticator(a)
+		mustPutAuthenticator(t, s, a)
 	}
 
-	all := s.ListAuthenticators("tenant-a", "usr_1")
+	all, err := s.ListAuthenticators("tenant-a", "usr_1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
 	if len(all) != 3 {
 		t.Fatalf("list want 3 (incl. disabled) got %d", len(all))
 	}
@@ -134,7 +153,10 @@ func TestPGStorageListAuthenticators(t *testing.T) {
 		}
 	}
 
-	active := s.ListActiveAuthenticators("tenant-a", "usr_1")
+	active, err := s.ListActiveAuthenticators("tenant-a", "usr_1")
+	if err != nil {
+		t.Fatalf("active list: %v", err)
+	}
 	if len(active) != 2 {
 		t.Fatalf("active list want 2 got %d", len(active))
 	}
@@ -144,7 +166,11 @@ func TestPGStorageListAuthenticators(t *testing.T) {
 		}
 	}
 
-	if got := s.ListAuthenticators("tenant-a", "usr_unknown"); len(got) != 0 {
+	got, err := s.ListAuthenticators("tenant-a", "usr_unknown")
+	if err != nil {
+		t.Fatalf("unknown user list: %v", err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("unknown user should list empty, got %d", len(got))
 	}
 }
@@ -153,7 +179,7 @@ func TestPGStorageDisableAuthenticator(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	id := "authr_" + uuid.NewString()
-	s.PutAuthenticator(Authenticator{
+	mustPutAuthenticator(t, s, Authenticator{
 		ID: id, TenantID: "tenant-a", UserID: "usr_1",
 		Method: MethodPush, Status: AuthenticatorStatusActive,
 		CreatedAt: now, UpdatedAt: now,
@@ -210,7 +236,7 @@ func TestPGStorageChallengeRoundTrip(t *testing.T) {
 		CreatedAt:       now,
 		ExpiresAt:       now.Add(ChallengeTTL),
 	}
-	s.PutChallenge(c)
+	mustPutChallenge(t, s, c)
 
 	got, err := s.GetChallenge("tenant-a", id)
 	if err != nil {
@@ -236,7 +262,7 @@ func TestPGStorageUpdateChallenge(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	id := "ch_" + uuid.NewString()
-	s.PutChallenge(Challenge{
+	mustPutChallenge(t, s, Challenge{
 		ID: id, TenantID: "tenant-a", UserID: "usr_1",
 		Method: MethodSMS, AuthenticatorID: "authr_x",
 		Status:    ChallengeStatusPending,
@@ -293,5 +319,58 @@ func TestPGStorageUpdateChallenge(t *testing.T) {
 	}
 	if got.Attempts != 1 || got.TenantID != "tenant-a" {
 		t.Fatalf("refused update leaked state: %+v", got)
+	}
+}
+
+// TestPGStoragePurgeExpired mirrors TestStorePurgeExpired against Postgres:
+// pending-past-expiry and `expired` rows are deleted, live pending and
+// terminal completed/failed rows (audit trail) survive.
+func TestPGStoragePurgeExpired(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	mk := func(suffix, status string, expiresAt time.Time) Challenge {
+		return Challenge{
+			ID: "ch_purge_" + suffix, TenantID: "tenant-a", UserID: "usr_1",
+			Method: MethodTOTP, AuthenticatorID: "authr_x",
+			Status:    status,
+			CreatedAt: now.Add(-time.Hour), ExpiresAt: expiresAt,
+		}
+	}
+	seed := []Challenge{
+		mk("live", ChallengeStatusPending, now.Add(time.Minute)),   // kept
+		mk("stale", ChallengeStatusPending, now.Add(-time.Second)), // purged
+		mk("boundary", ChallengeStatusPending, now),                // purged (expires_at <= now)
+		mk("flipped", ChallengeStatusExpired, now.Add(-time.Hour)), // purged
+		mk("done", ChallengeStatusCompleted, now.Add(-time.Hour)),  // kept
+		mk("locked", ChallengeStatusFailed, now.Add(-time.Hour)),   // kept
+	}
+	for _, c := range seed {
+		mustPutChallenge(t, s, c)
+	}
+
+	n, err := s.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("want 3 purged, got %d", n)
+	}
+
+	for _, suffix := range []string{"live", "done", "locked"} {
+		if _, err := s.GetChallenge("tenant-a", "ch_purge_"+suffix); err != nil {
+			t.Fatalf("ch_purge_%s should survive purge, got %v", suffix, err)
+		}
+	}
+	for _, suffix := range []string{"stale", "boundary", "flipped"} {
+		if _, err := s.GetChallenge("tenant-a", "ch_purge_"+suffix); err != ErrNotFound {
+			t.Fatalf("ch_purge_%s should be purged, got %v", suffix, err)
+		}
+	}
+
+	// Idempotent: nothing left to purge.
+	n, err = s.PurgeExpired(now)
+	if err != nil || n != 0 {
+		t.Fatalf("second purge: want (0, nil), got (%d, %v)", n, err)
 	}
 }

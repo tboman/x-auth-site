@@ -81,7 +81,7 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/v1/users` | Create user `{email, name}`; 409 on duplicate email |
-| `GET` | `/v1/users` | List users |
+| `GET` | `/v1/users` | List users, newest first. Keyset-paginated: `?limit=` (default 100, max 500) and `?cursor=` (RFC3339; strictly older results). Full pages return `next_cursor`. |
 | `GET` | `/v1/users/{id}` | Read user (tenant-scoped) |
 | `PATCH` | `/v1/users/{id}` | Update email/name |
 | `DELETE` | `/v1/users/{id}` | Delete |
@@ -136,6 +136,7 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PG_DSN_AUTHENTICATION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
+| `PURGE_INTERVAL` | `5m` | Go duration (e.g. `30s`, `10m`) between background sweeps that purge expired tokens, stale auth codes, and long-expired sessions. Each sweep logs `purge_expired` with the count. |
 | `AUTHN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
 
 ## Run locally
@@ -249,9 +250,11 @@ AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disabl
   go test ./services/authentication-service/... -run PG
 ```
 
-Tests cover: health, discovery, user CRUD, cross-tenant isolation, duplicate
-email, full session lifecycle, unknown-user session create, tenant middleware
-enforcement, `/authorize` → `/token` happy path, auth-code one-shot,
+Tests cover: health, discovery, user CRUD, user-list keyset pagination
+(two-page walk, invalid `limit`/`cursor` rejection), cross-tenant isolation,
+duplicate email, full session lifecycle, unknown-user session create, tenant
+middleware enforcement, `/authorize` → `/token` happy path, auth-code one-shot,
 refresh-token rotation + old-token revocation, `/revoke` always-200 semantics,
-unregistered-redirect rejection, social authorize → callback round-trip, and
-SHA-256 token hashing determinism.
+unregistered-redirect rejection, social authorize → callback round-trip,
+expired-artifact purge (expired removed, live kept, purged token no longer
+authenticates), and SHA-256 token hashing determinism.

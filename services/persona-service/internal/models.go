@@ -35,7 +35,8 @@ type UpdateRequest struct {
 
 // ListResponse is the envelope returned by GET /v1/personas.
 type ListResponse struct {
-	Items []Persona `json:"items"`
+	Items      []Persona `json:"items"`
+	NextCursor string    `json:"next_cursor,omitempty"`
 }
 
 // Defaults and validation bounds.
@@ -43,4 +44,10 @@ const (
 	DefaultTokenTTLSeconds = 900
 	MaxTokenTTLSeconds     = 86400
 	MaxNameLen             = 100
+)
+
+// Pagination bounds for GET /v1/personas.
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
 )

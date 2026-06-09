@@ -154,32 +154,153 @@ func TestPGStorageUserUpdateAndDelete(t *testing.T) {
 	}
 }
 
-func TestPGStorageListUsersOrder(t *testing.T) {
+func TestPGStorageListUsersKeyset(t *testing.T) {
 	s := newPGStorage(t)
-	base := time.Now().UTC().Truncate(time.Microsecond)
-	for i := 0; i < 3; i++ {
-		ts := base.Add(time.Duration(i) * time.Second)
+	base := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+
+	// Three users at distinct timestamps plus two sharing a fourth (newest)
+	// timestamp to exercise the id desc tie-break.
+	seed := func(id string, ts time.Time, email string) {
+		t.Helper()
 		if _, err := s.CreateUser(User{
-			ID: "usr_" + uuid.NewString(), TenantID: "tenant-a",
-			Email: string(rune('a'+i)) + "@acme.test", CreatedAt: ts, UpdatedAt: ts,
+			ID: id, TenantID: "tenant-a", Email: email, CreatedAt: ts, UpdatedAt: ts,
 		}); err != nil {
-			t.Fatalf("seed %d: %v", i, err)
+			t.Fatalf("seed %s: %v", id, err)
 		}
 	}
+	seed("usr_00", base, "u0@acme.test")
+	seed("usr_01", base.Add(time.Second), "u1@acme.test")
+	seed("usr_02", base.Add(2*time.Second), "u2@acme.test")
+	tie := base.Add(3 * time.Second)
+	seed("usr_tie_a", tie, "tie-a@acme.test")
+	seed("usr_tie_b", tie, "tie-b@acme.test")
 	seedPGUser(t, s, "tenant-b", "other@acme.test")
 
-	users, err := s.ListUsers("tenant-a")
+	// Full list: created_at desc, id desc tie-break, tenant-isolated.
+	users, err := s.ListUsers("tenant-a", 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(users) != 3 {
-		t.Fatalf("want 3 users got %d", len(users))
+	wantOrder := []string{"usr_tie_b", "usr_tie_a", "usr_02", "usr_01", "usr_00"}
+	if len(users) != len(wantOrder) {
+		t.Fatalf("want %d users got %d", len(wantOrder), len(users))
 	}
-	for i := 1; i < len(users); i++ {
-		if users[i].CreatedAt.Before(users[i-1].CreatedAt) {
-			t.Fatalf("list not sorted by created_at asc: %v then %v",
-				users[i-1].CreatedAt, users[i].CreatedAt)
+	for i, want := range wantOrder {
+		if users[i].ID != want {
+			t.Fatalf("position %d: got %s want %s", i, users[i].ID, want)
 		}
+	}
+
+	// Keyset walk: limit 2 yields three pages with no overlap and no gaps.
+	page1, err := s.ListUsers("tenant-a", 2, time.Time{})
+	if err != nil || len(page1) != 2 {
+		t.Fatalf("page1: %v len=%d", err, len(page1))
+	}
+	if page1[0].ID != "usr_tie_b" || page1[1].ID != "usr_tie_a" {
+		t.Fatalf("page1 order: %s, %s", page1[0].ID, page1[1].ID)
+	}
+	page2, err := s.ListUsers("tenant-a", 2, page1[1].CreatedAt)
+	if err != nil || len(page2) != 2 {
+		t.Fatalf("page2: %v len=%d", err, len(page2))
+	}
+	if page2[0].ID != "usr_02" || page2[1].ID != "usr_01" {
+		t.Fatalf("page2 order: %s, %s", page2[0].ID, page2[1].ID)
+	}
+	page3, err := s.ListUsers("tenant-a", 2, page2[1].CreatedAt)
+	if err != nil || len(page3) != 1 || page3[0].ID != "usr_00" {
+		t.Fatalf("page3: %v %+v", err, page3)
+	}
+
+	// Cursor at the oldest row: nothing strictly older remains.
+	empty, err := s.ListUsers("tenant-a", 2, page3[0].CreatedAt)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("past-the-end page should be empty: %v len=%d", err, len(empty))
+	}
+}
+
+func TestPGStoragePurgeExpired(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	putToken := func(hash string, expiresAt time.Time) {
+		t.Helper()
+		if err := s.PutToken(Token{
+			TokenHash: hash, SessionID: "ses_1", UserID: "usr_1", TenantID: "tenant-a",
+			TokenType: TokenTypeAccess, IssuedAt: now.Add(-time.Hour), ExpiresAt: expiresAt,
+		}); err != nil {
+			t.Fatalf("put token: %v", err)
+		}
+	}
+	expiredHash := HashToken("expired")
+	liveHash := HashToken("live")
+	putToken(expiredHash, now.Add(-time.Minute))
+	putToken(liveHash, now.Add(time.Hour))
+
+	putCode := func(code string, createdAt time.Time) {
+		t.Helper()
+		if err := s.PutAuthCode(AuthCode{
+			Code: code, ClientID: DefaultClientID, TenantID: "tenant-a",
+			UserID: "usr_1", RedirectURI: "http://localhost:3000/callback", CreatedAt: createdAt,
+		}); err != nil {
+			t.Fatalf("put code: %v", err)
+		}
+	}
+	putCode("stale-code", now.Add(-time.Duration(AuthCodeTTLSeconds+60)*time.Second))
+	putCode("fresh-code", now)
+
+	putSession := func(id string, expiresAt time.Time) {
+		t.Helper()
+		if _, err := s.CreateSession(Session{
+			ID: id, TenantID: "tenant-a", UserID: "usr_1", RiskLevel: RiskLow,
+			CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour), ExpiresAt: expiresAt,
+		}); err != nil {
+			t.Fatalf("put session: %v", err)
+		}
+	}
+	// Dead: expired longer ago than the refresh-token grace window.
+	putSession("ses_dead", now.Add(-time.Duration(RefreshTokenTTLSeconds)*time.Second-time.Hour))
+	// Recently expired: still within the grace window — must be kept.
+	putSession("ses_recent", now.Add(-time.Minute))
+	// Live.
+	putSession("ses_live", now.Add(time.Hour))
+
+	removed, err := s.PurgeExpired(now)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 3 {
+		t.Fatalf("removed = %d, want 3 (expired token + stale code + dead session)", removed)
+	}
+
+	// Expired artefacts are gone.
+	if _, err := s.GetTokenByHash(expiredHash); err != ErrNotFound {
+		t.Fatalf("expired token should be purged, got %v", err)
+	}
+	if _, err := s.ConsumeAuthCode("stale-code"); err != ErrNotFound {
+		t.Fatalf("stale code should be purged, got %v", err)
+	}
+	if _, err := s.GetSession("tenant-a", "ses_dead"); err != ErrNotFound {
+		t.Fatalf("dead session should be purged, got %v", err)
+	}
+
+	// Live (and grace-window) artefacts are kept.
+	if _, err := s.GetTokenByHash(liveHash); err != nil {
+		t.Fatalf("live token should be kept: %v", err)
+	}
+	if _, err := s.ConsumeAuthCode("fresh-code"); err != nil {
+		t.Fatalf("fresh code should be kept: %v", err)
+	}
+	if _, err := s.GetSession("tenant-a", "ses_recent"); err != nil {
+		t.Fatalf("recently expired session should be kept (grace window): %v", err)
+	}
+	if _, err := s.GetSession("tenant-a", "ses_live"); err != nil {
+		t.Fatalf("live session should be kept: %v", err)
+	}
+
+	// Idempotent: a second sweep finds nothing.
+	removed, err = s.PurgeExpired(now)
+	if err != nil || removed != 0 {
+		t.Fatalf("second purge: removed=%d err=%v, want 0 nil", removed, err)
 	}
 }
 

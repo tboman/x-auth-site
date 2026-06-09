@@ -238,16 +238,62 @@ func TestPGStorageListPoliciesOrder(t *testing.T) {
 		t.Fatalf("seed other tenant: %v", err)
 	}
 
-	got, err := s.ListPolicies("tenant-a")
+	got, err := s.ListPolicies("tenant-a", 0, time.Time{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("want 3 policies, got %d", len(got))
 	}
+	// Newest first: the list is ordered created_at DESC, id DESC.
 	for i, p := range got {
-		if p.ID != want[i] {
-			t.Fatalf("order mismatch at %d: got %s want %s", i, p.ID, want[i])
+		if exp := want[len(want)-1-i]; p.ID != exp {
+			t.Fatalf("order mismatch at %d: got %s want %s", i, p.ID, exp)
 		}
+	}
+}
+
+// TestPGStorageListPoliciesKeyset walks three keyset pages over five rows and
+// checks the strictly-older-than-cursor contract end to end.
+func TestPGStorageListPoliciesKeyset(t *testing.T) {
+	s := newPGStorage(t)
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	ids := make([]string, 5)
+	for i := range ids {
+		ids[i] = PolicyIDPrefix + uuid.NewString()
+		if _, err := s.CreatePolicy(Policy{
+			ID: ids[i], TenantID: "tenant-a", Name: "p",
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+			UpdatedAt: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	// Page 1: zero cursor → the two newest rows.
+	page1, err := s.ListPolicies("tenant-a", 2, time.Time{})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].ID != ids[4] || page1[1].ID != ids[3] {
+		t.Fatalf("page1 mismatch: %+v", page1)
+	}
+
+	// Page 2: cursor = oldest CreatedAt of page 1 → strictly older rows only.
+	page2, err := s.ListPolicies("tenant-a", 2, page1[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 2 || page2[0].ID != ids[2] || page2[1].ID != ids[1] {
+		t.Fatalf("page2 mismatch: %+v", page2)
+	}
+
+	// Page 3: one row left.
+	page3, err := s.ListPolicies("tenant-a", 2, page2[1].CreatedAt)
+	if err != nil {
+		t.Fatalf("page3: %v", err)
+	}
+	if len(page3) != 1 || page3[0].ID != ids[0] {
+		t.Fatalf("page3 mismatch: %+v", page3)
 	}
 }

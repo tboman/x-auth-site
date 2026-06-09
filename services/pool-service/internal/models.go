@@ -54,14 +54,19 @@ type ClaimRequest struct {
 	InstallID string `json:"install_id"`
 }
 
-// PoolListResponse is the envelope returned by GET /v1/pools.
+// PoolListResponse is the envelope returned by GET /v1/pools. NextCursor is set
+// when a full page was returned; pass it back as ?cursor= to fetch the next page.
 type PoolListResponse struct {
-	Items []Pool `json:"items"`
+	Items      []Pool `json:"items"`
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 // IdentityListResponse is the envelope returned by GET /v1/pools/{id}/identities.
+// NextCursor is set when a full page was returned; pass it back as ?cursor= to
+// fetch the next page.
 type IdentityListResponse struct {
-	Items []Identity `json:"items"`
+	Items      []Identity `json:"items"`
+	NextCursor string     `json:"next_cursor,omitempty"`
 }
 
 // Validation bounds.
@@ -69,4 +74,11 @@ const (
 	MaxNameLen = 100
 	MinSize    = 1
 	MaxSize    = 10000
+)
+
+// Pagination bounds for GET /v1/pools and GET /v1/pools/{id}/identities.
+// Mirrors the transaction-service contract.
+const (
+	DefaultListLimit = 100
+	MaxListLimit     = 500
 )

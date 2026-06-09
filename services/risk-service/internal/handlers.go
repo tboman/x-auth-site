@@ -5,7 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -108,7 +110,8 @@ func (h *Handlers) CreateEvaluation(w http.ResponseWriter, r *http.Request) {
 	derivedTier := DeriveTier(score)
 
 	// Policy overlay. Matching rules can only raise the tier or deny outright.
-	policies, err := h.Store.ListPolicies(tenantID)
+	// limit 0 = unbounded: the overlay must see every tenant policy.
+	policies, err := h.Store.ListPolicies(tenantID, 0, time.Time{})
 	if err != nil {
 		h.Logger.Error("risk_policy_list_failed", "err", err, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to load policies")
@@ -213,20 +216,57 @@ func (h *Handlers) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, saved)
 }
 
-// ListPolicies handles GET /v1/policies.
+// ListPolicies handles GET /v1/policies. Supports:
+//   - limit (int, default 100, max 500)
+//   - cursor (RFC3339 timestamp; results are strictly older than this)
 func (h *Handlers) ListPolicies(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
 		return
 	}
-	items, err := h.Store.ListPolicies(tenantID)
+
+	q := r.URL.Query()
+
+	limit := DefaultListLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_limit",
+				"limit must be a positive integer")
+			return
+		}
+		if n > MaxListLimit {
+			n = MaxListLimit
+		}
+		limit = n
+	}
+
+	var cursor time.Time
+	if v := q.Get("cursor"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_cursor",
+				"cursor must be an RFC3339 timestamp")
+			return
+		}
+		cursor = t
+	}
+
+	items, err := h.Store.ListPolicies(tenantID, limit, cursor)
 	if err != nil {
 		h.Logger.Error("risk_policy_list_failed", "err", err, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list policies")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, ListPoliciesResponse{Items: items})
+
+	resp := ListPoliciesResponse{Items: items}
+	// If we returned a full page, provide a cursor for the next page. Callers
+	// that do not need pagination can ignore next_cursor.
+	if len(items) == limit && limit > 0 {
+		resp.NextCursor = items[len(items)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // GetPolicy handles GET /v1/policies/{id}.
