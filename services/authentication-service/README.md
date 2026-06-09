@@ -30,7 +30,7 @@ When an end-user signs into a tenant's application via X-Auth:
 - [x] OIDC `/revoke` (RFC 7009, always 200)
 - [x] OIDC `/userinfo` (returns `{sub, email, name}`)
 - [x] Social-login stubs for google / github / microsoft
-- [x] Opaque UUID tokens stored as SHA-256 hex hashes
+- [x] Tokens stored as SHA-256 hex hashes (never plaintext)
 - [x] In-memory, tenant-scoped, thread-safe storage
 - [x] Unit tests with a mock authenticator-service client
 
@@ -43,15 +43,45 @@ swappable via the `Storage` interface in `internal/storage.go`:
   schema in `migrations/`). The default `cli_default` dev client is seeded by the
   migration, mirroring `MemStorage`'s constructor seed.
 
+**Phase 2.1 — JWT tokens (done).** Access and ID tokens are now RS256 JWTs per
+ARCHITECTURE.md §10.1, signed by this service and verifiable by anyone against
+the JWKS endpoint. See "JWT signing & hybrid revocation" below.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
-- JWT signing / JWKS publication — phase 1 tokens are opaque UUID strings
-- `id_token` issuance
 - PKCE enforcement and strict client authentication
 - Real first-factor verification (today `POST /v1/sessions` trusts the internal caller)
 - Real social-provider OAuth2 handshakes
 - Service-to-service signed tokens from transaction-service
 - Soft-delete users with GDPR-safe pseudonymisation
+- Distributed revocation (drop the access-token deny list — see below)
+- Persisting `client_id` on refresh-token records so the `aud` claim survives
+  refreshes even when the client omits `client_id` at refresh time
+
+## JWT signing & hybrid revocation
+
+**Token model (ARCHITECTURE.md §10.1):**
+
+- **Access tokens** — RS256 JWTs, TTL 1 h, claims `sub` (user id), `iss`,
+  `aud` (client_id), `exp`, `iat`, `jti`, `tenant_id`, `scope`, `session_id`.
+- **ID tokens** — standard OIDC JWT issued by the code grant when scope
+  contains `openid`; carries the `nonce` from the original `/authorize`
+  request; signed with the same key as access tokens.
+- **Refresh tokens** — stay opaque UUIDs, stored hashed, rotated on every use.
+
+**JWKS:** the public key is served at `GET /v1/auth/jwks` (canonical, §4.3)
+and `GET /.well-known/jwks.json` (the `jwks_uri` advertised by both discovery
+documents). Sister services verify bearers with
+`jwtx.NewVerifierFromJWKS(issuer, set)`.
+
+**Hybrid revocation (deliberate):** access tokens are stateless per spec, but
+the service still persists a hashed record of every access token. `/userinfo`
+requires **both** (a) RS256 signature + time-window + issuer verification, and
+(b) a live, non-revoked stored record. The record acts as a deny list so RFC
+7009 `/revoke` keeps taking effect immediately; it goes away when distributed
+revocation lands. The purge sweeper and Postgres storage are unchanged — only
+the token *value* changed from UUID to JWT (`token_hash` is the SHA-256 of
+whatever the plaintext is).
 
 ## Endpoints
 
@@ -63,9 +93,11 @@ swappable via the `Storage` interface in `internal/storage.go`:
 | `GET` | `/.well-known/oauth-authorization-server` | RFC 8414 metadata |
 | `GET` | `/.well-known/openid-configuration` | OIDC discovery |
 | `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code` |
-| `POST` | `/token` | Exchange `code` or `refresh_token` for opaque tokens |
+| `POST` | `/token` | Exchange `code` or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`) |
 | `POST` | `/revoke` | RFC 7009 token revocation |
-| `GET` | `/userinfo` | Returns `{sub, email, name}` for the bearer |
+| `GET` | `/userinfo` | Returns `{sub, email, name}` for the bearer (hybrid JWT + deny-list check) |
+| `GET` | `/v1/auth/jwks` | RFC 7517 JSON Web Key Set (canonical route, §4.3) |
+| `GET` | `/.well-known/jwks.json` | JWKS alias advertised as `jwks_uri` in discovery |
 
 ### Social login stubs (public)
 
@@ -102,7 +134,9 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 - **Client auth**: the seeded `cli_default` client has a known `dev-secret`,
   but `/token` permits unauthenticated use for public-client flows. Tighten in
   phase 2.
-- **Tokens**: opaque UUIDv4, stored as SHA-256 hex. No signing, no JWKS.
+- **Tokens**: access/ID tokens are RS256 JWTs; refresh tokens are opaque
+  UUIDv4. All stored as SHA-256 hex (access records double as the revocation
+  deny list).
 - **`POST /v1/sessions` trust model**: authentication-service does **not**
   re-verify credentials — it trusts the internal caller (transaction-service).
   TODO(phase-2): require a signed service-to-service token.
@@ -133,6 +167,8 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | `PORT` | `8082` | Listen port (Cloud Run sets this) |
 | `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` | Base URL for authenticator-service |
 | `AUTH_ISSUER` | `http://localhost:8082` | Public base URL advertised in discovery docs |
+| `JWT_SIGNING_KEY` | _(unset)_ | PEM-encoded RSA private key (PKCS#1 or PKCS#8) for RS256 token signing. **Unset -> an ephemeral per-process 2048-bit key is generated and a `jwt_ephemeral_key` warning is logged**: tokens won't survive a restart and replicas won't verify each other's tokens. Always set in production (from KMS/secret storage). |
+| `JWT_ISSUER` | _value of `AUTH_ISSUER`_ | `iss` claim minted into access/ID tokens. Defaults to the discovery issuer so tokens match the published OIDC configuration. |
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PG_DSN_AUTHENTICATION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
@@ -174,8 +210,9 @@ Full end-to-end (user create → session create → session refresh → OIDC
 authorize → token exchange → userinfo → revoke).
 
 ```bash
-# 0. Health
+# 0. Health + signing keys
 curl -s http://localhost:8082/healthz
+curl -s http://localhost:8082/v1/auth/jwks   # same document as /.well-known/jwks.json
 
 # 1. Create a user
 USER_JSON=$(curl -s -X POST http://localhost:8082/v1/users \
@@ -253,8 +290,16 @@ AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disabl
 Tests cover: health, discovery, user CRUD, user-list keyset pagination
 (two-page walk, invalid `limit`/`cursor` rejection), cross-tenant isolation,
 duplicate email, full session lifecycle, unknown-user session create, tenant
-middleware enforcement, `/authorize` → `/token` happy path, auth-code one-shot,
-refresh-token rotation + old-token revocation, `/revoke` always-200 semantics,
-unregistered-redirect rejection, social authorize → callback round-trip,
-expired-artifact purge (expired removed, live kept, purged token no longer
-authenticates), and SHA-256 token hashing determinism.
+middleware enforcement, `/authorize` → `/token` happy path (access token is a
+3-part JWS verified against the service's own JWKS endpoint with
+sub/aud/tenant_id/session_id/scope/exp asserted; `id_token` carries the
+`/authorize` nonce; refresh token stays opaque), auth-code one-shot,
+refresh-token rotation + old-token revocation (refreshed access token is a
+fresh, verifiable JWT), JWKS canonical route + well-known alias parity +
+discovery `jwks_uri`, hybrid revocation (`/userinfo` 401s a JWT that still
+verifies cryptographically but whose stored record is revoked), foreign-key
+rejection (`/userinfo` 401s a JWT signed by a different RSA key even with a
+planted record), `/revoke` always-200 semantics, unregistered-redirect
+rejection, social authorize → callback round-trip, expired-artifact purge
+(expired removed, live kept, purged token no longer authenticates), and
+SHA-256 token hashing determinism.

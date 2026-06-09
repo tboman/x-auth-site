@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -15,6 +16,13 @@ type Deps struct {
 	Logger        *slog.Logger
 	Authenticator AuthenticatorClient
 	Issuer        string
+
+	// Signer holds the RS256 key that signs access + ID tokens and backs the
+	// JWKS endpoints. Required. JWTIssuer is the `iss` claim minted into
+	// tokens; empty means "same as Issuer" (the normal case — tokens should
+	// match the discovery document).
+	Signer    *jwtx.Signer
+	JWTIssuer string
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -22,16 +30,35 @@ type Deps struct {
 // Routing tiers:
 //
 //   - /healthz — unauthenticated, always served
-//   - /.well-known/*, /authorize, /token, /revoke, /userinfo — public OIDC
-//     surface, no tenant header (tenant is carried by the authorization code
-//     or the bearer token's session row)
+//   - /.well-known/*, /authorize, /token, /revoke, /userinfo, /v1/auth/jwks —
+//     public OIDC surface, no tenant header (tenant is carried by the
+//     authorization code or the bearer token's claims)
 //   - /v1/social/{provider}/authorize|/callback — public social-login stub
 //   - /v1/users/*, /v1/sessions/* — tenant-scoped, behind tenantx.Middleware
 //
 // The whole tree is wrapped in Recover + Logging so every request logs and
 // handler panics turn into 500 instead of crashing the process.
 func Router(d Deps) http.Handler {
-	oidc := &OIDCHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	jwtIssuer := d.JWTIssuer
+	if jwtIssuer == "" {
+		jwtIssuer = d.Issuer
+	}
+	// Build the bearer verifier from the signer's own published key set — the
+	// same document /v1/auth/jwks serves — so /userinfo validates tokens the
+	// exact way an external consumer would. A Signer's JWKS always contains
+	// one usable RSA key, so a construction error is a programming bug.
+	verifier, err := jwtx.NewVerifierFromJWKS(jwtIssuer, d.Signer.JWKS())
+	if err != nil {
+		panic("authentication-service: verifier from signer JWKS: " + err.Error())
+	}
+	oidc := &OIDCHandlers{
+		Store:     d.Store,
+		Logger:    d.Logger,
+		Issuer:    d.Issuer,
+		Signer:    d.Signer,
+		Verifier:  verifier,
+		JWTIssuer: jwtIssuer,
+	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
@@ -46,6 +73,11 @@ func Router(d Deps) http.Handler {
 	// OIDC discovery — static JSON.
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", oidc.OAuthMetadata)
 	mux.HandleFunc("GET /.well-known/openid-configuration", oidc.OIDCMetadata)
+
+	// JWKS — canonical route per ARCHITECTURE.md §4.3, plus the conventional
+	// well-known alias the discovery documents advertise as jwks_uri.
+	mux.HandleFunc("GET /v1/auth/jwks", oidc.JWKS)
+	mux.HandleFunc("GET /.well-known/jwks.json", oidc.JWKS)
 
 	// OIDC / OAuth2 flows — public, no tenant header.
 	mux.HandleFunc("GET /authorize", oidc.Authorize)

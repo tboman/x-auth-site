@@ -18,6 +18,7 @@ import (
 
 	"github.com/xentranet/x-auth/pkg/config"
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
 	"github.com/xentranet/x-auth/services/broker-service/internal"
@@ -30,6 +31,23 @@ func main() {
 	poolURL := config.Env("POOL_SERVICE_URL", "http://localhost:8181")
 	grantURL := config.Env("GRANT_SERVICE_URL", "http://localhost:8183")
 	issuer := config.Env("BROKER_ISSUER", "http://localhost:8182")
+
+	// Access-token signing key (RS256). Production sets JWT_SIGNING_KEY to a PEM
+	// private key (in production this is https://mcp.x-auth.com's key from secret
+	// storage); unset means an ephemeral per-process key with a logged warning.
+	signingKey, err := jwtx.LoadOrGenerateKey("JWT_SIGNING_KEY", logger)
+	if err != nil {
+		logger.Error("jwt_key_load_failed", "err", err)
+		os.Exit(1)
+	}
+	signer := jwtx.NewSigner(signingKey)
+
+	// The `iss` claim defaults to the discovery-document issuer (BROKER_ISSUER,
+	// canonically https://mcp.x-auth.com in production) so issued JWTs validate
+	// against the metadata this service serves; JWT_ISSUER overrides it only for
+	// split-horizon deployments.
+	jwtIssuer := config.Env("JWT_ISSUER", issuer)
+	verifier := jwtx.NewVerifier(jwtIssuer, &signingKey.PublicKey)
 
 	clients := internal.NewHTTPClients(personaURL, poolURL, grantURL)
 
@@ -65,6 +83,9 @@ func main() {
 		Logger:     logger,
 		Clients:    clients,
 		Issuer:     issuer,
+		Signer:     signer,
+		Verifier:   verifier,
+		JWTIssuer:  jwtIssuer,
 		DefaultTTL: internal.DefaultTokenTTLSeconds,
 	})
 

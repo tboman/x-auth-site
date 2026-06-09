@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -20,7 +21,13 @@ type Deps struct {
 		PoolClient
 		GrantClient
 	}
-	Issuer     string
+	Issuer string
+	// Signer mints RS256 access tokens and publishes the JWKS; Verifier validates
+	// presented bearers (built in cmd/main.go from the same key + JWTIssuer).
+	// JWTIssuer is the `iss` claim value, defaulting to Issuer.
+	Signer     *jwtx.Signer
+	Verifier   *jwtx.Verifier
+	JWTIssuer  string
 	DefaultTTL int
 }
 
@@ -42,6 +49,9 @@ func Router(d Deps) http.Handler {
 		Clients:    d.Clients,
 		Logger:     d.Logger,
 		Issuer:     d.Issuer,
+		Signer:     d.Signer,
+		Verifier:   d.Verifier,
+		JWTIssuer:  d.JWTIssuer,
 		DefaultTTL: d.DefaultTTL,
 	}
 	dcr := &DCRHandlers{Store: d.Store, Logger: d.Logger}
@@ -56,9 +66,12 @@ func Router(d Deps) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// Discovery.
+	// Discovery + JWKS. The jwks.json path matches the jwks_uri advertised in both
+	// discovery documents. (The broker has no /v1 metadata convention — /v1/ is
+	// the tenant-scoped install admin tree — so the well-known path is the only alias.)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", oidc.OAuthMetadata)
 	mux.HandleFunc("GET /.well-known/openid-configuration", oidc.OIDCMetadata)
+	mux.HandleFunc("GET /.well-known/jwks.json", oidc.JWKS)
 
 	// DCR + CIMD.
 	mux.HandleFunc("POST /register", dcr.Register)

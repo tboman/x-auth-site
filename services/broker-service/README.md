@@ -46,7 +46,7 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 
 **Deferred to phase 2** (see the `TODO(phase-2)` comments in-code):
 
-- JWT signing / JWKS publication — phase 1 tokens are opaque UUID strings
+- ~~JWT signing / JWKS publication~~ — landed: RS256 access tokens + `/.well-known/jwks.json` (see **Token format** below)
 - Real MCP protocol handling
 - ~~Persistent storage~~ — landed: Postgres-backed `PGStorage` (see **Storage** above)
 - Initial-access-token-gated DCR
@@ -62,12 +62,30 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 | GET | `/healthz` | liveness probe, returns `{"status":"ok"}` |
 | GET | `/.well-known/oauth-authorization-server` | RFC 8414 metadata |
 | GET | `/.well-known/openid-configuration` | OIDC discovery |
+| GET | `/.well-known/jwks.json` | RFC 7517 key set — the public half of the access-token signing key (`jwks_uri` in both discovery docs) |
 | POST | `/register` | RFC 7591 Dynamic Client Registration |
 | GET | `/metadata.json` | CIMD document for the default X-Auth MCP client |
 | GET | `/authorize` | phase-1 stub: auto-approves and redirects back with `code` |
-| POST | `/token` | exchanges `code` for an opaque access + refresh token, orchestrates install finalization |
+| POST | `/token` | exchanges `code` for a signed JWT access token + opaque refresh token, orchestrates install finalization |
 | POST | `/revoke` | RFC 7009 token revocation, forwarded to grant-service |
-| GET | `/userinfo` | returns `{sub, persona, scopes, install_id}` for the bearer |
+| GET | `/userinfo` | returns `{sub, persona, scopes, install_id}` for the bearer — hybrid check: JWT signature/exp/iss **and** unrevoked local record |
+
+## Token format
+
+- **Access token** — compact RS256 JWS signed with the broker's key. Claims:
+  `sub` = the claimed identity's `subject_id` (REQUIREMENTS.md §2: the stable
+  identifier used in the OAuth `sub` claim), `iss` = `JWT_ISSUER`, `aud` = the
+  requesting client id, `tenant_id`, `scope` (persona scopes), `exp` = `iat` +
+  persona `token_ttl_seconds`, `jti`, plus install-binding extras `install_id`,
+  `persona_id`, `identity_id`. Verify offline against `/.well-known/jwks.json`.
+- **Refresh token** — opaque UUID, unchanged: it is only ever redeemed back at
+  this service, so opacity limits blast radius.
+- grant-service still receives only SHA-256 hex digests of both tokens
+  (`access_token_hash` is the digest of the full JWT string).
+- `/userinfo` applies **both** checks: cryptographic verification (signature,
+  exp/iat with 30s leeway, issuer) *and* a local token-record lookup, which acts
+  as the revocation deny-list — a revoked token stays cryptographically valid
+  until `exp` but is rejected immediately.
 
 ### MCP stubs (phase 1)
 
@@ -94,9 +112,11 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
   production flow persona-service would expose which pool(s) a persona is
   eligible for and broker-service would pick one automatically. Keeping this in
   the URL avoids a cross-service dependency the sister team hasn't shipped yet.
-- **Tokens**: opaque UUIDs stored in-memory. Phase 2 replaces these with signed
-  JWTs and defers introspection to grant-service. Search for `TODO(phase-2)` in
-  `internal/oidc.go` to find the sites that will change.
+- **Tokens**: access tokens are now signed RS256 JWTs (see **Token format**);
+  refresh tokens remain opaque UUIDs. The broker still keeps a local token
+  record per issued token — it backs `/userinfo` metadata and acts as the
+  revocation deny-list. A later phase defers introspection to grant-service and
+  drops that duplicated state.
 - **Scope resolution**: phase 1 returns the persona's scopes verbatim and ignores
   the `scope` parameter from `/authorize`. Proper intersection per RFC 6749 is
   phase 2.
@@ -118,8 +138,8 @@ POST /token with code=<uuid>
   2. create pending Install
   3. GET  persona-service /v1/personas/P        → Persona (scopes, ttl)
   4. POST pool-service    /v1/pools/PL/claim    → Identity
-  5. mint opaque access + refresh tokens
-  6. POST grant-service   /v1/grants             → Grant
+  5. mint RS256 JWT access token + opaque refresh token
+  6. POST grant-service   /v1/grants             → Grant (SHA-256 token hashes)
      └─ on failure: release identity, revoke install, return 502
   7. mark Install active with identity_id
   → 200 { access_token, refresh_token, token_type, expires_in, scope }
@@ -136,7 +156,9 @@ mark install revoked) and the client receives 502 with `error: downstream_error`
 | `PERSONA_SERVICE_URL` | `http://localhost:8180` | |
 | `POOL_SERVICE_URL` | `http://localhost:8181` | |
 | `GRANT_SERVICE_URL` | `http://localhost:8183` | |
-| `BROKER_ISSUER` | `http://localhost:8182` | public base URL in discovery documents |
+| `BROKER_ISSUER` | `http://localhost:8182` | public base URL in discovery documents (production: `https://mcp.x-auth.com`) |
+| `JWT_SIGNING_KEY` | _(unset)_ | PEM-encoded RSA private key (PKCS#1 or PKCS#8) for RS256 access-token signing. Unset → ephemeral per-process key with a logged warning (tokens won't verify across restarts/replicas). |
+| `JWT_ISSUER` | value of `BROKER_ISSUER` | `iss` claim in issued access tokens. Defaults to the discovery-document issuer so JWTs validate against the served metadata; override only for split-horizon deployments. |
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PURGE_INTERVAL` | `5m` | Go duration between expired-artifact sweeps (tokens past `expires_at`, auth codes older than the 300s code TTL). Each sweep logs `purge_expired` with the removed count. Invalid values fall back to `5m`. |
 | `PG_DSN_BROKER_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
@@ -195,7 +217,7 @@ curl -sS -X POST http://localhost:8182/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code&code=<CODE>&client_id=client-1"
 # → 200 {
-#     "access_token":  "<uuid>",
+#     "access_token":  "<RS256 JWT — eyJhbGciOiJSUzI1NiIs...>",
 #     "refresh_token": "<uuid>",
 #     "token_type":    "Bearer",
 #     "expires_in":    900,

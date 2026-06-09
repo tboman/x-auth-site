@@ -2,6 +2,8 @@ package internal
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,7 +17,23 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/jwtx"
 )
+
+// testIssuer is the issuer wired into every test router — it doubles as the
+// expected `iss` claim in minted access tokens.
+const testIssuer = "http://test.local"
+
+// testSigningKey returns a process-wide RSA key for test routers. Generated once:
+// 2048-bit keygen per test would dominate the suite's runtime for no extra coverage.
+var testSigningKey = sync.OnceValue(func() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("generate test signing key: " + err.Error())
+	}
+	return key
+})
 
 // mockClients is an in-process stand-in for HTTPClients. Each method is backed by
 // a function field so individual tests can stub the specific behavior they need
@@ -75,14 +93,40 @@ func newTestRouter(t *testing.T, mc *mockClients) (http.Handler, Storage) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
+	key := testSigningKey()
 	r := Router(Deps{
 		Store:      store,
 		Logger:     logger,
 		Clients:    mc,
-		Issuer:     "http://test.local",
+		Issuer:     testIssuer,
+		Signer:     jwtx.NewSigner(key),
+		Verifier:   jwtx.NewVerifier(testIssuer, &key.PublicKey),
+		JWTIssuer:  testIssuer,
 		DefaultTTL: 900,
 	})
 	return r, store
+}
+
+// fetchJWKSVerifier GETs /.well-known/jwks.json from the router and builds a
+// jwtx.Verifier from the served document — exactly what an external resource
+// server consuming the discovery jwks_uri would do.
+func fetchJWKSVerifier(t *testing.T, r http.Handler) *jwtx.Verifier {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("jwks: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var set jwtx.JWKS
+	if err := json.Unmarshal(w.Body.Bytes(), &set); err != nil {
+		t.Fatalf("jwks: invalid JSON: %v", err)
+	}
+	v, err := jwtx.NewVerifierFromJWKS(testIssuer, set)
+	if err != nil {
+		t.Fatalf("jwks: verifier construction failed: %v", err)
+	}
+	return v
 }
 
 // --- Happy path: /authorize -> /token -> install is active ---
@@ -178,9 +222,65 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 		t.Fatalf("token: expires_in=%d, want 600 from persona.TokenTTL", tokResp.ExpiresIn)
 	}
 
-	// The grant must carry SHA-256 hex digests, never the plaintext tokens.
+	// Access token must be a compact JWS (header.payload.signature); the refresh
+	// token stays an opaque UUID with no JWT structure.
+	if parts := strings.Split(tokResp.AccessToken, "."); len(parts) != 3 {
+		t.Fatalf("access_token is not a 3-part JWS: %q", tokResp.AccessToken)
+	}
+	if strings.Contains(tokResp.RefreshToken, ".") || len(tokResp.RefreshToken) != 36 {
+		t.Fatalf("refresh_token should remain an opaque UUID: %q", tokResp.RefreshToken)
+	}
+
+	// The JWT must verify against the JWKS this service serves at the discovery
+	// jwks_uri, with the full claim set bound to the install triple.
+	v := fetchJWKSVerifier(t, r)
+	claimsStd, raw, err := v.Verify(tokResp.AccessToken, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("access token does not verify against served JWKS: %v", err)
+	}
+	installs0, _ := store.ListInstalls("tenant-1", 0, time.Time{})
+	if len(installs0) != 1 {
+		t.Fatalf("expected 1 install, got %d", len(installs0))
+	}
+	installID := installs0[0].ID
+	if claimsStd.Sub != "subject-abc" {
+		t.Fatalf("jwt sub = %q, want identity subject_id subject-abc", claimsStd.Sub)
+	}
+	if claimsStd.Iss != testIssuer {
+		t.Fatalf("jwt iss = %q, want %q", claimsStd.Iss, testIssuer)
+	}
+	if claimsStd.Aud != "client-xyz" {
+		t.Fatalf("jwt aud = %q, want DCR client id client-xyz", claimsStd.Aud)
+	}
+	if claimsStd.TenantID != "tenant-1" {
+		t.Fatalf("jwt tenant_id = %q, want tenant-1", claimsStd.TenantID)
+	}
+	if claimsStd.Scope != "read:docs" {
+		t.Fatalf("jwt scope = %q, want persona scopes read:docs", claimsStd.Scope)
+	}
+	if raw["install_id"] != installID {
+		t.Fatalf("jwt install_id = %v, want %s", raw["install_id"], installID)
+	}
+	if raw["persona_id"] != "persona-1" {
+		t.Fatalf("jwt persona_id = %v, want persona-1", raw["persona_id"])
+	}
+	if raw["identity_id"] != "id-123" {
+		t.Fatalf("jwt identity_id = %v, want id-123", raw["identity_id"])
+	}
+	// exp must reflect the persona TokenTTL (600s) from roughly now.
+	expIn := claimsStd.Exp - claimsStd.Iat
+	if expIn != 600 {
+		t.Fatalf("jwt exp-iat = %d, want 600 (persona TokenTTL)", expIn)
+	}
+	if got := time.Unix(claimsStd.Exp, 0); got.Before(time.Now().Add(9*time.Minute)) || got.After(time.Now().Add(11*time.Minute)) {
+		t.Fatalf("jwt exp = %v not ~10m from now", got)
+	}
+
+	// The grant must carry SHA-256 hex digests over the full token strings as
+	// issued — i.e. the hash sent to grant-service is hashToken(<the JWT string>)
+	// for the access token — never the plaintext tokens.
 	if grantReq.AccessTokenHash != hashToken(tokResp.AccessToken) {
-		t.Fatalf("grant access_token_hash = %q, want hashToken(access_token)", grantReq.AccessTokenHash)
+		t.Fatalf("grant access_token_hash = %q, want hashToken(<JWT string>)", grantReq.AccessTokenHash)
 	}
 	if grantReq.RefreshTokenHash != hashToken(tokResp.RefreshToken) {
 		t.Fatalf("grant refresh_token_hash = %q, want hashToken(refresh_token)", grantReq.RefreshTokenHash)
@@ -228,6 +328,103 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("install get: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// --- /userinfo hybrid verification: crypto check is independent of the store ---
+
+// A token signed by a *different* key must be rejected even when a matching
+// record exists in the local store — proving the cryptographic half of the
+// hybrid check fires on its own.
+func TestUserInfoRejectsForeignSignedJWT(t *testing.T) {
+	r, store := newTestRouter(t, &mockClients{})
+
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate foreign key: %v", err)
+	}
+	now := time.Now().UTC()
+	foreign, err := jwtx.NewSigner(otherKey).Sign(jwtx.Claims{
+		Sub: "subject-abc", Iss: testIssuer, Aud: "client-xyz",
+		Exp: now.Add(10 * time.Minute).Unix(), Iat: now.Unix(),
+		TenantID: "tenant-1", Scope: "read:docs",
+	}, nil)
+	if err != nil {
+		t.Fatalf("sign foreign token: %v", err)
+	}
+	// Seed a store record for it so only the signature check can reject.
+	_ = store.PutToken(TokenRecord{
+		AccessToken: foreign, InstallID: "ins-x", PersonaID: "p", IdentityID: "i",
+		Subject: "subject-abc", Scope: "read:docs", TenantID: "tenant-1",
+		ExpiresAt: now.Add(10 * time.Minute),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+foreign)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo with foreign-signed JWT: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// A revoked token must be rejected even though its signature and time window are
+// still cryptographically valid — proving the stored-record (deny-list) half of
+// the hybrid check fires on its own.
+func TestUserInfoRejectsRevokedButValidJWT(t *testing.T) {
+	mc := &mockClients{
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
+			return Persona{ID: personaID, TenantID: tenantID, Scopes: []string{"mcp"}, TokenTTL: 600}, nil
+		},
+		ClaimIdentityFn: func(_ context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
+			return Identity{ID: "id-1", PoolID: poolID, SubjectID: "s-1", Status: "claimed"}, nil
+		},
+		CreateGrantFn: func(_ context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
+			return Grant{ID: "g-1", Status: "active", InstallID: req.InstallID}, nil
+		},
+	}
+	r, store := newTestRouter(t, mc)
+
+	code := "code-revoke-flow"
+	_ = store.PutAuthCode(AuthCode{
+		Code: code, TenantID: "t", Runtime: "claude",
+		PersonaID: "p", PoolID: "pl", ClientID: "c",
+	})
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &tok)
+
+	// Sanity: still cryptographically valid right now.
+	v := fetchJWKSVerifier(t, r)
+	if _, _, err := v.Verify(tok.AccessToken, time.Now().UTC()); err != nil {
+		t.Fatalf("freshly issued token must verify: %v", err)
+	}
+
+	// Revoke, then /userinfo with the same (still-valid) JWT must 401.
+	form = url.Values{"token": {tok.AccessToken}}
+	req = httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo with revoked token: expected 401, got %d (%s)", w.Code, w.Body.String())
 	}
 }
 
@@ -630,8 +827,11 @@ func TestDiscoveryDocs(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
 			t.Fatalf("%s: invalid JSON: %v", path, err)
 		}
-		if doc["issuer"] != "http://test.local" {
-			t.Fatalf("%s: issuer = %v, want http://test.local", path, doc["issuer"])
+		if doc["issuer"] != testIssuer {
+			t.Fatalf("%s: issuer = %v, want %s", path, doc["issuer"], testIssuer)
+		}
+		if doc["jwks_uri"] != testIssuer+"/.well-known/jwks.json" {
+			t.Fatalf("%s: jwks_uri = %v, want %s/.well-known/jwks.json", path, doc["jwks_uri"], testIssuer)
 		}
 	}
 }

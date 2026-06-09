@@ -2,6 +2,8 @@ package internal
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
 // mockAuthenticator is an in-process stand-in for HTTPAuthenticatorClient. Each
@@ -36,6 +40,16 @@ func (m *mockAuthenticator) VerifyFirstFactor(ctx context.Context, t, u, s strin
 	return m.VerifyFn(ctx, t, u, s)
 }
 
+// testSigner is a single RS256 signer shared by every test router — generating
+// a 2048-bit key per test would dominate the suite's runtime for no coverage.
+var testSigner = func() *jwtx.Signer {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("generate test signing key: " + err.Error())
+	}
+	return jwtx.NewSigner(key)
+}()
+
 // newTestRouter wires a fully-assembled Router with an in-memory store. Tests
 // reach into the returned Storage to seed state or inspect invariants.
 func newTestRouter(t *testing.T) (http.Handler, Storage) {
@@ -47,8 +61,31 @@ func newTestRouter(t *testing.T) (http.Handler, Storage) {
 		Logger:        logger,
 		Authenticator: &mockAuthenticator{},
 		Issuer:        "http://test.local",
+		Signer:        testSigner,
 	})
 	return r, store
+}
+
+// verifierFromJWKSEndpoint fetches the service's own JWKS endpoint through the
+// router and builds a jwtx.Verifier from the served document — the exact
+// consumption path an external service would use.
+func verifierFromJWKSEndpoint(t *testing.T, r http.Handler, path string) *jwtx.Verifier {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("%s: expected 200, got %d (%s)", path, w.Code, w.Body.String())
+	}
+	var set jwtx.JWKS
+	if err := json.Unmarshal(w.Body.Bytes(), &set); err != nil {
+		t.Fatalf("%s: invalid JWKS JSON: %v", path, err)
+	}
+	v, err := jwtx.NewVerifierFromJWKS("http://test.local", set)
+	if err != nil {
+		t.Fatalf("%s: verifier from served JWKS: %v", path, err)
+	}
+	return v
 }
 
 // --- Health is unauthenticated ---
@@ -494,7 +531,7 @@ func TestV1RoutesRequireTenantHeader(t *testing.T) {
 	}
 }
 
-// --- /authorize -> /token happy path mints tokens + a session ---
+// --- /authorize -> /token happy path mints a JWT access token + a session ---
 
 func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	r, store := newTestRouter(t)
@@ -504,6 +541,7 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 		"redirect_uri": {"http://localhost:3000/callback"},
 		"state":        {"state-1"},
 		"scope":        {"openid profile email"},
+		"nonce":        {"n-42"},
 		"tenant_id":    {"ten_a"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
@@ -542,6 +580,7 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	var tokResp struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int    `json:"expires_in"`
 	}
@@ -555,13 +594,65 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 		t.Fatalf("token: wrong metadata: %+v", tokResp)
 	}
 
+	// Access token is a compact 3-part JWS; refresh token stays opaque.
+	if parts := strings.Split(tokResp.AccessToken, "."); len(parts) != 3 {
+		t.Fatalf("access token is not a 3-part JWS: %q", tokResp.AccessToken)
+	}
+	if strings.Contains(tokResp.RefreshToken, ".") {
+		t.Fatalf("refresh token should stay opaque, got %q", tokResp.RefreshToken)
+	}
+
 	// Storage should contain exactly one access token and one refresh token, both
 	// stored under their SHA-256 hashes (not plaintext).
-	if _, err := store.GetTokenByHash(HashToken(tokResp.AccessToken)); err != nil {
+	accessRec, err := store.GetTokenByHash(HashToken(tokResp.AccessToken))
+	if err != nil {
 		t.Fatalf("access token not stored under hash: %v", err)
 	}
 	if _, err := store.GetTokenByHash(HashToken(tokResp.RefreshToken)); err != nil {
 		t.Fatalf("refresh token not stored under hash: %v", err)
+	}
+
+	// The access token must verify against the service's own published JWKS,
+	// the way any sister service would consume it.
+	now := time.Now().UTC()
+	v := verifierFromJWKSEndpoint(t, r, "/v1/auth/jwks")
+	claims, _, err := v.Verify(tokResp.AccessToken, now)
+	if err != nil {
+		t.Fatalf("access token does not verify against /v1/auth/jwks: %v", err)
+	}
+	if !strings.HasPrefix(claims.Sub, "usr_") {
+		t.Fatalf("sub = %q, want usr_ prefix", claims.Sub)
+	}
+	if claims.Aud != DefaultClientID {
+		t.Fatalf("aud = %q, want %q", claims.Aud, DefaultClientID)
+	}
+	if claims.TenantID != "ten_a" {
+		t.Fatalf("tenant_id = %q, want ten_a", claims.TenantID)
+	}
+	if claims.SessionID != accessRec.SessionID || !strings.HasPrefix(claims.SessionID, "ses_") {
+		t.Fatalf("session_id = %q, stored record has %q", claims.SessionID, accessRec.SessionID)
+	}
+	if claims.Scope != "openid profile email" {
+		t.Fatalf("scope = %q", claims.Scope)
+	}
+	if got, want := claims.Exp, now.Add(time.Duration(AccessTokenTTLSeconds)*time.Second).Unix(); got < want-30 || got > want+30 {
+		t.Fatalf("exp = %d, want ~%d (1h TTL)", got, want)
+	}
+
+	// scope contained "openid", so an id_token must be present, signed by the
+	// same key, and carry the nonce from the original /authorize request.
+	if tokResp.IDToken == "" {
+		t.Fatalf("id_token missing for openid scope")
+	}
+	idClaims, _, err := v.Verify(tokResp.IDToken, now)
+	if err != nil {
+		t.Fatalf("id_token does not verify: %v", err)
+	}
+	if idClaims.Nonce != "n-42" {
+		t.Fatalf("id_token nonce = %q, want n-42", idClaims.Nonce)
+	}
+	if idClaims.Sub != claims.Sub || idClaims.Aud != DefaultClientID {
+		t.Fatalf("id_token sub/aud mismatch: %+v", idClaims)
 	}
 
 	// /userinfo
@@ -659,6 +750,22 @@ func TestTokenRefreshRotation(t *testing.T) {
 	if second.RefreshToken == first.RefreshToken {
 		t.Fatalf("refresh token not rotated")
 	}
+	if second.AccessToken == first.AccessToken {
+		t.Fatalf("access token not rotated")
+	}
+
+	// The refreshed access token is a fresh JWT that verifies against the JWKS.
+	if parts := strings.Split(second.AccessToken, "."); len(parts) != 3 {
+		t.Fatalf("refreshed access token is not a 3-part JWS: %q", second.AccessToken)
+	}
+	v := verifierFromJWKSEndpoint(t, r, "/.well-known/jwks.json")
+	claims, _, err := v.Verify(second.AccessToken, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("refreshed access token does not verify: %v", err)
+	}
+	if claims.TenantID != "ten_a" || !strings.HasPrefix(claims.SessionID, "ses_") {
+		t.Fatalf("refreshed token claims wrong: %+v", claims)
+	}
 
 	// Old refresh should now be revoked.
 	old, _ := store.GetTokenByHash(HashToken(first.RefreshToken))
@@ -733,6 +840,139 @@ func TestRevokeAlways200(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("userinfo with revoked: expected 401, got %d", w.Code)
+	}
+}
+
+// --- JWKS is served at the canonical route and the well-known alias ---
+
+func TestJWKSEndpoints(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	var bodies []string
+	for _, path := range []string{"/v1/auth/jwks", "/.well-known/jwks.json"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, w.Code)
+		}
+		var set jwtx.JWKS
+		if err := json.Unmarshal(w.Body.Bytes(), &set); err != nil {
+			t.Fatalf("%s: invalid JWKS: %v", path, err)
+		}
+		if len(set.Keys) != 1 {
+			t.Fatalf("%s: want 1 key, got %d", path, len(set.Keys))
+		}
+		k := set.Keys[0]
+		if k.Kty != "RSA" || k.Alg != "RS256" || k.Use != "sig" || k.Kid == "" || k.N == "" || k.E == "" {
+			t.Fatalf("%s: malformed JWK: %+v", path, k)
+		}
+		bodies = append(bodies, w.Body.String())
+	}
+	if bodies[0] != bodies[1] {
+		t.Fatalf("canonical route and alias serve different key sets")
+	}
+
+	// Discovery documents must advertise the alias as jwks_uri.
+	for _, path := range []string{
+		"/.well-known/openid-configuration",
+		"/.well-known/oauth-authorization-server",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		var doc map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &doc)
+		if doc["jwks_uri"] != "http://test.local/.well-known/jwks.json" {
+			t.Fatalf("%s: jwks_uri = %v", path, doc["jwks_uri"])
+		}
+	}
+}
+
+// --- /userinfo hybrid validation: crypto-valid JWT with a revoked record is 401 ---
+
+func TestUserInfoRejectsRevokedButCryptoValidJWT(t *testing.T) {
+	r, store := newTestRouter(t)
+
+	authURL := "/authorize?" + url.Values{
+		"client_id":    {DefaultClientID},
+		"redirect_uri": {"http://localhost:3000/callback"},
+		"tenant_id":    {"ten_a"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodGet, authURL, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {loc.Query().Get("code")}, "client_id": {DefaultClientID}}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &tok)
+
+	// Revoke the stored record directly. The JWT itself remains
+	// cryptographically valid — prove it, then prove /userinfo still rejects.
+	if err := store.RevokeTokenByHash(HashToken(tok.AccessToken)); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	v := verifierFromJWKSEndpoint(t, r, "/v1/auth/jwks")
+	if _, _, err := v.Verify(tok.AccessToken, time.Now().UTC()); err != nil {
+		t.Fatalf("precondition: revoked JWT should still verify cryptographically, got %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo with revoked record: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// --- /userinfo rejects a token signed by a different key ---
+
+func TestUserInfoRejectsForeignlySignedJWT(t *testing.T) {
+	r, store := newTestRouter(t)
+
+	// Seed a real user + session so only the signature can be at fault.
+	u, _ := store.CreateUser(User{ID: "usr_mallory", TenantID: "ten_a", Email: "m@e.com"})
+	now := time.Now().UTC()
+
+	foreignKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate foreign key: %v", err)
+	}
+	forged, err := jwtx.NewSigner(foreignKey).Sign(jwtx.Claims{
+		Sub:       u.ID,
+		Iss:       "http://test.local",
+		Aud:       DefaultClientID,
+		Exp:       now.Add(time.Hour).Unix(),
+		Iat:       now.Unix(),
+		TenantID:  "ten_a",
+		Scope:     "openid",
+		SessionID: "ses_forged",
+	}, nil)
+	if err != nil {
+		t.Fatalf("sign with foreign key: %v", err)
+	}
+	// Even plant a matching stored record: the signature check alone must fail it.
+	if err := store.PutToken(Token{
+		TokenHash: HashToken(forged), SessionID: "ses_forged", UserID: u.ID,
+		TenantID: "ten_a", TokenType: TokenTypeAccess, Scope: "openid",
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("plant token record: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+forged)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo with foreign-key JWT: expected 401, got %d (%s)", w.Code, w.Body.String())
 	}
 }
 

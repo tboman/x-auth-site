@@ -17,6 +17,7 @@ import (
 
 	"github.com/xentranet/x-auth/pkg/config"
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
 	"github.com/xentranet/x-auth/services/authentication-service/internal"
@@ -27,6 +28,21 @@ func main() {
 
 	authenticatorURL := config.Env("AUTHENTICATOR_SERVICE_URL", "http://localhost:8083")
 	issuer := config.Env("AUTH_ISSUER", "http://localhost:8082")
+	// The `iss` claim minted into access/ID tokens. Defaults to the discovery
+	// issuer so tokens match the published OIDC configuration; override with
+	// JWT_ISSUER only when the signing identity must differ from the base URL.
+	jwtIssuer := config.Env("JWT_ISSUER", issuer)
+
+	// RS256 signing key (ARCHITECTURE.md §10.1). Production injects a PEM via
+	// JWT_SIGNING_KEY (from KMS/secret storage); local dev falls back to an
+	// ephemeral per-process key (jwtx logs a warning — tokens won't survive a
+	// restart or verify across replicas).
+	key, err := jwtx.LoadOrGenerateKey("JWT_SIGNING_KEY", logger)
+	if err != nil {
+		logger.Error("jwt_signing_key_load_failed", "err", err)
+		os.Exit(1)
+	}
+	signer := jwtx.NewSigner(key)
 
 	// Resolve storage. Postgres is the phase-2 default; the in-memory fallback is
 	// preserved so the service still boots during local dev or CI without a DB
@@ -89,6 +105,8 @@ func main() {
 		Logger:        logger,
 		Authenticator: authenticator,
 		Issuer:        issuer,
+		Signer:        signer,
+		JWTIssuer:     jwtIssuer,
 	})
 
 	addr := config.Addr(8082)

@@ -10,24 +10,35 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
-// OIDCHandlers implements the phase-1 public OIDC/OAuth surface of
+// OIDCHandlers implements the public OIDC/OAuth surface of
 // authentication-service:
 //
 //   - discovery documents (RFC 8414 + OpenID Connect Discovery)
 //   - /authorize: auto-approve stub — records an auth code bound to a dev user
-//   - /token: exchanges code for opaque access + refresh tokens, issues a session
+//   - /token: exchanges code for an RS256 JWT access token + opaque refresh
+//     token (+ id_token when scope contains "openid"), issues a session
 //   - /refresh (as grant_type=refresh_token on /token): rotates both tokens
 //   - /revoke: RFC 7009 revocation — stamps RevokedAt on the token record
 //   - /userinfo: returns {sub, email, name} for a valid bearer
+//   - /v1/auth/jwks + /.well-known/jwks.json: RFC 7517 key set
 //
-// Phase 1 uses opaque UUID tokens stored as SHA-256 hex hashes — plaintext
-// tokens are never persisted. Every phase-2 shortcut is flagged inline.
+// Token model (ARCHITECTURE.md §10.1): access and ID tokens are RS256 JWTs
+// signed by this service; refresh tokens remain opaque UUIDs. All issued
+// tokens are persisted as SHA-256 hex hashes — plaintext is never stored.
 type OIDCHandlers struct {
 	Store  Storage
 	Logger *slog.Logger
 	Issuer string // public base URL, e.g. https://auth.x-auth.com
+
+	// Signer mints RS256 access + ID tokens; Verifier checks bearers presented
+	// to /userinfo against the same key set. JWTIssuer is the `iss` claim —
+	// normally identical to Issuer so tokens match the discovery document.
+	Signer    *jwtx.Signer
+	Verifier  *jwtx.Verifier
+	JWTIssuer string
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.
@@ -40,7 +51,7 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint":                        issuer + "/token",
 		"revocation_endpoint":                   issuer + "/revoke",
 		"userinfo_endpoint":                     issuer + "/userinfo",
-		"jwks_uri":                              issuer + "/.well-known/jwks.json", // TODO(phase-2): publish real JWKS
+		"jwks_uri":                              issuer + "/.well-known/jwks.json",
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
@@ -58,16 +69,24 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint":                        issuer + "/token",
 		"userinfo_endpoint":                     issuer + "/userinfo",
 		"revocation_endpoint":                   issuer + "/revoke",
-		"jwks_uri":                              issuer + "/.well-known/jwks.json", // TODO(phase-2)
+		"jwks_uri":                              issuer + "/.well-known/jwks.json",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"RS256"}, // TODO(phase-2): actually sign with this alg
+		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"claims_supported":                      []string{"sub", "iss", "aud", "exp", "iat", "email", "name"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	})
+}
+
+// JWKS serves the RFC 7517 JSON Web Key Set containing this service's RS256
+// public signing key. Routed at GET /v1/auth/jwks (ARCHITECTURE.md §4.3) and
+// GET /.well-known/jwks.json (the `jwks_uri` advertised by the discovery
+// documents). Any service can verify access tokens against this document.
+func (h *OIDCHandlers) JWKS(w http.ResponseWriter, _ *http.Request) {
+	httpx.WriteJSON(w, http.StatusOK, h.Signer.JWKS())
 }
 
 // Authorize handles GET /authorize — the phase-1 stub consent endpoint.
@@ -260,22 +279,34 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessPlain, refreshPlain, err := h.issueTokenPair(sess, ac.Scope)
+	accessPlain, refreshPlain, err := h.issueTokenPair(sess, ac.Scope, ac.ClientID)
 	if err != nil {
 		h.Logger.Error("token_issue_failed", "err", err, "session_id", sess.ID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue tokens")
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"access_token":  accessPlain,
 		"refresh_token": refreshPlain,
 		"token_type":    "Bearer",
 		"expires_in":    AccessTokenTTLSeconds,
 		"scope":         ac.Scope,
-		// TODO(phase-2): issue a signed id_token (JWT with sub/iss/aud/exp/iat/nonce).
-		// Phase 1 omits id_token so clients don't start verifying an empty string.
-	})
+	}
+	// Standard OIDC: the code grant returns an id_token whenever the original
+	// /authorize request asked for the "openid" scope. The nonce travels from
+	// /authorize through the auth-code record into the id_token to bind the
+	// token to the client's original request (replay protection, §10.1).
+	if scopeContains(ac.Scope, "openid") {
+		idToken, err := h.issueIDToken(sess, ac.ClientID, ac.Nonce)
+		if err != nil {
+			h.Logger.Error("id_token_issue_failed", "err", err, "session_id", sess.ID)
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue id_token")
+			return
+		}
+		resp["id_token"] = idToken
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 // handleRefreshGrant validates a presented refresh token and issues a brand-new
@@ -285,6 +316,16 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 	presented := r.PostForm.Get("refresh_token")
 	if presented == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+		return
+	}
+	// Optional client authentication, same rules as the code grant. The token
+	// record does not persist the issuing client_id, so the `aud` claim of the
+	// refreshed access token is the client_id presented here (empty -> omitted).
+	// TODO(phase-2.2): persist client_id on the refresh-token record so `aud`
+	// survives refreshes even for clients that omit client_id.
+	clientID, _, ok := h.extractClientCreds(r)
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	hash := HashToken(presented)
@@ -323,7 +364,7 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 		h.Logger.Warn("refresh_old_token_revoke_failed", "err", err)
 	}
 
-	accessPlain, refreshPlain, err := h.issueTokenPair(sess, tok.Scope)
+	accessPlain, refreshPlain, err := h.issueTokenPair(sess, tok.Scope, clientID)
 	if err != nil {
 		h.Logger.Error("refresh_issue_failed", "err", err, "session_id", sess.ID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue tokens")
@@ -338,11 +379,32 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// issueTokenPair creates an access + refresh token record bound to sess.
-// Returns the plaintext tokens for the response body; only hashes are stored.
-func (h *OIDCHandlers) issueTokenPair(sess Session, scope string) (string, string, error) {
+// issueTokenPair creates an access + refresh token bound to sess and returns
+// the plaintext values for the response body.
+//
+// The access token is an RS256 JWT (ARCHITECTURE.md §10.1) carrying
+// sub/iss/aud/exp/iat plus the X-Auth claims tenant_id, scope, and session_id.
+// The jti keeps two tokens minted in the same second textually distinct so
+// their storage hashes never collide. The refresh token stays an opaque UUID.
+// Both are persisted as SHA-256 hashes — the access-token record doubles as
+// the revocation deny list (see UserInfo).
+func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID string) (string, string, error) {
 	now := time.Now().UTC()
-	accessPlain := uuid.NewString()
+	accessExpiry := now.Add(time.Duration(AccessTokenTTLSeconds) * time.Second)
+	accessPlain, err := h.Signer.Sign(jwtx.Claims{
+		Sub:       sess.UserID,
+		Iss:       h.JWTIssuer,
+		Aud:       clientID,
+		Exp:       accessExpiry.Unix(),
+		Iat:       now.Unix(),
+		JTI:       uuid.NewString(),
+		TenantID:  sess.TenantID,
+		Scope:     scope,
+		SessionID: sess.ID,
+	}, nil)
+	if err != nil {
+		return "", "", err
+	}
 	refreshPlain := uuid.NewString()
 
 	accessRec := Token{
@@ -353,7 +415,7 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope string) (string, strin
 		TokenType: TokenTypeAccess,
 		Scope:     scope,
 		IssuedAt:  now,
-		ExpiresAt: now.Add(time.Duration(AccessTokenTTLSeconds) * time.Second),
+		ExpiresAt: accessExpiry,
 	}
 	refreshRec := Token{
 		TokenHash: HashToken(refreshPlain),
@@ -372,6 +434,35 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope string) (string, strin
 		return "", "", err
 	}
 	return accessPlain, refreshPlain, nil
+}
+
+// issueIDToken mints a standard OIDC ID token (RS256, same key as access
+// tokens per §10.1): iss/sub/aud/exp/iat plus the nonce from the original
+// /authorize request and the tenant_id for multi-tenant consumers. ID tokens
+// are proof-of-authentication for the client, not API credentials — they are
+// not persisted and cannot be revoked or presented to /userinfo's deny list.
+func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce string) (string, error) {
+	now := time.Now().UTC()
+	return h.Signer.Sign(jwtx.Claims{
+		Sub:      sess.UserID,
+		Iss:      h.JWTIssuer,
+		Aud:      clientID,
+		Exp:      now.Add(time.Duration(AccessTokenTTLSeconds) * time.Second).Unix(),
+		Iat:      now.Unix(),
+		TenantID: sess.TenantID,
+		Nonce:    nonce,
+	}, nil)
+}
+
+// scopeContains reports whether the space-delimited OAuth scope string
+// includes want as a whole token.
+func scopeContains(scope, want string) bool {
+	for _, s := range strings.Fields(scope) {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Revoke implements RFC 7009 token revocation. Per RFC 7009 §2.2 the endpoint
@@ -395,9 +486,21 @@ func (h *OIDCHandlers) Revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// UserInfo returns minimal OIDC user claims for the bearer. Phase-1 response
-// shape: {sub, email, name}. Returns 401 with RFC 6750 WWW-Authenticate
-// whenever the bearer is missing, unknown, expired, or revoked.
+// UserInfo returns minimal OIDC user claims for the bearer. Response shape:
+// {sub, email, name}. Returns 401 with RFC 6750 WWW-Authenticate whenever the
+// bearer is missing, malformed, signed by an unknown key, expired, unknown to
+// storage, or revoked.
+//
+// HYBRID validation — deliberately both, in this order:
+//
+//  1. Stateless RS256 verification (signature, exp/iat window, issuer) via
+//     jwtx, exactly what any sister service does against our JWKS (§10.1).
+//  2. Stored-record lookup: the hashed access-token row written at issue time
+//     must still exist and not carry revoked_at.
+//
+// The spec makes access tokens stateless, but /revoke (RFC 7009) must keep
+// taking effect immediately; until distributed revocation (shared deny cache /
+// token-family invalidation) lands, the persisted record acts as a deny list.
 func (h *OIDCHandlers) UserInfo(w http.ResponseWriter, r *http.Request) {
 	auth := r.Header.Get("Authorization")
 	const prefix = "Bearer "
@@ -407,6 +510,11 @@ func (h *OIDCHandlers) UserInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plain := strings.TrimPrefix(auth, prefix)
+	if _, _, err := h.Verifier.Verify(plain, time.Now().UTC()); err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token", "token signature or claims invalid")
+		return
+	}
 	tok, err := h.Store.GetTokenByHash(HashToken(plain))
 	if err != nil || tok.TokenType != TokenTypeAccess {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)

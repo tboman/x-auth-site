@@ -14,9 +14,11 @@
 --     deletes the row, so no state machine column is needed. PKCE columns
 --     (code_challenge / method) arrive with phase-2 PKCE enforcement.
 --   • ARCHITECTURE's refresh_tokens table is generalised to a tokens table that
---     holds BOTH access and refresh records — phase-1 access tokens are opaque
---     UUIDs that must be resolvable server-side (/userinfo, /revoke). When access
---     tokens become signed JWTs this shrinks back to refresh-token-only.
+--     holds BOTH access and refresh records. Access tokens are RS256 JWTs
+--     (§10.1) but their hashed record is deliberately kept as a revocation
+--     deny list (/userinfo checks signature AND record); shrink to
+--     refresh-token-only once distributed revocation lands. token_hash is
+--     TEXT, so the JWT-sized plaintext hashes fine either way.
 --   • Short-lived artefacts (auth codes, tokens) live in Postgres, not Redis —
 --     phase 2 has no Redis yet (ARCHITECTURE §6.3 is a later phase).
 --   • oidc_clients is trimmed to the fields the service models today (client_id,

@@ -4,12 +4,13 @@
 // authentication-service is the public OIDC provider for X-Auth for Apps. It owns:
 //   - users (CRUD)
 //   - sessions (create after first-factor auth, refresh, invalidate, upgrade on step-up)
-//   - tokens (opaque access + refresh, hashed at rest)
-//   - OIDC endpoints (discovery, authorize, token, userinfo, revoke)
+//   - tokens (RS256 JWT access + ID tokens, opaque refresh tokens; all hashed at rest)
+//   - OIDC endpoints (discovery, authorize, token, userinfo, revoke, jwks)
 //   - social-login stubs (google, github, microsoft)
 //
-// Phase 1 uses opaque UUID tokens so the happy path works end-to-end without JWT
-// signing. Every phase-2 shortcut is flagged with a `TODO(phase-2)` comment.
+// Access and ID tokens are RS256 JWTs per ARCHITECTURE.md §10.1, verifiable by
+// any service against GET /v1/auth/jwks. Refresh tokens remain opaque UUIDs.
+// Remaining phase-2 shortcuts are flagged with `TODO(phase-2)` comments.
 //
 // See ARCHITECTURE.md §4.3 for the source-of-truth service contract.
 package internal
@@ -111,12 +112,16 @@ const (
 	TokenTypeRefresh = "refresh"
 )
 
-// Token is the authentication-service's internal record of an issued opaque
-// token. Plaintext tokens are never persisted — we store the SHA-256 hex digest
-// and compare by re-hashing what the caller presents.
+// Token is the authentication-service's internal record of an issued token —
+// JWT access tokens and opaque refresh tokens alike. Plaintext tokens are never
+// persisted — we store the SHA-256 hex digest and compare by re-hashing what
+// the caller presents.
 //
-// TODO(phase-2): when access tokens become signed JWTs, the access-token record
-// can be dropped entirely and this type can shrink to refresh-token-only.
+// Access tokens are stateless JWTs (§10.1), but their record is deliberately
+// kept as a revocation deny list: /userinfo requires both a valid signature
+// AND a live (non-revoked) record, so RFC 7009 /revoke keeps taking effect
+// immediately. Drop the access-token record only when distributed revocation
+// lands.
 type Token struct {
 	TokenHash string     `json:"-"`
 	SessionID string     `json:"session_id"`
@@ -170,7 +175,7 @@ type SocialProfile struct {
 // magic numbers throughout the handlers.
 const (
 	SessionTTLSeconds      = 3600  // 1 hour
-	AccessTokenTTLSeconds  = 900   // 15 minutes
+	AccessTokenTTLSeconds  = 3600  // 1 hour per ARCHITECTURE.md §10.1; per-client overrides arrive with dynamic client registration
 	RefreshTokenTTLSeconds = 86400 // 24 hours
 	AuthCodeTTLSeconds     = 300   // 5 minutes
 

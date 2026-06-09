@@ -68,9 +68,12 @@ type AuthCode struct {
 	CreatedAt   time.Time
 }
 
-// TokenRecord is the broker's own view of an issued token. Phase 1 stores these
-// locally so /userinfo can answer questions about a bearer; phase 2 will defer
-// to grant-service for introspection and drop this duplicated state.
+// TokenRecord is the broker's own view of an issued token. AccessToken holds the
+// full compact JWT string (phase 2.1); RefreshToken stays an opaque UUID. The
+// record doubles as the revocation deny-list for /userinfo's hybrid check —
+// /revoke and install revocation delete it — and as the metadata source for
+// /userinfo's response. A later phase defers this to grant-service introspection
+// and drops the duplicated state.
 type TokenRecord struct {
 	AccessToken  string
 	RefreshToken string

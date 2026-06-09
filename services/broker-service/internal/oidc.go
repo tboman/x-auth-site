@@ -14,18 +14,19 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
-// OIDCHandlers implements the phase-1 OIDC/OAuth surface of the broker:
-//   - discovery documents (RFC 8414 + OIDC)
+// OIDCHandlers implements the OIDC/OAuth surface of the broker:
+//   - discovery documents (RFC 8414 + OIDC) + JWKS publication
 //   - /authorize: stub consent — auto-approves, records a pending install
 //   - /token: exchanges code for tokens; orchestrates persona/pool/grant
 //   - /revoke: forwards to grant-service
-//   - /userinfo: bearer-token introspection against local token cache
+//   - /userinfo: hybrid bearer introspection (JWT verification + local token cache)
 //
-// Cryptography is explicitly deferred. Phase 1 uses opaque UUID tokens so the
-// happy-path install wiring is verifiable end-to-end without signing keys. Every
-// place a JWT will eventually be issued is flagged with TODO(phase-2).
+// Phase 2.1: access tokens are RS256 JWTs signed with the broker's key (jwks_uri
+// publishes the public half); refresh tokens remain opaque UUIDs stored hashed
+// with grant-service.
 type OIDCHandlers struct {
 	Store   Storage
 	Clients interface {
@@ -33,14 +34,20 @@ type OIDCHandlers struct {
 		PoolClient
 		GrantClient
 	}
-	Logger     *slog.Logger
-	Issuer     string // public base URL of this service, e.g. https://broker.x-auth.com
+	Logger *slog.Logger
+	Issuer string // public base URL of this service, e.g. https://mcp.x-auth.com
+	// Signer mints RS256 access tokens; Verifier checks presented bearers against
+	// the same key set + JWTIssuer. JWTIssuer is the `iss` claim value and
+	// normally equals Issuer so tokens validate against the discovery document.
+	Signer     *jwtx.Signer
+	Verifier   *jwtx.Verifier
+	JWTIssuer  string
 	DefaultTTL int
 }
 
 // Discovery: RFC 8414 OAuth 2.0 Authorization Server Metadata.
 // Returned as static JSON reflecting this service's endpoints. Clients use this
-// to find /authorize, /token, /userinfo, and the JWKS endpoint (phase 2).
+// to find /authorize, /token, /userinfo, and the JWKS endpoint.
 func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 	issuer := strings.TrimRight(h.Issuer, "/")
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -50,7 +57,7 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"revocation_endpoint":                   issuer + "/revoke",
 		"userinfo_endpoint":                     issuer + "/userinfo",
 		"registration_endpoint":                 issuer + "/register",
-		"jwks_uri":                              issuer + "/.well-known/jwks.json", // TODO(phase-2): publish real JWKS
+		"jwks_uri":                              issuer + "/.well-known/jwks.json",
 		"scopes_supported":                      []string{"openid", "profile", "email", "mcp"},
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
@@ -69,16 +76,24 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"userinfo_endpoint":                     issuer + "/userinfo",
 		"revocation_endpoint":                   issuer + "/revoke",
 		"registration_endpoint":                 issuer + "/register",
-		"jwks_uri":                              issuer + "/.well-known/jwks.json", // TODO(phase-2)
+		"jwks_uri":                              issuer + "/.well-known/jwks.json",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"RS256"}, // TODO(phase-2): actually sign with this alg
+		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email", "mcp"},
 		"claims_supported":                      []string{"sub", "iss", "aud", "exp", "iat", "persona", "scopes"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 	})
+}
+
+// JWKS serves the RFC 7517 key set containing the broker's signing public key
+// at the jwks_uri advertised by both discovery documents
+// (GET /.well-known/jwks.json). Resource servers and MCP runtimes use it to
+// verify access-token signatures offline.
+func (h *OIDCHandlers) JWKS(w http.ResponseWriter, _ *http.Request) {
+	httpx.WriteJSON(w, http.StatusOK, h.Signer.JWKS())
 }
 
 // Authorize handles GET /authorize — the stub consent endpoint.
@@ -186,7 +201,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 //  2. create a pending install locally
 //  3. fetch persona scopes from persona-service
 //  4. claim an identity from pool-service
-//  5. issue opaque tokens and record the grant in grant-service
+//  5. issue tokens (JWT access + opaque refresh) and record the grant in grant-service
 //  6. mark the install active with the claimed identity id
 //
 // Compensation: if step 4 succeeds but step 5 fails, the claimed identity is
@@ -280,18 +295,57 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Mint opaque tokens. TODO(phase-2): replace with signed JWTs whose claims embed
-	// {iss, aud, sub=identity.SubjectID, persona, scopes, exp, iat} and are signed
-	// with the broker's signing key, keys rotated and published via jwks_uri.
-	accessToken := uuid.NewString()
-	refreshToken := uuid.NewString()
+	// 4. Mint tokens. The ACCESS token is an RS256 JWT signed with the broker's key
+	// (published via jwks_uri):
+	//   - sub  = identity.SubjectID — REQUIREMENTS.md §2 defines subject_id as the
+	//     "stable identifier used in the OAuth `sub` claim". The pool identity is
+	//     the principal acting under this token (the install and persona are
+	//     bindings *about* that principal, carried as extra claims).
+	//   - aud  = the requesting OAuth client (DCR client id)
+	//   - scope/tenant_id/exp/iat per the persona + auth code
+	//   - extras: install_id / persona_id / identity_id bind the token to the
+	//     install triple so resource servers can authorize without a lookup.
+	// The REFRESH token stays an opaque UUID: it is only ever redeemed back at this
+	// service, so self-describing claims buy nothing and opacity limits blast radius.
 	ttl := persona.TokenTTL
 	if ttl <= 0 {
 		ttl = h.DefaultTTL
 	}
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(time.Duration(ttl) * time.Second)
+	grantedScope := scopeString(persona.Scopes, ac.Scope)
+	accessToken, err := h.Signer.Sign(jwtx.Claims{
+		Sub:      identity.SubjectID,
+		Iss:      h.JWTIssuer,
+		Aud:      ac.ClientID,
+		Exp:      expiresAt.Unix(),
+		Iat:      issuedAt.Unix(),
+		JTI:      uuid.NewString(),
+		TenantID: ac.TenantID,
+		Scope:    grantedScope,
+	}, map[string]any{
+		"install_id":  installID,
+		"persona_id":  ac.PersonaID,
+		"identity_id": identity.ID,
+	})
+	if err != nil {
+		h.Logger.Error("token_sign_failed", "err", err, "tenant_id", ac.TenantID, "install_id", installID)
+		// Same compensation as a grant failure: the identity was already claimed.
+		if relErr := h.Clients.ReleaseIdentity(context.WithoutCancel(r.Context()), ac.TenantID, identity.ID); relErr != nil {
+			h.Logger.Warn("token_compensation_release_failed",
+				downstreamLogAttrs(relErr, "tenant_id", ac.TenantID, "identity_id", identity.ID)...)
+		}
+		h.markInstallRevoked(install)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to sign access token")
+		return
+	}
+	refreshToken := uuid.NewString()
 
-	// 5. Record the grant. If this fails, compensate by releasing the claimed identity
-	// so the pool does not leak a claimed-but-unusable slot.
+	// 5. Record the grant. The hashes are SHA-256 over the full token strings as
+	// issued — for the access token that is now the compact JWT, for the refresh
+	// token the opaque UUID. grant-service never sees plaintext tokens.
+	// If this fails, compensate by releasing the claimed identity so the pool does
+	// not leak a claimed-but-unusable slot.
 	_, err = h.Clients.CreateGrant(r.Context(), ac.TenantID, GrantCreateRequest{
 		InstallID:        installID,
 		IdentityID:       identity.ID,
@@ -333,9 +387,9 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		PersonaID:    ac.PersonaID,
 		IdentityID:   identity.ID,
 		Subject:      identity.SubjectID,
-		Scope:        scopeString(persona.Scopes, ac.Scope),
+		Scope:        grantedScope,
 		TenantID:     ac.TenantID,
-		ExpiresAt:    time.Now().UTC().Add(time.Duration(ttl) * time.Second),
+		ExpiresAt:    expiresAt,
 	})
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -343,7 +397,7 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		"refresh_token": refreshToken,
 		"token_type":    "Bearer",
 		"expires_in":    ttl,
-		"scope":         scopeString(persona.Scopes, ac.Scope),
+		"scope":         grantedScope,
 	})
 }
 
@@ -378,9 +432,19 @@ func (h *OIDCHandlers) Revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// UserInfo returns a minimal claims bundle keyed off the bearer token. Phase 1
-// reads straight from the local token cache; phase 2 will call grant-service's
-// /introspect endpoint instead so this service can go stateless.
+// UserInfo returns a minimal claims bundle keyed off the bearer token.
+//
+// Hybrid verification — BOTH checks must pass:
+//
+//  1. Cryptographic: jwtx.Verify checks the RS256 signature against the broker's
+//     key set, the exp/iat window (30s leeway), and the issuer. This rejects
+//     forged or foreign-signed tokens regardless of what the store contains.
+//  2. Stored record: the local token store is the revocation deny-list (/revoke
+//     and install revocation delete the row) and the metadata source of record.
+//     A cryptographically valid JWT whose record is gone is treated as revoked.
+//
+// Phase 2.x will defer the stored-record half to grant-service introspection so
+// this service can go stateless; the signature check stays local.
 func (h *OIDCHandlers) UserInfo(w http.ResponseWriter, r *http.Request) {
 	auth := r.Header.Get("Authorization")
 	const prefix = "Bearer "
@@ -391,6 +455,14 @@ func (h *OIDCHandlers) UserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimPrefix(auth, prefix)
 
+	// Check 1: signature + time window + issuer.
+	if _, _, err := h.Verifier.Verify(token, time.Now().UTC()); err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token", "token verification failed")
+		return
+	}
+
+	// Check 2: revocation deny-list / metadata lookup.
 	rec, err := h.Store.GetToken(token)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
