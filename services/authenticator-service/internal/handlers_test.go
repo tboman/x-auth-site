@@ -26,15 +26,27 @@ type testClock struct{ t time.Time }
 func (c *testClock) now() time.Time          { return c.t }
 func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
-// newTestServer builds a Router with a controllable clock. Returns the
-// httptest server and the shared clock/store so tests can poke at state.
+// newTestServer builds a Router with a controllable clock and the §10.5
+// layer-3 limits DISABLED (zero-value Limits), so lifecycle tests aren't
+// tripped by rate limits or lockouts. The per-challenge exponential backoff
+// is not configurable and stays active — tests advance the clock past it.
+// Returns the httptest server and the shared clock/store so tests can poke
+// at state.
 func newTestServer(t *testing.T) (*httptest.Server, *Store, *testClock) {
+	t.Helper()
+	return newTestServerWithLimits(t, func(func() time.Time) Limits { return Limits{} })
+}
+
+// newTestServerWithLimits is newTestServer with explicit abuse-prevention
+// limits. limitsFn receives the test clock's now func so abuse_test.go can
+// build limiters that share the controllable clock.
+func newTestServerWithLimits(t *testing.T, limitsFn func(now func() time.Time) Limits) (*httptest.Server, *Store, *testClock) {
 	t.Helper()
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registry := NewRegistry(log)
-	srv := httptest.NewServer(Router(log, store, registry))
+	srv := httptest.NewServer(Router(log, store, registry, limitsFn(clock.now)))
 	t.Cleanup(srv.Close)
 	return srv, store, clock
 }
@@ -115,7 +127,7 @@ func TestHandlersRejectMissingTenantContext(t *testing.T) {
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ah := NewAuthenticatorHandlers(log, store)
-	ch := NewChallengeHandlers(log, store, NewRegistry(log))
+	ch := NewChallengeHandlers(log, store, NewRegistry(log), Limits{})
 
 	cases := []struct {
 		name    string
@@ -446,8 +458,17 @@ func TestVerifySuccess(t *testing.T) {
 	}
 }
 
-func TestVerifyLockoutAfterThreeFailures(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+// TestVerifyFailsChallengeAfterMaxAttempts pins §10.5 layer 3 "max attempts
+// per challenge (3)": exactly MaxChallengeAttempts failed verifies flip the
+// challenge to terminal `failed`, and the constant itself is pinned at 3.
+// The clock advances past the exponential backoff (2^attempts seconds)
+// between failures so each retry is a real attempt, not a 429.
+func TestVerifyFailsChallengeAfterMaxAttempts(t *testing.T) {
+	if MaxChallengeAttempts != 3 {
+		t.Fatalf("§10.5 pins max attempts per challenge at 3, got %d", MaxChallengeAttempts)
+	}
+
+	srv, _, clock := newTestServer(t)
 	id := createChallenge(t, srv, MethodTOTP)
 
 	for i := 1; i <= MaxChallengeAttempts; i++ {
@@ -462,6 +483,8 @@ func TestVerifyLockoutAfterThreeFailures(t *testing.T) {
 		if vr.Verified {
 			t.Fatalf("attempt %d: should not verify", i)
 		}
+		// Step past the backoff window for the attempt count we just reached.
+		clock.advance(time.Duration(1<<uint(i))*time.Second + time.Second)
 	}
 
 	// 4th attempt: challenge is now `failed`, 410.
@@ -470,7 +493,7 @@ func TestVerifyLockoutAfterThreeFailures(t *testing.T) {
 	})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusGone {
-		t.Fatalf("want 410 after lockout, got %d", resp.StatusCode)
+		t.Fatalf("want 410 after max attempts, got %d", resp.StatusCode)
 	}
 
 	// Read shows `failed`.
@@ -566,7 +589,7 @@ func newFailingServer(t *testing.T, failLists bool) (*httptest.Server, *failingS
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := &failingStore{Store: NewStore(clock.now), failLists: failLists}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(Router(log, store, NewRegistry(log)))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log), Limits{}))
 	t.Cleanup(srv.Close)
 	return srv, store
 }

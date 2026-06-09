@@ -220,26 +220,27 @@ func (s *PGStorage) PutAuthCode(ac AuthCode) error {
 	const q = `
 		INSERT INTO auth_codes (
 			code, tenant_id, runtime, persona_id, pool_id,
-			client_id, redirect_uri, state, scope, created_at
+			client_id, redirect_uri, state, scope, code_challenge, created_at
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10
+			$6, $7, $8, $9, $10, $11
 		)
 		ON CONFLICT (code) DO UPDATE SET
-			tenant_id    = EXCLUDED.tenant_id,
-			runtime      = EXCLUDED.runtime,
-			persona_id   = EXCLUDED.persona_id,
-			pool_id      = EXCLUDED.pool_id,
-			client_id    = EXCLUDED.client_id,
-			redirect_uri = EXCLUDED.redirect_uri,
-			state        = EXCLUDED.state,
-			scope        = EXCLUDED.scope,
-			created_at   = EXCLUDED.created_at
+			tenant_id      = EXCLUDED.tenant_id,
+			runtime        = EXCLUDED.runtime,
+			persona_id     = EXCLUDED.persona_id,
+			pool_id        = EXCLUDED.pool_id,
+			client_id      = EXCLUDED.client_id,
+			redirect_uri   = EXCLUDED.redirect_uri,
+			state          = EXCLUDED.state,
+			scope          = EXCLUDED.scope,
+			code_challenge = EXCLUDED.code_challenge,
+			created_at     = EXCLUDED.created_at
 	`
 	if _, err := s.pool.Exec(bgCtx(), q,
 		ac.Code, ac.TenantID, ac.Runtime, ac.PersonaID, nullable(ac.PoolID),
 		ac.ClientID, nullable(ac.RedirectURI), nullable(ac.State), nullable(ac.Scope),
-		ac.CreatedAt.UTC(),
+		nullable(ac.CodeChallenge), ac.CreatedAt.UTC(),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_auth_code: %w", err)
 	}
@@ -254,15 +255,15 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 		DELETE FROM auth_codes
 		 WHERE code = $1
 		RETURNING code, tenant_id, runtime, persona_id, pool_id,
-		          client_id, redirect_uri, state, scope, created_at
+		          client_id, redirect_uri, state, scope, code_challenge, created_at
 	`
 	var (
-		ac                             AuthCode
-		poolID, redirectURI, state, sc *string
+		ac                                        AuthCode
+		poolID, redirectURI, state, sc, challenge *string
 	)
 	err := s.pool.QueryRow(bgCtx(), q, code).Scan(
 		&ac.Code, &ac.TenantID, &ac.Runtime, &ac.PersonaID, &poolID,
-		&ac.ClientID, &redirectURI, &state, &sc, &ac.CreatedAt,
+		&ac.ClientID, &redirectURI, &state, &sc, &challenge, &ac.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthCode{}, ErrNotFound
@@ -274,6 +275,7 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 	ac.RedirectURI = derefString(redirectURI)
 	ac.State = derefString(state)
 	ac.Scope = derefString(sc)
+	ac.CodeChallenge = derefString(challenge)
 	ac.CreatedAt = ac.CreatedAt.UTC()
 	return ac, nil
 }

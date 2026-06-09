@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/ratex"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -32,14 +33,15 @@ func NewHandlers(store Storage, logger *slog.Logger, risk RiskClient, auth Authe
 }
 
 // Router builds the http.Handler wiring every route. /healthz is served without tenant
-// enforcement; every /v1/* route sits behind tenantx.Middleware. The whole tree is
-// wrapped in Recover + Logging so every request (including /healthz) is logged and any
-// panic returns 500 instead of crashing the process.
+// enforcement; every /v1/* route sits behind the §10.5 layer-2 rate limiter (per
+// tenant + method + endpoint class; nil limiter disables) and then tenantx.Middleware.
+// The whole tree is wrapped in Recover + Logging so every request (including /healthz)
+// is logged and any panic returns 500 instead of crashing the process.
 //
 // /v1/advice is the canonical endpoint. /v1/evaluate is an alias that points at the
 // same handler — keeping ARCHITECTURE.md §4.1's original contract callable while we
 // migrate clients to the new name.
-func (h *Handlers) Router() http.Handler {
+func (h *Handlers) Router(limiter *ratex.Limiter) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.Health)
 
@@ -51,7 +53,10 @@ func (h *Handlers) Router() http.Handler {
 	v1.HandleFunc("GET /v1/transactions", h.ListTransactions)
 	v1.HandleFunc("GET /v1/transactions/{id}", h.GetTransaction)
 
-	mux.Handle("/v1/", tenantx.Middleware(v1))
+	// Rate limiting sits OUTSIDE tenant validation: rejecting an over-limit
+	// request is cheaper than validating it first, and tenantless requests
+	// (empty key) fall through to tenantx's 400.
+	mux.Handle("/v1/", ratex.Middleware(limiter, rateLimitKey)(tenantx.Middleware(v1)))
 
 	return httpx.Recover(h.Logger)(httpx.Logging(h.Logger)(mux))
 }

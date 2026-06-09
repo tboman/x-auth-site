@@ -251,13 +251,15 @@ func (s *PGStorage) UpdateSession(sess Session) (Session, error) {
 func (s *PGStorage) PutToken(t Token) error {
 	const q = `
 		INSERT INTO tokens (
-			token_hash, session_id, user_id, tenant_id, token_type,
-			scope, issued_at, expires_at, revoked_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			token_hash, session_id, user_id, tenant_id, client_id, family_id,
+			token_type, scope, issued_at, expires_at, revoked_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (token_hash) DO UPDATE SET
 			session_id = EXCLUDED.session_id,
 			user_id    = EXCLUDED.user_id,
 			tenant_id  = EXCLUDED.tenant_id,
+			client_id  = EXCLUDED.client_id,
+			family_id  = EXCLUDED.family_id,
 			token_type = EXCLUDED.token_type,
 			scope      = EXCLUDED.scope,
 			issued_at  = EXCLUDED.issued_at,
@@ -265,8 +267,8 @@ func (s *PGStorage) PutToken(t Token) error {
 			revoked_at = EXCLUDED.revoked_at
 	`
 	if _, err := s.pool.Exec(bgCtx(), q,
-		t.TokenHash, t.SessionID, t.UserID, t.TenantID, t.TokenType,
-		nullable(t.Scope), t.IssuedAt.UTC(), t.ExpiresAt.UTC(),
+		t.TokenHash, t.SessionID, t.UserID, t.TenantID, t.ClientID, t.FamilyID,
+		t.TokenType, nullable(t.Scope), t.IssuedAt.UTC(), t.ExpiresAt.UTC(),
 		nullableTime(t.RevokedAt),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_token: %w", err)
@@ -277,8 +279,8 @@ func (s *PGStorage) PutToken(t Token) error {
 // GetTokenByHash reads a token record by its SHA-256 hash.
 func (s *PGStorage) GetTokenByHash(hash string) (Token, error) {
 	const q = `
-		SELECT token_hash, session_id, user_id, tenant_id, token_type,
-		       scope, issued_at, expires_at, revoked_at
+		SELECT token_hash, session_id, user_id, tenant_id, client_id, family_id,
+		       token_type, scope, issued_at, expires_at, revoked_at
 		  FROM tokens
 		 WHERE token_hash = $1
 	`
@@ -304,6 +306,25 @@ func (s *PGStorage) RevokeTokenByHash(hash string) error {
 	return nil
 }
 
+// RevokeTokenFamily stamps revoked_at on every live token in familyID — the
+// §10.1 theft response when a rotated-out refresh token is replayed. Already-
+// revoked rows keep their original revocation instant. Empty familyID is a
+// no-op guard for legacy rows backfilled by migration 000002.
+func (s *PGStorage) RevokeTokenFamily(familyID string) (int, error) {
+	if familyID == "" {
+		return 0, nil
+	}
+	const q = `
+		UPDATE tokens SET revoked_at = now()
+		 WHERE family_id = $1 AND revoked_at IS NULL
+	`
+	tag, err := s.pool.Exec(bgCtx(), q, familyID)
+	if err != nil {
+		return 0, fmt.Errorf("pgstorage revoke_token_family: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.
@@ -311,23 +332,24 @@ func (s *PGStorage) PutAuthCode(ac AuthCode) error {
 	const q = `
 		INSERT INTO auth_codes (
 			code, client_id, tenant_id, user_id, session_id,
-			redirect_uri, scope, state, nonce, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			redirect_uri, scope, state, nonce, code_challenge, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (code) DO UPDATE SET
-			client_id    = EXCLUDED.client_id,
-			tenant_id    = EXCLUDED.tenant_id,
-			user_id      = EXCLUDED.user_id,
-			session_id   = EXCLUDED.session_id,
-			redirect_uri = EXCLUDED.redirect_uri,
-			scope        = EXCLUDED.scope,
-			state        = EXCLUDED.state,
-			nonce        = EXCLUDED.nonce,
-			created_at   = EXCLUDED.created_at
+			client_id      = EXCLUDED.client_id,
+			tenant_id      = EXCLUDED.tenant_id,
+			user_id        = EXCLUDED.user_id,
+			session_id     = EXCLUDED.session_id,
+			redirect_uri   = EXCLUDED.redirect_uri,
+			scope          = EXCLUDED.scope,
+			state          = EXCLUDED.state,
+			nonce          = EXCLUDED.nonce,
+			code_challenge = EXCLUDED.code_challenge,
+			created_at     = EXCLUDED.created_at
 	`
 	if _, err := s.pool.Exec(bgCtx(), q,
 		ac.Code, ac.ClientID, ac.TenantID, ac.UserID, nullable(ac.SessionID),
 		ac.RedirectURI, nullable(ac.Scope), nullable(ac.State), nullable(ac.Nonce),
-		ac.CreatedAt.UTC(),
+		nullable(ac.CodeChallenge), ac.CreatedAt.UTC(),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_auth_code: %w", err)
 	}
@@ -342,15 +364,15 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 		DELETE FROM auth_codes
 		 WHERE code = $1
 		RETURNING code, client_id, tenant_id, user_id, session_id,
-		          redirect_uri, scope, state, nonce, created_at
+		          redirect_uri, scope, state, nonce, code_challenge, created_at
 	`
 	var (
-		ac                             AuthCode
-		sessionID, scope, state, nonce *string
+		ac                                            AuthCode
+		sessionID, scope, state, nonce, codeChallenge *string
 	)
 	err := s.pool.QueryRow(bgCtx(), q, code).Scan(
 		&ac.Code, &ac.ClientID, &ac.TenantID, &ac.UserID, &sessionID,
-		&ac.RedirectURI, &scope, &state, &nonce, &ac.CreatedAt,
+		&ac.RedirectURI, &scope, &state, &nonce, &codeChallenge, &ac.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthCode{}, ErrNotFound
@@ -362,6 +384,7 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 	ac.Scope = derefString(scope)
 	ac.State = derefString(state)
 	ac.Nonce = derefString(nonce)
+	ac.CodeChallenge = derefString(codeChallenge)
 	ac.CreatedAt = ac.CreatedAt.UTC()
 	return ac, nil
 }
@@ -500,8 +523,8 @@ func scanToken(r rowScanner) (Token, error) {
 		revokedAt *time.Time
 	)
 	if err := r.Scan(
-		&t.TokenHash, &t.SessionID, &t.UserID, &t.TenantID, &t.TokenType,
-		&scope, &t.IssuedAt, &t.ExpiresAt, &revokedAt,
+		&t.TokenHash, &t.SessionID, &t.UserID, &t.TenantID, &t.ClientID,
+		&t.FamilyID, &t.TokenType, &scope, &t.IssuedAt, &t.ExpiresAt, &revokedAt,
 	); err != nil {
 		return Token{}, err
 	}

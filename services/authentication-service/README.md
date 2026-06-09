@@ -47,16 +47,21 @@ swappable via the `Storage` interface in `internal/storage.go`:
 ARCHITECTURE.md §10.1, signed by this service and verifiable by anyone against
 the JWKS endpoint. See "JWT signing & hybrid revocation" below.
 
+**Phase 2.2 — token hardening (done).** Mandatory PKCE (S256 only, §10.4),
+refresh-token rotation with **family-based revocation** (§10.1), 30-day
+refresh TTL, and `client_id` persisted on token records so the `aud` claim
+survives refreshes regardless of what the client presents at refresh time.
+Schema changes live in `migrations/000002_token_families_pkce.up.sql`. See
+"Refresh-token rotation & families" and "PKCE" below.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
-- PKCE enforcement and strict client authentication
+- Strict client authentication (public dev client still allowed without a secret)
 - Real first-factor verification (today `POST /v1/sessions` trusts the internal caller)
 - Real social-provider OAuth2 handshakes
 - Service-to-service signed tokens from transaction-service
 - Soft-delete users with GDPR-safe pseudonymisation
 - Distributed revocation (drop the access-token deny list — see below)
-- Persisting `client_id` on refresh-token records so the `aud` claim survives
-  refreshes even when the client omits `client_id` at refresh time
 
 ## JWT signing & hybrid revocation
 
@@ -67,7 +72,9 @@ the JWKS endpoint. See "JWT signing & hybrid revocation" below.
 - **ID tokens** — standard OIDC JWT issued by the code grant when scope
   contains `openid`; carries the `nonce` from the original `/authorize`
   request; signed with the same key as access tokens.
-- **Refresh tokens** — stay opaque UUIDs, stored hashed, rotated on every use.
+- **Refresh tokens** — stay opaque UUIDs, stored hashed, TTL **30 days**
+  (§6.2 `refresh_ttl_sec` default), rotated on every use within a token
+  family (see below).
 
 **JWKS:** the public key is served at `GET /v1/auth/jwks` (canonical, §4.3)
 and `GET /.well-known/jwks.json` (the `jwks_uri` advertised by both discovery
@@ -83,6 +90,46 @@ revocation lands. The purge sweeper and Postgres storage are unchanged — only
 the token *value* changed from UUID to JWT (`token_hash` is the SHA-256 of
 whatever the plaintext is).
 
+## Refresh-token rotation & families (ARCHITECTURE.md §10.1)
+
+- **Rotation**: every `grant_type=refresh_token` call issues a brand-new
+  access + refresh pair and stamps `revoked_at` on the presented refresh
+  token. The old token is dead the moment the new pair is issued.
+- **Families**: each authorization-code login mints a fresh family id
+  (`fam_<uuid>`) persisted on every token record (access AND refresh). Every
+  rotation stays in the same family, so all tokens descending from one login
+  share one lineage.
+- **Replay = theft**: presenting a refresh token that was already rotated out
+  (or otherwise revoked) is treated as a token-theft signal — a legitimate
+  client never replays a spent token. The service revokes the **entire
+  family** (every refresh token and access-token record in it) and rejects
+  with a structured **401 `invalid_grant`**. Family-revoked access tokens
+  immediately stop authenticating at `/userinfo` via the hybrid deny-list
+  check. The event is logged as `refresh_token_replay_family_revoked`.
+- **`aud` stability**: the issuing `client_id` is persisted on token records
+  at login, and the refresh grant sources the rotated access token's `aud`
+  claim from there — not from whatever the caller presents at refresh time.
+  A refresh request that authenticates as a *different* client than the one
+  the token was issued to is rejected with `invalid_grant`.
+- **TTLs**: refresh tokens live **30 days** (`RefreshTokenTTLSeconds`,
+  §6.2 default); access tokens 1 h.
+- Legacy rows migrated by `000002` are backfilled into per-session
+  `fam_legacy_<session_id>` families; rows whose family is empty are never
+  bulk-revoked (guarded no-op).
+
+## PKCE (ARCHITECTURE.md §10.4)
+
+All authorization-code flows **require PKCE** (RFC 7636), S256 only:
+
+- `GET /authorize` rejects requests missing `code_challenge`, missing
+  `code_challenge_method`, or with any method other than `S256` (including
+  `plain`) — structured **400 `invalid_request`**.
+- `POST /token` (code grant) requires `code_verifier` (400
+  `invalid_request` when missing) and verifies
+  `BASE64URL(SHA-256(code_verifier)) == code_challenge`, rejecting mismatches
+  with **400 `invalid_grant`**. There is no PKCE-optional path; codes minted
+  before PKCE enforcement (no stored challenge) can no longer be exchanged.
+
 ## Endpoints
 
 ### Public (no tenant header)
@@ -92,8 +139,8 @@ whatever the plaintext is).
 | `GET` | `/healthz` | Liveness probe, returns `{"status":"ok"}` |
 | `GET` | `/.well-known/oauth-authorization-server` | RFC 8414 metadata |
 | `GET` | `/.well-known/openid-configuration` | OIDC discovery |
-| `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code` |
-| `POST` | `/token` | Exchange `code` or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`) |
+| `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code`. **Requires PKCE** (`code_challenge` + `code_challenge_method=S256`) |
+| `POST` | `/token` | Exchange `code` (+ `code_verifier`) or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`) |
 | `POST` | `/revoke` | RFC 7009 token revocation |
 | `GET` | `/userinfo` | Returns `{sub, email, name}` for the bearer (hybrid JWT + deny-list check) |
 | `GET` | `/v1/auth/jwks` | RFC 7517 JSON Web Key Set (canonical route, §4.3) |
@@ -169,7 +216,8 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
   gains the full 1 h rather than only 5 min.
 - **Rotation**: on `grant_type=refresh_token`, both the access and the refresh
   token are rotated and the old refresh token is stamped `revoked_at`. Old
-  refresh replays return 400.
+  refresh replays return **401 and revoke the whole token family** (see
+  "Refresh-token rotation & families" above).
 - **Invalidate**: idempotent. Second invalidation is 204.
 - **Upgrade on invalidated session**: 409. `step_up_completed=true` on a dead
   session would be misleading.
@@ -216,12 +264,13 @@ docker run --rm -d --name xauth-pg \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=auth_db -p 5432:5432 postgres:16
 
-# 2. Apply the migration (choose one)
+# 2. Apply the migrations (choose one)
 migrate -path services/authentication-service/migrations \
         -database "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" up
-# or:
+# or, in order:
 psql "postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
-     -f services/authentication-service/migrations/000001_init.up.sql
+     -f services/authentication-service/migrations/000001_init.up.sql \
+     -f services/authentication-service/migrations/000002_token_families_pkce.up.sql
 
 # 3. Run the service
 PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
@@ -259,20 +308,24 @@ curl -s -X POST "http://localhost:8082/v1/sessions/$SESSION_ID/refresh" \
   -H "X-Tenant-Id: ten_acme"
 
 # 4. OIDC authorize — auto-approves, redirects with ?code=...
+#    PKCE is mandatory: generate a verifier + S256 challenge first.
 #    Use -i to see the Location header; pick the code out by hand or with sed.
-curl -s -i "http://localhost:8082/authorize?client_id=cli_default&redirect_uri=http://localhost:3000/callback&state=xyz&scope=openid%20profile%20email&tenant_id=ten_acme&user_id=$USER_ID"
+VERIFIER=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')
+CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 | tr '+/' '-_' | tr -d '=')
+curl -s -i "http://localhost:8082/authorize?client_id=cli_default&redirect_uri=http://localhost:3000/callback&state=xyz&scope=openid%20profile%20email&tenant_id=ten_acme&user_id=$USER_ID&code_challenge=$CHALLENGE&code_challenge_method=S256"
 
-# 5. Token exchange — POST application/x-www-form-urlencoded
+# 5. Token exchange — POST application/x-www-form-urlencoded (with the PKCE verifier)
 CODE="<paste code from step 4>"
 curl -s -X POST http://localhost:8082/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&code=$CODE&client_id=cli_default&redirect_uri=http://localhost:3000/callback"
+  -d "grant_type=authorization_code&code=$CODE&client_id=cli_default&redirect_uri=http://localhost:3000/callback&code_verifier=$VERIFIER"
 
 # 6. /userinfo with the returned access_token
 ACCESS="<paste access_token from step 5>"
 curl -s http://localhost:8082/userinfo -H "Authorization: Bearer $ACCESS"
 
-# 7. Refresh token rotation
+# 7. Refresh token rotation (replaying the old token afterwards returns 401
+#    and revokes the whole token family)
 REFRESH="<paste refresh_token from step 5>"
 curl -s -X POST http://localhost:8082/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
@@ -304,7 +357,7 @@ Unit tests only (no DB needed — PG integration tests skip):
 go test ./services/authentication-service/...
 ```
 
-Run the PG-backed integration tests too (Postgres up + migration applied):
+Run the PG-backed integration tests too (Postgres up + both migrations applied):
 
 ```bash
 AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
@@ -314,12 +367,17 @@ AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disabl
 Tests cover: health, discovery, user CRUD, user-list keyset pagination
 (two-page walk, invalid `limit`/`cursor` rejection), cross-tenant isolation,
 duplicate email, full session lifecycle, unknown-user session create, tenant
-middleware enforcement, `/authorize` → `/token` happy path (access token is a
-3-part JWS verified against the service's own JWKS endpoint with
-sub/aud/tenant_id/session_id/scope/exp asserted; `id_token` carries the
-`/authorize` nonce; refresh token stays opaque), auth-code one-shot,
-refresh-token rotation + old-token revocation (refreshed access token is a
-fresh, verifiable JWT), JWKS canonical route + well-known alias parity +
+middleware enforcement, `/authorize` → `/token` happy path with S256 PKCE
+(access token is a 3-part JWS verified against the service's own JWKS endpoint
+with sub/aud/tenant_id/session_id/scope/exp asserted; `id_token` carries the
+`/authorize` nonce; refresh token stays opaque), auth-code one-shot, PKCE
+enforcement (`/authorize` 400s on missing challenge / missing method / `plain`;
+the code grant 400s on missing or wrong `code_verifier`; fresh-verifier happy
+path), refresh-token rotation + old-token revocation (refreshed access token
+is a fresh, verifiable JWT whose `aud` comes from the persisted `client_id`,
+not the refresh request), family-based revocation (replaying a rotated-out
+refresh token 401s and kills every refresh + access record in the family,
+including at `/userinfo`), JWKS canonical route + well-known alias parity +
 discovery `jwks_uri`, hybrid revocation (`/userinfo` 401s a JWT that still
 verifies cryptographically but whose stored record is revoked), foreign-key
 rejection (`/userinfo` 401s a JWT signed by a different RSA key even with a

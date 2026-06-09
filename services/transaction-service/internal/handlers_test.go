@@ -95,7 +95,8 @@ func newServer(t *testing.T, risk RiskClient, auth AuthenticationClient, authr A
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
-	return NewHandlers(store, logger, risk, auth, authr).Router(), store
+	// nil limiter: rate limiting off, so functional tests never trip §10.5.
+	return NewHandlers(store, logger, risk, auth, authr).Router(nil), store
 }
 
 // newTestClients builds the real HTTPClients pointed at a fake downstream URL

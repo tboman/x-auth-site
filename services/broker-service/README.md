@@ -41,6 +41,7 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 - [x] RFC 7591 Dynamic Client Registration (`POST /register`)
 - [x] CIMD metadata document (`GET /metadata.json`)
 - [x] `/authorize` auto-approve stub, `/token` code exchange, `/revoke`, `/userinfo`
+- [x] PKCE enforcement, S256-only (RFC 7636; mandated by ARCHITECTURE.md §10.4 and the MCP authorization spec)
 - [x] MCP SSE + RPC stubs
 - [x] Unit tests with mocked HTTP clients
 
@@ -68,10 +69,28 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 | GET | `/.well-known/jwks.json` | RFC 7517 key set — the public half of the access-token signing key (`jwks_uri` in both discovery docs) |
 | POST | `/register` | RFC 7591 Dynamic Client Registration |
 | GET | `/metadata.json` | CIMD document for the default X-Auth MCP client |
-| GET | `/authorize` | phase-1 stub: auto-approves and redirects back with `code` |
-| POST | `/token` | exchanges `code` for a signed JWT access token + opaque refresh token, orchestrates install finalization |
+| GET | `/authorize` | phase-1 stub: auto-approves and redirects back with `code`. **PKCE required**: `code_challenge` + `code_challenge_method=S256` (anything else is a structured 400) |
+| POST | `/token` | exchanges `code` + `code_verifier` for a signed JWT access token + opaque refresh token, orchestrates install finalization. SHA-256(verifier) base64url-no-pad must equal the stored challenge or the grant is rejected with `invalid_grant` |
 | POST | `/revoke` | RFC 7009 token revocation, forwarded to grant-service |
 | GET | `/userinfo` | returns `{sub, persona, scopes, install_id}` for the bearer — hybrid check: JWT signature/exp/iss **and** unrevoked local record |
+
+## PKCE (mandatory, S256 only)
+
+PKCE per RFC 7636 is enforced on every authorization-code exchange — there is no
+PKCE-optional path. The MCP authorization spec mandates PKCE for MCP clients,
+and ARCHITECTURE.md §10.4 applies it platform-wide.
+
+- `/authorize` rejects requests missing `code_challenge`, and rejects any
+  `code_challenge_method` other than `S256` (including an omitted method, which
+  RFC 7636 would default to `plain`) with `400 {"error":"invalid_request"}`.
+- The challenge is persisted on the one-shot auth-code record
+  (`auth_codes.code_challenge`, migration `000002`).
+- `/token` requires `code_verifier` (`400 invalid_request` if missing — checked
+  before the code is consumed, so the one-shot code is not burned) and verifies
+  `BASE64URL-NOPAD(SHA256(code_verifier)) == stored challenge` in constant time;
+  mismatch — or a code with no stored challenge — is `400 {"error":"invalid_grant"}`.
+- Both discovery documents advertise `code_challenge_methods_supported: ["S256"]`,
+  which is exactly what is enforced.
 
 ## Token format
 
@@ -133,11 +152,12 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 
 ```
 GET /authorize?...&persona_id=P&pool_id=PL&tenant_id=T
-  → broker stores a pending AuthCode
+                 &code_challenge=<S256(verifier)>&code_challenge_method=S256
+  → broker stores a pending AuthCode (incl. the PKCE challenge)
   → 302 redirect_uri?code=<uuid>&state=...
 
-POST /token with code=<uuid>
-  1. consume code (one-shot)
+POST /token with code=<uuid>&code_verifier=<verifier>
+  1. consume code (one-shot) + verify SHA256(code_verifier) == stored challenge
   2. create pending Install
   3. GET  persona-service /internal/v1/personas/P     → Persona (scopes, ttl)
   4. POST pool-service    /internal/v1/pools/PL/claim → Identity
@@ -216,12 +236,13 @@ docker run --rm -d --name xauth-pg \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=broker_db -p 5432:5432 postgres:16
 
-# 2. Apply the migration (choose one)
+# 2. Apply the migrations (choose one)
 migrate -path services/broker-service/migrations \
         -database "postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" up
-# or:
+# or, in order:
 psql "postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
-     -f services/broker-service/migrations/000001_init.up.sql
+     -f services/broker-service/migrations/000001_init.up.sql \
+     -f services/broker-service/migrations/000002_auth_code_pkce.up.sql
 
 # 3. Run the service
 PG_DSN="postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
@@ -234,15 +255,20 @@ Assumes persona-service has persona `PERSONA_ID` with scopes=[mcp], and
 pool-service has pool `POOL_ID` containing at least one `available` identity.
 
 ```bash
-# 1. Kick off authorization — the stub auto-approves.
-curl -sSI "http://localhost:8182/authorize?client_id=client-1&redirect_uri=https://app.example.com/cb&state=xyz&scope=openid+mcp&persona_id=$PERSONA_ID&pool_id=$POOL_ID&tenant_id=tenant-1&runtime=claude"
+# 0. PKCE setup: pick a random verifier, derive the S256 challenge.
+VERIFIER=$(openssl rand -base64 48 | tr -d '=+/' | cut -c1-43)
+CHALLENGE=$(printf '%s' "$VERIFIER" | openssl dgst -sha256 -binary | basenc --base64url | tr -d '=')
+
+# 1. Kick off authorization — the stub auto-approves. PKCE is mandatory.
+curl -sSI "http://localhost:8182/authorize?client_id=client-1&redirect_uri=https://app.example.com/cb&state=xyz&scope=openid+mcp&persona_id=$PERSONA_ID&pool_id=$POOL_ID&tenant_id=tenant-1&runtime=claude&code_challenge=$CHALLENGE&code_challenge_method=S256"
 # → HTTP/1.1 302 Found
 # → Location: https://app.example.com/cb?code=<CODE>&state=xyz
 
 # 2. Exchange the code for tokens (triggers the orchestration cascade).
+#    code_verifier must hash to the challenge from step 1 or you get invalid_grant.
 curl -sS -X POST http://localhost:8182/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&code=<CODE>&client_id=client-1"
+  -d "grant_type=authorization_code&code=<CODE>&client_id=client-1&code_verifier=$VERIFIER"
 # → 200 {
 #     "access_token":  "<RS256 JWT — eyJhbGciOiJSUzI1NiIs...>",
 #     "refresh_token": "<uuid>",

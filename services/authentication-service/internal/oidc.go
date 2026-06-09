@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -17,10 +20,14 @@ import (
 // authentication-service:
 //
 //   - discovery documents (RFC 8414 + OpenID Connect Discovery)
-//   - /authorize: auto-approve stub — records an auth code bound to a dev user
-//   - /token: exchanges code for an RS256 JWT access token + opaque refresh
-//     token (+ id_token when scope contains "openid"), issues a session
+//   - /authorize: auto-approve stub — records an auth code bound to a dev
+//     user; PKCE (S256 only) is mandatory (§10.4)
+//   - /token: exchanges code (+ verified code_verifier) for an RS256 JWT
+//     access token + opaque refresh token (+ id_token when scope contains
+//     "openid"), issues a session and starts a refresh-token family
 //   - /refresh (as grant_type=refresh_token on /token): rotates both tokens
+//     within the family; replaying a rotated-out refresh token revokes the
+//     entire family (§10.1 theft detection)
 //   - /revoke: RFC 7009 revocation — stamps RevokedAt on the token record
 //   - /userinfo: returns {sub, email, name} for a valid bearer
 //   - /v1/auth/jwks + /.well-known/jwks.json: RFC 7517 key set
@@ -93,7 +100,12 @@ func (h *OIDCHandlers) JWKS(w http.ResponseWriter, _ *http.Request) {
 //
 // Phase-1 behaviour: accept query params, auto-approve, 302 the user back to
 // redirect_uri with a freshly minted code + state. No real login screen, no
-// PKCE enforcement, no consent UI.
+// consent UI.
+//
+// PKCE (ARCHITECTURE.md §10.4, RFC 7636) is MANDATORY: every request must
+// carry code_challenge and code_challenge_method=S256. Anything else —
+// missing challenge, missing method, or "plain" — is a structured 400
+// invalid_request before a code is minted.
 //
 // Tenant / user sourcing: real OIDC derives tenant + subject from an
 // authenticated browser session. Phase 1 accepts `tenant_id` and (optionally)
@@ -110,6 +122,8 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	nonce := q.Get("nonce")
 	tenantID := q.Get("tenant_id")
 	userID := q.Get("user_id")
+	codeChallenge := q.Get("code_challenge")
+	codeChallengeMethod := q.Get("code_challenge_method")
 
 	if clientID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "client_id is required")
@@ -121,6 +135,17 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if tenantID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant_id is required (phase 1 stub)")
+		return
+	}
+	// PKCE is mandatory and S256-only (§10.4). RFC 7636 defaults an omitted
+	// method to "plain", which we do not support — so the method must be
+	// explicitly S256.
+	if codeChallenge == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code_challenge is required (PKCE, RFC 7636)")
+		return
+	}
+	if codeChallengeMethod != "S256" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code_challenge_method must be S256 (plain is not supported)")
 		return
 	}
 
@@ -175,15 +200,16 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 
 	code := uuid.NewString()
 	if err := h.Store.PutAuthCode(AuthCode{
-		Code:        code,
-		ClientID:    clientID,
-		TenantID:    tenantID,
-		UserID:      user.ID,
-		RedirectURI: redirectURI,
-		Scope:       scope,
-		State:       state,
-		Nonce:       nonce,
-		CreatedAt:   time.Now().UTC(),
+		Code:          code,
+		ClientID:      clientID,
+		TenantID:      tenantID,
+		UserID:        user.ID,
+		RedirectURI:   redirectURI,
+		Scope:         scope,
+		State:         state,
+		Nonce:         nonce,
+		CodeChallenge: codeChallenge,
+		CreatedAt:     time.Now().UTC(),
 	}); err != nil {
 		h.Logger.Error("authorize_store_failed", "err", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue code")
@@ -205,7 +231,8 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 // `refresh_token` grant types. Accepts client credentials via HTTP Basic or
 // form body — phase 1 validates credentials only if the client row has a
 // non-empty secret hash, to allow the default public dev client without auth.
-// TODO(phase-2): enforce client authentication strictly, support PKCE.
+// The code grant additionally requires PKCE (code_verifier, S256 — §10.4).
+// TODO(phase-2): enforce client authentication strictly.
 func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
@@ -227,11 +254,24 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 // handleCodeGrant redeems an authorization code for fresh access + refresh
 // tokens and a new session. Session + tokens are always created together so a
 // /userinfo request can reliably resolve the token back to a user.
+//
+// PKCE (§10.4) is enforced unconditionally: code_verifier is required and
+// SHA-256(verifier), base64url-encoded, must equal the code_challenge stored
+// on the auth code at /authorize time. There is no PKCE-optional path.
+//
+// The grant also starts a new refresh-token family (§10.1): all tokens minted
+// here — and every rotation descending from them — share one family id, so a
+// replayed (already-rotated) refresh token can revoke the whole lineage.
 func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 	code := r.PostForm.Get("code")
 	redirectURI := r.PostForm.Get("redirect_uri")
+	codeVerifier := r.PostForm.Get("code_verifier")
 	if code == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
+		return
+	}
+	if codeVerifier == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code_verifier is required (PKCE, RFC 7636)")
 		return
 	}
 	clientID, _, ok := h.extractClientCreds(r)
@@ -260,6 +300,13 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "redirect_uri mismatch")
 		return
 	}
+	// PKCE verification: SHA-256(code_verifier) base64url == stored challenge.
+	// ac.CodeChallenge can only be empty for codes minted before PKCE became
+	// mandatory; those fail too — no PKCE-optional path remains.
+	if !verifyPKCES256(ac.CodeChallenge, codeVerifier) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "code_verifier does not match code_challenge")
+		return
+	}
 
 	// Mint a session for the authenticated user.
 	now := time.Now().UTC()
@@ -279,7 +326,10 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessPlain, refreshPlain, err := h.issueTokenPair(sess, ac.Scope, ac.ClientID)
+	// Every code-grant login starts a fresh token family (§10.1). All future
+	// rotations of this refresh token inherit the same family id.
+	familyID := "fam_" + uuid.NewString()
+	accessPlain, refreshPlain, err := h.issueTokenPair(sess, ac.Scope, ac.ClientID, familyID)
 	if err != nil {
 		h.Logger.Error("token_issue_failed", "err", err, "session_id", sess.ID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue tokens")
@@ -310,19 +360,24 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRefreshGrant validates a presented refresh token and issues a brand-new
-// access + refresh token pair, revoking the old refresh token. Rotating the
-// refresh token on every use is a common OAuth hardening (RFC 6749 §10.4).
+// access + refresh token pair, revoking the old refresh token (rotation, RFC
+// 6749 §10.4 / ARCHITECTURE.md §10.1). The replacement tokens stay in the same
+// token family as the presented token, and the issuing client_id persisted on
+// the token record at login supplies the rotated access token's `aud` claim —
+// the caller cannot change the audience at refresh time.
+//
+// Family-based revocation (§10.1): presenting a refresh token that has already
+// been rotated out (revoked_at is stamped) is treated as a theft signal — a
+// legitimate client never replays a spent token. The ENTIRE family (every
+// refresh token and access-token record descending from the same login) is
+// revoked and the request is rejected with a structured 401.
 func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request) {
 	presented := r.PostForm.Get("refresh_token")
 	if presented == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
 		return
 	}
-	// Optional client authentication, same rules as the code grant. The token
-	// record does not persist the issuing client_id, so the `aud` claim of the
-	// refreshed access token is the client_id presented here (empty -> omitted).
-	// TODO(phase-2.2): persist client_id on the refresh-token record so `aud`
-	// survives refreshes even for clients that omit client_id.
+	// Optional client authentication, same rules as the code grant.
 	clientID, _, ok := h.extractClientCreds(r)
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
@@ -335,11 +390,30 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if tok.RevokedAt != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "refresh token revoked")
+		// Replay of a rotated-out (or otherwise revoked) refresh token: theft
+		// signal. Kill the whole family — all refresh AND access records — then
+		// reject. RevokeTokenFamily is a no-op for the empty family id carried
+		// by pre-migration legacy rows.
+		revoked, ferr := h.Store.RevokeTokenFamily(tok.FamilyID)
+		if ferr != nil {
+			h.Logger.Error("refresh_family_revoke_failed", "err", ferr, "family_id", tok.FamilyID)
+		} else if revoked > 0 {
+			h.Logger.Warn("refresh_token_replay_family_revoked",
+				"family_id", tok.FamilyID, "session_id", tok.SessionID,
+				"tenant_id", tok.TenantID, "tokens_revoked", revoked)
+		}
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_grant",
+			"refresh token already used — token family revoked")
 		return
 	}
 	if time.Now().UTC().After(tok.ExpiresAt) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "refresh token expired")
+		return
+	}
+	// If the caller authenticated as a client, it must be the client the token
+	// was issued to. (tok.ClientID can be empty on pre-migration legacy rows.)
+	if clientID != "" && tok.ClientID != "" && clientID != tok.ClientID {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "refresh token was issued to a different client")
 		return
 	}
 
@@ -364,7 +438,13 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 		h.Logger.Warn("refresh_old_token_revoke_failed", "err", err)
 	}
 
-	accessPlain, refreshPlain, err := h.issueTokenPair(sess, tok.Scope, clientID)
+	// aud comes from the persisted record, not the request; legacy rows without
+	// a stored client_id fall back to whatever the caller authenticated as.
+	audClientID := tok.ClientID
+	if audClientID == "" {
+		audClientID = clientID
+	}
+	accessPlain, refreshPlain, err := h.issueTokenPair(sess, tok.Scope, audClientID, tok.FamilyID)
 	if err != nil {
 		h.Logger.Error("refresh_issue_failed", "err", err, "session_id", sess.ID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue tokens")
@@ -388,7 +468,12 @@ func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request
 // their storage hashes never collide. The refresh token stays an opaque UUID.
 // Both are persisted as SHA-256 hashes — the access-token record doubles as
 // the revocation deny list (see UserInfo).
-func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID string) (string, string, error) {
+//
+// clientID and familyID are persisted on BOTH records: clientID so the refresh
+// grant can mint a stable `aud` without trusting the caller, familyID so a
+// refresh-token replay can revoke the whole lineage (§10.1) including the
+// access tokens it produced.
+func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID, familyID string) (string, string, error) {
 	now := time.Now().UTC()
 	accessExpiry := now.Add(time.Duration(AccessTokenTTLSeconds) * time.Second)
 	accessPlain, err := h.Signer.Sign(jwtx.Claims{
@@ -412,6 +497,8 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID string) (str
 		SessionID: sess.ID,
 		UserID:    sess.UserID,
 		TenantID:  sess.TenantID,
+		ClientID:  clientID,
+		FamilyID:  familyID,
 		TokenType: TokenTypeAccess,
 		Scope:     scope,
 		IssuedAt:  now,
@@ -422,6 +509,8 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID string) (str
 		SessionID: sess.ID,
 		UserID:    sess.UserID,
 		TenantID:  sess.TenantID,
+		ClientID:  clientID,
+		FamilyID:  familyID,
 		TokenType: TokenTypeRefresh,
 		Scope:     scope,
 		IssuedAt:  now,
@@ -452,6 +541,20 @@ func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce string) (strin
 		TenantID: sess.TenantID,
 		Nonce:    nonce,
 	}, nil)
+}
+
+// verifyPKCES256 reports whether the RFC 7636 S256 transformation of verifier
+// — BASE64URL-ENCODE(SHA256(ASCII(code_verifier))), unpadded — equals the
+// stored challenge. An empty challenge never matches (codes minted before
+// PKCE became mandatory must not be exchangeable). Comparison is constant-time
+// out of caution, though both inputs derive from attacker-visible material.
+func verifyPKCES256(challenge, verifier string) bool {
+	if challenge == "" || verifier == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(verifier))
+	computed := base64.RawURLEncoding.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }
 
 // scopeContains reports whether the space-delimited OAuth scope string
@@ -557,8 +660,8 @@ func (h *OIDCHandlers) extractClientCreds(r *http.Request) (string, string, bool
 		clientSecret = r.PostForm.Get("client_secret")
 	}
 	if clientID == "" {
-		// Some public-client flows (PKCE in phase 2) omit client_id entirely.
-		// Phase 1 permits this but the auth code itself still carries the client_id.
+		// Public-client PKCE flows may omit client_id entirely. The auth code /
+		// token record still carries the authoritative client_id.
 		return "", "", true
 	}
 	client, err := h.Store.GetClient(clientID)

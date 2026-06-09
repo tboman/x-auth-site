@@ -55,17 +55,24 @@ type DCRClient struct {
 // AuthCode is a transient record created by /authorize and consumed by /token.
 // It remembers which persona/pool/client/tenant the user selected during
 // authorization so /token can orchestrate the real install creation.
+//
+// CodeChallenge is the PKCE S256 challenge (RFC 7636) the client sent to
+// /authorize — base64url-without-padding of SHA-256(code_verifier). PKCE is
+// mandatory (ARCHITECTURE.md §10.4 and the MCP authorization spec), so the
+// field is always populated for codes minted by /authorize, and /token rejects
+// any code whose stored challenge does not match the presented code_verifier.
 type AuthCode struct {
-	Code        string
-	TenantID    string
-	Runtime     string
-	PersonaID   string
-	PoolID      string
-	ClientID    string
-	RedirectURI string
-	State       string
-	Scope       string
-	CreatedAt   time.Time
+	Code          string
+	TenantID      string
+	Runtime       string
+	PersonaID     string
+	PoolID        string
+	ClientID      string
+	RedirectURI   string
+	State         string
+	Scope         string
+	CodeChallenge string
+	CreatedAt     time.Time
 }
 
 // TokenRecord is the broker's own view of an issued token. AccessToken holds the

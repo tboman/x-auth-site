@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,20 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
 )
+
+// PKCE pair from RFC 7636 appendix B — every code flow in this suite does
+// proper S256 PKCE because /authorize and the code grant now enforce it.
+const (
+	testPKCEVerifier  = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	testPKCEChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+)
+
+// pkceChallenge computes the S256 code_challenge for a verifier, the same
+// transformation a real OAuth client performs (RFC 7636 §4.2).
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
 
 // mockAuthenticator is an in-process stand-in for HTTPAuthenticatorClient. Each
 // method is a function field so individual tests can stub precisely the
@@ -304,16 +320,23 @@ func TestPurgeExpiredMem(t *testing.T) {
 	// Mint a real token pair via /authorize -> /token so we can prove a purged
 	// token stops authenticating end-to-end.
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	loc, _ := url.Parse(w.Header().Get("Location"))
 	code := loc.Query().Get("code")
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {DefaultClientID}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
@@ -538,12 +561,14 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	r, store := newTestRouter(t)
 
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"state":        {"state-1"},
-		"scope":        {"openid profile email"},
-		"nonce":        {"n-42"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"state":                 {"state-1"},
+		"scope":                 {"openid profile email"},
+		"nonce":                 {"n-42"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
@@ -566,10 +591,11 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 
 	// POST /token
 	form := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"redirect_uri":  {"http://localhost:3000/callback"},
+		"code_verifier": {testPKCEVerifier},
 	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -677,9 +703,11 @@ func TestTokenCodeReplay(t *testing.T) {
 	r, _ := newTestRouter(t)
 
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
@@ -687,7 +715,12 @@ func TestTokenCodeReplay(t *testing.T) {
 	loc, _ := url.Parse(w.Header().Get("Location"))
 	code := loc.Query().Get("code")
 
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {DefaultClientID}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
@@ -713,9 +746,11 @@ func TestTokenRefreshRotation(t *testing.T) {
 
 	// Obtain an initial token pair through /authorize -> /token.
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
@@ -723,7 +758,12 @@ func TestTokenRefreshRotation(t *testing.T) {
 	loc, _ := url.Parse(w.Header().Get("Location"))
 	code := loc.Query().Get("code")
 
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {DefaultClientID}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
@@ -734,7 +774,8 @@ func TestTokenRefreshRotation(t *testing.T) {
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &first)
 
-	// Refresh grant.
+	// Refresh grant — deliberately WITHOUT client_id: the aud claim must come
+	// from the client_id persisted on the token record at login.
 	refreshForm := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {first.RefreshToken}}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -767,20 +808,275 @@ func TestTokenRefreshRotation(t *testing.T) {
 	if claims.TenantID != "ten_a" || !strings.HasPrefix(claims.SessionID, "ses_") {
 		t.Fatalf("refreshed token claims wrong: %+v", claims)
 	}
+	// aud survives the refresh even though the refresh request omitted
+	// client_id — it is sourced from the persisted token record.
+	if claims.Aud != DefaultClientID {
+		t.Fatalf("refreshed token aud = %q, want %q (persisted client_id)", claims.Aud, DefaultClientID)
+	}
 
-	// Old refresh should now be revoked.
+	// Old refresh should now be revoked, and both generations share one family.
 	old, _ := store.GetTokenByHash(HashToken(first.RefreshToken))
 	if old.RevokedAt == nil {
 		t.Fatalf("old refresh token not marked revoked")
 	}
+	if !strings.HasPrefix(old.FamilyID, "fam_") {
+		t.Fatalf("refresh token family id = %q, want fam_ prefix", old.FamilyID)
+	}
+	if old.ClientID != DefaultClientID {
+		t.Fatalf("refresh token client_id = %q, want %q", old.ClientID, DefaultClientID)
+	}
+	rotated, _ := store.GetTokenByHash(HashToken(second.RefreshToken))
+	if rotated.FamilyID != old.FamilyID {
+		t.Fatalf("rotation left the family: %q vs %q", rotated.FamilyID, old.FamilyID)
+	}
 
-	// Replaying the old refresh should fail.
+	// Replaying the old (rotated-out) refresh is a theft signal: structured 401.
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("old refresh replay: expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("old refresh replay: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid_grant") {
+		t.Fatalf("replay body missing invalid_grant: %s", w.Body.String())
+	}
+}
+
+// --- Refresh-token replay revokes the entire token family (§10.1) ---
+
+func TestTokenRefreshFamilyRevocation(t *testing.T) {
+	r, store := newTestRouter(t)
+
+	// Login via the code grant -> pair A (starts the family).
+	authURL := "/authorize?" + url.Values{
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodGet, authURL, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {loc.Query().Get("code")},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code grant: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var pairA struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &pairA)
+
+	// Use refresh A -> pair B (legitimate rotation, same family).
+	refreshA := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {pairA.RefreshToken}}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshA.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first refresh: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var pairB struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &pairB)
+
+	// REPLAY refresh A (already rotated out) — theft signal: structured 401
+	// and the whole family dies.
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshA.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("replay of rotated refresh: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid_grant") {
+		t.Fatalf("replay body missing invalid_grant: %s", w.Body.String())
+	}
+
+	// Every member of the family — refresh A, refresh B, access A, access B —
+	// must now carry revoked_at.
+	family := ""
+	for name, plain := range map[string]string{
+		"refresh A": pairA.RefreshToken,
+		"refresh B": pairB.RefreshToken,
+		"access A":  pairA.AccessToken,
+		"access B":  pairB.AccessToken,
+	} {
+		rec, err := store.GetTokenByHash(HashToken(plain))
+		if err != nil {
+			t.Fatalf("%s: record lookup: %v", name, err)
+		}
+		if rec.RevokedAt == nil {
+			t.Fatalf("%s: not revoked after family revocation", name)
+		}
+		if family == "" {
+			family = rec.FamilyID
+		} else if rec.FamilyID != family {
+			t.Fatalf("%s: family %q, want %q (one family per login)", name, rec.FamilyID, family)
+		}
+	}
+	if !strings.HasPrefix(family, "fam_") {
+		t.Fatalf("family id = %q, want fam_ prefix", family)
+	}
+
+	// Refresh B — the still-newest token — is dead too: presenting it hits the
+	// same revoked-token path (401).
+	refreshB := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {pairB.RefreshToken}}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(refreshB.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh B after family revocation: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// And the revoked access token no longer authenticates at /userinfo.
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+pairB.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("userinfo with family-revoked access token: expected 401, got %d", w.Code)
+	}
+}
+
+// --- /authorize enforces PKCE: missing challenge or non-S256 method is 400 ---
+
+func TestAuthorizePKCERequired(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	base := url.Values{
+		"client_id":    {DefaultClientID},
+		"redirect_uri": {"http://localhost:3000/callback"},
+		"tenant_id":    {"ten_a"},
+	}
+	cases := []struct {
+		name   string
+		mutate func(v url.Values)
+	}{
+		{"missing code_challenge", func(v url.Values) {
+			v.Set("code_challenge_method", "S256")
+		}},
+		{"missing method", func(v url.Values) {
+			v.Set("code_challenge", testPKCEChallenge)
+		}},
+		{"plain method", func(v url.Values) {
+			v.Set("code_challenge", testPKCEChallenge)
+			v.Set("code_challenge_method", "plain")
+		}},
+	}
+	for _, tc := range cases {
+		v := url.Values{}
+		for k, vals := range base {
+			v[k] = vals
+		}
+		tc.mutate(v)
+		req := httptest.NewRequest(http.MethodGet, "/authorize?"+v.Encode(), nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d (%s)", tc.name, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "invalid_request") {
+			t.Fatalf("%s: body missing invalid_request: %s", tc.name, w.Body.String())
+		}
+	}
+}
+
+// --- /token code grant enforces PKCE: missing or wrong verifier is rejected ---
+
+func TestTokenCodeGrantPKCEVerification(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	// mintCode runs /authorize with a proper S256 challenge and returns a code.
+	mintCode := func() string {
+		t.Helper()
+		authURL := "/authorize?" + url.Values{
+			"client_id":             {DefaultClientID},
+			"redirect_uri":          {"http://localhost:3000/callback"},
+			"tenant_id":             {"ten_a"},
+			"code_challenge":        {testPKCEChallenge},
+			"code_challenge_method": {"S256"},
+		}.Encode()
+		req := httptest.NewRequest(http.MethodGet, authURL, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusFound {
+			t.Fatalf("authorize: expected 302, got %d (%s)", w.Code, w.Body.String())
+		}
+		loc, _ := url.Parse(w.Header().Get("Location"))
+		return loc.Query().Get("code")
+	}
+
+	// Missing code_verifier -> 400 invalid_request.
+	form := url.Values{
+		"grant_type": {"authorization_code"},
+		"code":       {mintCode()},
+		"client_id":  {DefaultClientID},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_request") {
+		t.Fatalf("missing verifier: expected 400 invalid_request, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Wrong code_verifier -> 400 invalid_grant.
+	form = url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {mintCode()},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {"wrong-verifier-wrong-verifier-wrong-verifier-123"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_grant") {
+		t.Fatalf("wrong verifier: expected 400 invalid_grant, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Happy path with a NON-static pair: derive the challenge from a fresh
+	// verifier via the same S256 transformation a real client uses.
+	verifier := "fresh-verifier-fresh-verifier-fresh-verifier-42a"
+	authURL := "/authorize?" + url.Values{
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {pkceChallenge(verifier)},
+		"code_challenge_method": {"S256"},
+	}.Encode()
+	req = httptest.NewRequest(http.MethodGet, authURL, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	form = url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {loc.Query().Get("code")},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {verifier},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PKCE happy path: expected 200, got %d (%s)", w.Code, w.Body.String())
 	}
 }
 
@@ -791,16 +1087,23 @@ func TestRevokeAlways200(t *testing.T) {
 
 	// Valid token round-trip.
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	loc, _ := url.Parse(w.Header().Get("Location"))
 	code := loc.Query().Get("code")
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "client_id": {DefaultClientID}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
@@ -896,15 +1199,22 @@ func TestUserInfoRejectsRevokedButCryptoValidJWT(t *testing.T) {
 	r, store := newTestRouter(t)
 
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"http://localhost:3000/callback"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	loc, _ := url.Parse(w.Header().Get("Location"))
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {loc.Query().Get("code")}, "client_id": {DefaultClientID}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {loc.Query().Get("code")},
+		"client_id":     {DefaultClientID},
+		"code_verifier": {testPKCEVerifier},
+	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
@@ -982,15 +1292,20 @@ func TestUserInfoRejectsForeignlySignedJWT(t *testing.T) {
 func TestAuthorizeRejectsUnregisteredRedirect(t *testing.T) {
 	r, _ := newTestRouter(t)
 	bad := "/authorize?" + url.Values{
-		"client_id":    {DefaultClientID},
-		"redirect_uri": {"https://evil.example.com/cb"},
-		"tenant_id":    {"ten_a"},
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"https://evil.example.com/cb"},
+		"tenant_id":             {"ten_a"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, bad, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for unregistered redirect, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "invalid_redirect_uri") {
+		t.Fatalf("expected invalid_redirect_uri error, got %s", w.Body.String())
 	}
 }
 

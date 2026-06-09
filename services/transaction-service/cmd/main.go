@@ -58,6 +58,16 @@ func main() {
 
 	handlers := internal.NewHandlers(store, logger, clients, clients, clients)
 
+	// §10.5 layer-2 rate limiting: per-tenant, per-endpoint sliding window.
+	// RATE_LIMIT is "N/window" (e.g. "600/1m"); the literal "off" disables it.
+	// Limits are per replica until the Redis-backed store lands.
+	rateSpec := config.Env("RATE_LIMIT", "600/1m")
+	limiter, err := internal.NewRateLimiter(rateSpec)
+	if err != nil {
+		logger.Error("rate_limit_config_invalid", "value", rateSpec, "err", err)
+		os.Exit(1)
+	}
+
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
 	// TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE env vars. A nil config
 	// means plaintext local dev; a partial config is fatal.
@@ -68,7 +78,7 @@ func main() {
 	}
 
 	addr := config.Addr(8080)
-	if err := httpx.RunTLS(ctx, logger, addr, handlers.Router(), tlsConf); err != nil {
+	if err := httpx.RunTLS(ctx, logger, addr, handlers.Router(limiter), tlsConf); err != nil {
 		logger.Error("server_exit", "err", err)
 		os.Exit(1)
 	}

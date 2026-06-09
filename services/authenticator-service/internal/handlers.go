@@ -20,9 +20,14 @@ import (
 //     authenticator listing), gated by httpx.InternalAuth: a verified mTLS
 //     peer certificate or the X-Internal-Auth shared secret
 //     (INTERNAL_AUTH_SECRET); with neither configured the gate is open (dev).
-func Router(log *slog.Logger, store Storage, registry *Registry) http.Handler {
+//
+// limits carries the §10.5 layer-3 abuse controls (per-user challenge rate
+// limit + account lockout). They are enforced INSIDE the challenge handlers —
+// not as mux middleware — so the /v1 and /internal/v1 mounts, which share the
+// same handler instances, are both covered by a single check.
+func Router(log *slog.Logger, store Storage, registry *Registry, limits Limits) http.Handler {
 	auth := NewAuthenticatorHandlers(log, store)
-	chal := NewChallengeHandlers(log, store, registry)
+	chal := NewChallengeHandlers(log, store, registry, limits)
 
 	// tenanted is the router that requires X-Tenant-Id. All /v1/* routes go here.
 	tenanted := http.NewServeMux()

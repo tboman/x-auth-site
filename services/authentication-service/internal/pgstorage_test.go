@@ -20,7 +20,8 @@ import (
 //
 //	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
 //	  -e POSTGRES_DB=auth_db -p 5432:5432 postgres:16
-//	# then apply services/authentication-service/migrations/000001_init.up.sql
+//	# then apply services/authentication-service/migrations/ in order
+//	# (000001_init.up.sql, 000002_token_families_pkce.up.sql)
 //	AUTHN_PG_DSN="postgres://postgres:postgres@localhost:5432/auth_db?sslmode=disable" \
 //	  go test ./services/authentication-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
@@ -377,6 +378,8 @@ func TestPGStorageTokens(t *testing.T) {
 		SessionID: "ses_1",
 		UserID:    "usr_1",
 		TenantID:  "tenant-a",
+		ClientID:  DefaultClientID,
+		FamilyID:  "fam_" + uuid.NewString(),
 		TokenType: TokenTypeAccess,
 		Scope:     "openid profile",
 		IssuedAt:  now,
@@ -391,6 +394,9 @@ func TestPGStorageTokens(t *testing.T) {
 	}
 	if got.TokenType != TokenTypeAccess || got.Scope != "openid profile" || got.RevokedAt != nil {
 		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+	if got.ClientID != DefaultClientID || got.FamilyID != tok.FamilyID {
+		t.Fatalf("client_id/family_id roundtrip mismatch: %+v", got)
 	}
 
 	// Re-put replaces the record (map-write parity).
@@ -419,20 +425,86 @@ func TestPGStorageTokens(t *testing.T) {
 	}
 }
 
+func TestPGStorageRevokeTokenFamily(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	famA := "fam_" + uuid.NewString()
+	famB := "fam_" + uuid.NewString()
+
+	put := func(name, family, tokenType string, revoked bool) string {
+		t.Helper()
+		hash := HashToken(name)
+		tok := Token{
+			TokenHash: hash, SessionID: "ses_1", UserID: "usr_1", TenantID: "tenant-a",
+			ClientID: DefaultClientID, FamilyID: family, TokenType: tokenType,
+			IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+		}
+		if revoked {
+			rev := now.Add(-time.Minute)
+			tok.RevokedAt = &rev
+		}
+		if err := s.PutToken(tok); err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+		return hash
+	}
+	// Family A: one live refresh, one live access, one already-revoked refresh.
+	liveRefreshA := put("refresh-a-live", famA, TokenTypeRefresh, false)
+	liveAccessA := put("access-a-live", famA, TokenTypeAccess, false)
+	deadRefreshA := put("refresh-a-dead", famA, TokenTypeRefresh, true)
+	// Family B must be untouched.
+	otherFamily := put("refresh-b", famB, TokenTypeRefresh, false)
+
+	revoked, err := s.RevokeTokenFamily(famA)
+	if err != nil {
+		t.Fatalf("revoke family: %v", err)
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked = %d, want 2 (live refresh + live access; pre-revoked row untouched)", revoked)
+	}
+
+	for _, hash := range []string{liveRefreshA, liveAccessA, deadRefreshA} {
+		got, err := s.GetTokenByHash(hash)
+		if err != nil || got.RevokedAt == nil {
+			t.Fatalf("family member %s should be revoked: %v %+v", hash, err, got)
+		}
+	}
+	// The pre-revoked member keeps its original (earlier) revocation instant.
+	preRevoked, _ := s.GetTokenByHash(deadRefreshA)
+	if !preRevoked.RevokedAt.Before(now) {
+		t.Fatalf("pre-revoked member's revoked_at was overwritten: %v", preRevoked.RevokedAt)
+	}
+	// The other family is untouched.
+	other, err := s.GetTokenByHash(otherFamily)
+	if err != nil || other.RevokedAt != nil {
+		t.Fatalf("other family should be untouched: %v %+v", err, other)
+	}
+
+	// Empty family id is a guarded no-op (legacy rows).
+	if n, err := s.RevokeTokenFamily(""); err != nil || n != 0 {
+		t.Fatalf("empty family revoke: n=%d err=%v, want 0 nil", n, err)
+	}
+	// Unknown family revokes nothing.
+	if n, err := s.RevokeTokenFamily("fam_" + uuid.NewString()); err != nil || n != 0 {
+		t.Fatalf("unknown family revoke: n=%d err=%v, want 0 nil", n, err)
+	}
+}
+
 func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	code := uuid.NewString()
 	ac := AuthCode{
-		Code:        code,
-		ClientID:    DefaultClientID,
-		TenantID:    "tenant-a",
-		UserID:      "usr_1",
-		RedirectURI: "http://localhost:3000/callback",
-		Scope:       "openid",
-		State:       "xyz",
-		Nonce:       "n-0S6_WzA2Mj",
-		CreatedAt:   now,
+		Code:          code,
+		ClientID:      DefaultClientID,
+		TenantID:      "tenant-a",
+		UserID:        "usr_1",
+		RedirectURI:   "http://localhost:3000/callback",
+		Scope:         "openid",
+		State:         "xyz",
+		Nonce:         "n-0S6_WzA2Mj",
+		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		CreatedAt:     now,
 	}
 	if err := s.PutAuthCode(ac); err != nil {
 		t.Fatalf("put: %v", err)
@@ -442,7 +514,8 @@ func TestPGStorageAuthCodeOneShot(t *testing.T) {
 		t.Fatalf("consume: %v", err)
 	}
 	if got.ClientID != DefaultClientID || got.UserID != "usr_1" ||
-		got.RedirectURI != ac.RedirectURI || got.State != "xyz" || got.Nonce != ac.Nonce {
+		got.RedirectURI != ac.RedirectURI || got.State != "xyz" || got.Nonce != ac.Nonce ||
+		got.CodeChallenge != ac.CodeChallenge {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
 	if !got.CreatedAt.Equal(now) {

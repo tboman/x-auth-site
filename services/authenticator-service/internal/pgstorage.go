@@ -168,8 +168,9 @@ func (s *PGStorage) PutChallenge(c Challenge) error {
 	const q = `
 		INSERT INTO challenges (
 			id, tenant_id, user_id, method, authenticator_id,
-			prompt, status, attempts, created_at, expires_at, completed_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			prompt, status, attempts, created_at, expires_at, completed_at,
+			last_attempt_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (id) DO UPDATE SET
 			tenant_id        = EXCLUDED.tenant_id,
 			user_id          = EXCLUDED.user_id,
@@ -180,12 +181,14 @@ func (s *PGStorage) PutChallenge(c Challenge) error {
 			attempts         = EXCLUDED.attempts,
 			created_at       = EXCLUDED.created_at,
 			expires_at       = EXCLUDED.expires_at,
-			completed_at     = EXCLUDED.completed_at
+			completed_at     = EXCLUDED.completed_at,
+			last_attempt_at  = EXCLUDED.last_attempt_at
 	`
 	if _, err := s.pool.Exec(bgCtx(), q,
 		c.ID, c.TenantID, c.UserID, c.Method, c.AuthenticatorID,
 		nullable(c.Prompt), c.Status, c.Attempts,
 		c.CreatedAt.UTC(), c.ExpiresAt.UTC(), nullableTime(c.CompletedAt),
+		nullableTime(c.LastAttemptAt),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_challenge: %w", err)
 	}
@@ -244,7 +247,8 @@ func (s *PGStorage) UpdateChallenge(tenantID, id string, mutator func(*Challenge
 			attempts         = $8,
 			created_at       = $9,
 			expires_at       = $10,
-			completed_at     = $11
+			completed_at     = $11,
+			last_attempt_at  = $12
 		WHERE id = $1 AND tenant_id = $2
 	`
 	if _, err := tx.Exec(ctx, q,
@@ -252,6 +256,7 @@ func (s *PGStorage) UpdateChallenge(tenantID, id string, mutator func(*Challenge
 		c.UserID, c.Method, c.AuthenticatorID,
 		nullable(c.Prompt), c.Status, c.Attempts,
 		c.CreatedAt.UTC(), c.ExpiresAt.UTC(), nullableTime(c.CompletedAt),
+		nullableTime(c.LastAttemptAt),
 	); err != nil {
 		return Challenge{}, fmt.Errorf("pgstorage update_challenge: %w", err)
 	}
@@ -290,7 +295,8 @@ const authenticatorCols = `
 
 const challengeCols = `
 	SELECT id, tenant_id, user_id, method, authenticator_id,
-	       prompt, status, attempts, created_at, expires_at, completed_at
+	       prompt, status, attempts, created_at, expires_at, completed_at,
+	       last_attempt_at
 	  FROM challenges`
 
 // rowScanner is satisfied by both pgx.Row and pgx.Rows for shared scanning.
@@ -321,13 +327,15 @@ func scanAuthenticator(r rowScanner) (Authenticator, error) {
 
 func scanChallenge(r rowScanner) (Challenge, error) {
 	var (
-		c           Challenge
-		prompt      *string
-		completedAt *time.Time
+		c             Challenge
+		prompt        *string
+		completedAt   *time.Time
+		lastAttemptAt *time.Time
 	)
 	if err := r.Scan(
 		&c.ID, &c.TenantID, &c.UserID, &c.Method, &c.AuthenticatorID,
 		&prompt, &c.Status, &c.Attempts, &c.CreatedAt, &c.ExpiresAt, &completedAt,
+		&lastAttemptAt,
 	); err != nil {
 		return Challenge{}, err
 	}
@@ -335,6 +343,10 @@ func scanChallenge(r rowScanner) (Challenge, error) {
 	if completedAt != nil {
 		t := completedAt.UTC()
 		c.CompletedAt = &t
+	}
+	if lastAttemptAt != nil {
+		t := lastAttemptAt.UTC()
+		c.LastAttemptAt = &t
 	}
 	c.CreatedAt = c.CreatedAt.UTC()
 	c.ExpiresAt = c.ExpiresAt.UTC()

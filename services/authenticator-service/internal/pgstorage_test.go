@@ -21,7 +21,7 @@ import (
 //
 //	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
 //	  -e POSTGRES_DB=authr_db -p 5432:5432 postgres:16
-//	# then apply services/authenticator-service/migrations/000001_init.up.sql
+//	# then apply services/authenticator-service/migrations (000001 + 000002 up)
 //	AUTHENTICATOR_PG_DSN="postgres://postgres:postgres@localhost:5432/authr_db?sslmode=disable" \
 //	  go test ./services/authenticator-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
@@ -248,6 +248,9 @@ func TestPGStorageChallengeRoundTrip(t *testing.T) {
 	if got.Prompt != c.Prompt || got.Attempts != 0 || got.CompletedAt != nil {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
+	if got.LastAttemptAt != nil {
+		t.Fatalf("last_attempt_at must round-trip as nil before any failure: %+v", got.LastAttemptAt)
+	}
 	if !got.ExpiresAt.Equal(now.Add(ChallengeTTL)) {
 		t.Fatalf("expires_at drifted: %v", got.ExpiresAt)
 	}
@@ -269,15 +272,25 @@ func TestPGStorageUpdateChallenge(t *testing.T) {
 		CreatedAt: now, ExpiresAt: now.Add(ChallengeTTL),
 	})
 
-	// Failed attempt: bump the counter.
+	// Failed attempt: bump the counter and stamp the failure time (the §10.5
+	// backoff input persisted by migration 000002).
+	lastAttempt := now.Add(30 * time.Second)
 	updated, err := s.UpdateChallenge("tenant-a", id, func(ch *Challenge) {
 		ch.Attempts++
+		ch.LastAttemptAt = &lastAttempt
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	if updated.Attempts != 1 || updated.Status != ChallengeStatusPending {
 		t.Fatalf("attempt bump not applied: %+v", updated)
+	}
+	got0, err := s.GetChallenge("tenant-a", id)
+	if err != nil {
+		t.Fatalf("get after failed attempt: %v", err)
+	}
+	if got0.LastAttemptAt == nil || !got0.LastAttemptAt.Equal(lastAttempt) {
+		t.Fatalf("last_attempt_at not persisted: %+v", got0.LastAttemptAt)
 	}
 
 	// Success: terminal state + completion stamp, persisted across a fresh Get.

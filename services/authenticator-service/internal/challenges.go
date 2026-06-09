@@ -16,12 +16,14 @@ type ChallengeHandlers struct {
 	log      *slog.Logger
 	store    Storage
 	registry *Registry
+	limits   Limits
 }
 
 // NewChallengeHandlers constructs a handler bundle. registry provides the
-// per-method adapters; tests can inject a custom one.
-func NewChallengeHandlers(log *slog.Logger, store Storage, registry *Registry) *ChallengeHandlers {
-	return &ChallengeHandlers{log: log, store: store, registry: registry}
+// per-method adapters; tests can inject a custom one. limits carries the
+// §10.5 layer-3 abuse controls (zero value = disabled).
+func NewChallengeHandlers(log *slog.Logger, store Storage, registry *Registry, limits Limits) *ChallengeHandlers {
+	return &ChallengeHandlers{log: log, store: store, registry: registry, limits: limits}
 }
 
 // Create handles POST /v1/challenges. It picks the caller's most-preferred
@@ -64,6 +66,24 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "unsupported method: "+m)
 			return
 		}
+	}
+
+	// §10.5 layer 3, enforced here in the handler so both the /v1 and
+	// /internal/v1 mounts (same handler instances) are covered:
+	//  1. account lockout — a locked-out user may not create challenges, and
+	//     the check is first so locked traffic doesn't consume limiter slots;
+	//  2. per-user challenge-creation rate limit (CHALLENGE_RATE_LIMIT).
+	key := abuseKey(tenantID, req.UserID)
+	if locked, retryAfter := h.limits.Lockout.Locked(key); locked {
+		h.log.Warn("challenge_create_locked_out", "user_id", req.UserID, "tenant_id", tenantID)
+		writeAccountLocked(w, retryAfter)
+		return
+	}
+	if ok, retryAfter := h.limits.ChallengeCreate.Allow(key); !ok {
+		h.log.Warn("challenge_create_rate_limited", "user_id", req.UserID, "tenant_id", tenantID)
+		writeRetryAfterError(w, http.StatusTooManyRequests, "rate_limited",
+			"challenge creation rate limit exceeded for user", retryAfter)
+		return
 	}
 
 	active, err := h.store.ListActiveAuthenticators(tenantID, req.UserID)
@@ -194,6 +214,16 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §10.5 layer 3: account lockout trumps every other state — a locked-out
+	// user can neither probe nor verify any challenge until the failure
+	// window slides.
+	lockKey := abuseKey(tenantID, c.UserID)
+	if locked, retryAfter := h.limits.Lockout.Locked(lockKey); locked {
+		h.log.Warn("challenge_verify_locked_out", "challenge_id", id, "user_id", c.UserID, "tenant_id", tenantID)
+		writeAccountLocked(w, retryAfter)
+		return
+	}
+
 	// Terminal states short-circuit before any adapter work. A previously
 	// expired challenge is still reported as `gone`.
 	if c.Status != ChallengeStatusPending {
@@ -214,6 +244,17 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 			h.log.Error("challenge_expire_flip_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
 		}
 		httpx.WriteError(w, http.StatusGone, "challenge_expired", "challenge has expired")
+		return
+	}
+
+	// §10.5 layer 3: exponential backoff after failed verifications — the
+	// challenge may not be retried until 2^attempts seconds after the last
+	// failed attempt. A premature retry is rejected BEFORE the adapter runs,
+	// so it does not consume an attempt.
+	if wait := backoffRemaining(c, h.store.Now()); wait > 0 {
+		h.log.Warn("challenge_verify_backoff", "challenge_id", id, "attempts", c.Attempts, "tenant_id", tenantID)
+		writeRetryAfterError(w, http.StatusTooManyRequests, "retry_backoff",
+			"verification retried too soon after a failed attempt", wait)
 		return
 	}
 
@@ -238,6 +279,10 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ch.Attempts++
+		// Stamp the failure time for the exponential-backoff window
+		// (§10.5 layer 3 — see backoffRemaining).
+		t := h.store.Now()
+		ch.LastAttemptAt = &t
 		if ch.Attempts >= MaxChallengeAttempts {
 			ch.Status = ChallengeStatusFailed
 		}
@@ -253,6 +298,12 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("challenge_update_failed", "err", err, "challenge_id", id, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to update challenge")
 		return
+	}
+
+	// Count the failure toward the cross-challenge account lockout (§10.5
+	// layer 3) only after it is on record.
+	if !verified {
+		h.limits.Lockout.RecordFailure(lockKey)
 	}
 
 	h.log.Info("challenge_verified",

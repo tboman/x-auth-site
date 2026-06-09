@@ -34,6 +34,23 @@ storage layer: a transaction created under tenant A is invisible (404) to tenant
 | GET | `/v1/transactions` | 200, 400 |
 | GET | `/v1/transactions/{id}` | 200, 400, 404 |
 
+Every `/v1/*` endpoint may additionally return `429` when rate limited (see below).
+
+## Rate limiting (ARCHITECTURE.md §10.5, layer 2)
+
+Every `/v1/*` request is counted against a sliding-window limit keyed by
+**tenant + method + endpoint class** (the first two path segments, so
+`GET /v1/transactions` and `GET /v1/transactions/{id}` share a bucket). The
+sliding window provides the burst allowance; over-limit requests get `429`
+with a `Retry-After` header and an `{"error":"rate_limited"}` body.
+`/healthz` is never limited, and requests without an `X-Tenant-Id` header
+bypass the limiter (they are rejected with `400` by tenant enforcement
+immediately after).
+
+**Per-replica caveat:** the limiter state is in-memory per process, so the
+effective limit is `RATE_LIMIT × replica count` until the shared Redis
+backing lands in a later phase.
+
 ## Orchestration rules
 
 ### `/v1/advice`
@@ -122,6 +139,7 @@ transaction is still persisted with `decision: "error"` so the caller can audit.
 | `RISK_SERVICE_URL` | `http://localhost:8081` | |
 | `AUTHENTICATION_SERVICE_URL` | `http://localhost:8082` | |
 | `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` | |
+| `RATE_LIMIT` | `600/1m` | §10.5 layer-2 per-tenant, per-endpoint limit as `N/window` (e.g. `100/30s`). The literal `off` disables limiting. Invalid values are fatal at startup. Enforced per replica until Redis. |
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PG_DSN_TRANSACTION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |

@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +27,18 @@ import (
 // testIssuer is the issuer wired into every test router — it doubles as the
 // expected `iss` claim in minted access tokens.
 const testIssuer = "http://test.local"
+
+// testVerifier is the PKCE code_verifier used by the code-flow tests — 43
+// characters, the RFC 7636 §4.1 minimum length.
+const testVerifier = "0123456789-0123456789-0123456789-0123456789"
+
+// s256Challenge computes the PKCE S256 code challenge independently of the
+// production helper (crypto/sha256 + base64url-without-padding per RFC 7636
+// §4.2), so a bug in the handler's derivation cannot self-verify.
+func s256Challenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
 
 // testSigningKey returns a process-wide RSA key for test routers. Generated once:
 // 2048-bit keygen per test would dominate the suite's runtime for no extra coverage.
@@ -159,16 +173,18 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 	}
 	r, store := newTestRouter(t, mc)
 
-	// GET /authorize
+	// GET /authorize — PKCE is mandatory, so the challenge rides along.
 	authURL := "/authorize?" + url.Values{
-		"client_id":    {"client-xyz"},
-		"redirect_uri": {"https://app.example.com/cb"},
-		"state":        {"state-1"},
-		"scope":        {"openid mcp"},
-		"persona_id":   {"persona-1"},
-		"pool_id":      {"pool-1"},
-		"tenant_id":    {"tenant-1"},
-		"runtime":      {"claude"},
+		"client_id":             {"client-xyz"},
+		"redirect_uri":          {"https://app.example.com/cb"},
+		"state":                 {"state-1"},
+		"scope":                 {"openid mcp"},
+		"persona_id":            {"persona-1"},
+		"pool_id":               {"pool-1"},
+		"tenant_id":             {"tenant-1"},
+		"runtime":               {"claude"},
+		"code_challenge":        {s256Challenge(testVerifier)},
+		"code_challenge_method": {"S256"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodGet, authURL, nil)
 	w := httptest.NewRecorder()
@@ -189,11 +205,12 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 		t.Fatalf("authorize: state not echoed: %s", loc.String())
 	}
 
-	// POST /token
+	// POST /token — must present the code_verifier matching the challenge.
 	form := url.Values{
-		"grant_type": {"authorization_code"},
-		"code":       {code},
-		"client_id":  {"client-xyz"},
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {"client-xyz"},
+		"code_verifier": {testVerifier},
 	}
 	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -390,8 +407,13 @@ func TestUserInfoRejectsRevokedButValidJWT(t *testing.T) {
 	_ = store.PutAuthCode(AuthCode{
 		Code: code, TenantID: "t", Runtime: "claude",
 		PersonaID: "p", PoolID: "pl", ClientID: "c",
+		CodeChallenge: s256Challenge(testVerifier),
 	})
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {testVerifier},
+	}
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -450,12 +472,14 @@ func TestTokenGrantFailureReleasesIdentity(t *testing.T) {
 	_ = store.PutAuthCode(AuthCode{
 		Code: code, TenantID: "tenant-x", Runtime: "custom",
 		PersonaID: "p", PoolID: "pl", ClientID: "c",
-		RedirectURI: "https://x/cb",
+		RedirectURI:   "https://x/cb",
+		CodeChallenge: s256Challenge(testVerifier),
 	})
 
 	form := url.Values{
-		"grant_type": {"authorization_code"},
-		"code":       {code},
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {testVerifier},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -491,9 +515,14 @@ func TestTokenPersonaNotFoundReturns400(t *testing.T) {
 	_ = store.PutAuthCode(AuthCode{
 		Code: code, TenantID: "t", Runtime: "claude",
 		PersonaID: "missing", PoolID: "pl", ClientID: "c",
+		CodeChallenge: s256Challenge(testVerifier),
 	})
 
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {testVerifier},
+	}
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -517,16 +546,188 @@ func TestAuthorizeMissingParams(t *testing.T) {
 		t.Fatalf("expected 400 missing client_id, got %d", w.Code)
 	}
 
-	// Bad redirect_uri (not absolute).
+	// Bad redirect_uri (not absolute) — PKCE params valid so the redirect check fires.
 	bad := "/authorize?" + url.Values{
 		"client_id": {"c"}, "redirect_uri": {"/relative"},
 		"persona_id": {"p"}, "pool_id": {"pl"}, "tenant_id": {"t"},
+		"code_challenge": {s256Challenge(testVerifier)}, "code_challenge_method": {"S256"},
 	}.Encode()
 	req = httptest.NewRequest(http.MethodGet, bad, nil)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 bad redirect_uri, got %d", w.Code)
+	}
+}
+
+// --- /authorize enforces PKCE: S256 challenge is mandatory ---
+
+func TestAuthorizePKCERequired(t *testing.T) {
+	r, _ := newTestRouter(t, &mockClients{})
+
+	base := url.Values{
+		"client_id": {"c"}, "redirect_uri": {"https://x/cb"},
+		"persona_id": {"p"}, "pool_id": {"pl"}, "tenant_id": {"t"},
+	}
+
+	cases := []struct {
+		name      string
+		challenge string
+		method    string
+	}{
+		{"missing code_challenge", "", "S256"},
+		{"plain method", s256Challenge(testVerifier), "plain"},
+		{"missing method (RFC 7636 default is plain)", s256Challenge(testVerifier), ""},
+	}
+	for _, tc := range cases {
+		q := url.Values{}
+		for k, v := range base {
+			q[k] = v
+		}
+		if tc.challenge != "" {
+			q.Set("code_challenge", tc.challenge)
+		}
+		if tc.method != "" {
+			q.Set("code_challenge_method", tc.method)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d (%s)", tc.name, w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp["error"] != "invalid_request" {
+			t.Fatalf("%s: error = %v, want invalid_request", tc.name, resp["error"])
+		}
+	}
+}
+
+// --- /token enforces PKCE: code_verifier required and must match ---
+
+// pkceTokenMocks returns a mock set that would let the orchestration succeed —
+// the PKCE failures under test must reject before any of it runs.
+func pkceTokenMocks() *mockClients {
+	return &mockClients{
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
+			return Persona{ID: personaID, TenantID: tenantID, Scopes: []string{"mcp"}, TokenTTL: 60}, nil
+		},
+		ClaimIdentityFn: func(_ context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
+			return Identity{ID: "id-1", PoolID: poolID, SubjectID: "s"}, nil
+		},
+		CreateGrantFn: func(_ context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
+			return Grant{ID: "g"}, nil
+		},
+	}
+}
+
+func TestTokenWrongVerifierIsInvalidGrant(t *testing.T) {
+	r, store := newTestRouter(t, pkceTokenMocks())
+
+	code := "code-pkce-wrong"
+	_ = store.PutAuthCode(AuthCode{
+		Code: code, TenantID: "t", Runtime: "claude",
+		PersonaID: "p", PoolID: "pl", ClientID: "c",
+		CodeChallenge: s256Challenge(testVerifier),
+	})
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {"definitely-not-the-right-verifier-aaaaaaaaa"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("wrong verifier: expected 400, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "invalid_grant" {
+		t.Fatalf("wrong verifier: error = %v, want invalid_grant", resp["error"])
+	}
+
+	// The code was consumed by the failed attempt — replay with the *correct*
+	// verifier must also fail (one-shot codes are burned, not retried).
+	form.Set("code_verifier", testVerifier)
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("replay after failed PKCE: expected 400, got %d", w.Code)
+	}
+}
+
+func TestTokenMissingVerifierRejectedBeforeCodeBurn(t *testing.T) {
+	r, store := newTestRouter(t, pkceTokenMocks())
+
+	code := "code-pkce-missing"
+	_ = store.PutAuthCode(AuthCode{
+		Code: code, TenantID: "t", Runtime: "claude",
+		PersonaID: "p", PoolID: "pl", ClientID: "c",
+		CodeChallenge: s256Challenge(testVerifier),
+	})
+
+	form := url.Values{
+		"grant_type": {"authorization_code"},
+		"code":       {code},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing verifier: expected 400, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "invalid_request" {
+		t.Fatalf("missing verifier: error = %v, want invalid_request", resp["error"])
+	}
+
+	// The missing-verifier check fires before the one-shot consume, so a retry
+	// with the proper verifier still succeeds.
+	form.Set("code_verifier", testVerifier)
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("retry with verifier: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+}
+
+// A direct-seeded code with no stored challenge must be unusable — there is no
+// PKCE-optional path left.
+func TestTokenCodeWithoutChallengeIsInvalidGrant(t *testing.T) {
+	r, store := newTestRouter(t, pkceTokenMocks())
+
+	code := "code-pre-pkce"
+	_ = store.PutAuthCode(AuthCode{
+		Code: code, TenantID: "t", Runtime: "claude",
+		PersonaID: "p", PoolID: "pl", ClientID: "c",
+	})
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {testVerifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("challenge-less code: expected 400, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "invalid_grant" {
+		t.Fatalf("challenge-less code: error = %v, want invalid_grant", resp["error"])
 	}
 }
 
@@ -550,9 +751,14 @@ func TestTokenCodeReplay(t *testing.T) {
 	_ = store.PutAuthCode(AuthCode{
 		Code: code, TenantID: "t", Runtime: "cursor",
 		PersonaID: "p", PoolID: "pl", ClientID: "c",
+		CodeChallenge: s256Challenge(testVerifier),
 	})
 
-	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}}
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"code_verifier": {testVerifier},
+	}
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -833,6 +1039,13 @@ func TestDiscoveryDocs(t *testing.T) {
 		}
 		if doc["jwks_uri"] != testIssuer+"/.well-known/jwks.json" {
 			t.Fatalf("%s: jwks_uri = %v, want %s/.well-known/jwks.json", path, doc["jwks_uri"], testIssuer)
+		}
+		// PKCE: the advertised method list must be exactly ["S256"] — plain is
+		// not supported and /authorize enforces what is advertised here.
+		methods, ok := doc["code_challenge_methods_supported"].([]any)
+		if !ok || len(methods) != 1 || methods[0] != "S256" {
+			t.Fatalf("%s: code_challenge_methods_supported = %v, want [S256]",
+				path, doc["code_challenge_methods_supported"])
 		}
 	}
 }

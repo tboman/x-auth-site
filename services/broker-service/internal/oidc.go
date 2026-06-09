@@ -3,6 +3,8 @@ package internal
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -103,6 +105,11 @@ func (h *OIDCHandlers) JWKS(w http.ResponseWriter, _ *http.Request) {
 // keyed by the code so /token can complete the orchestration without the caller
 // re-sending any of this data.
 //
+// PKCE (RFC 7636) is mandatory and S256-only: requests without a code_challenge,
+// or with any code_challenge_method other than S256, are rejected with a
+// structured 400. The challenge is persisted on the auth-code record and
+// verified against code_verifier at /token.
+//
 // Tenant sourcing: real OIDC would derive the tenant from the authenticated user
 // session. Phase 1 accepts `tenant_id` as a query parameter (documented in
 // REQUIREMENTS.md §4 and the broker-service README). This is the deliberate
@@ -122,6 +129,8 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	personaID := q.Get("persona_id")
 	poolID := q.Get("pool_id")
 	tenantID := q.Get("tenant_id")
+	codeChallenge := q.Get("code_challenge")
+	codeChallengeMethod := q.Get("code_challenge_method")
 	runtime := q.Get("runtime")
 	if runtime == "" {
 		runtime = RuntimeCustom
@@ -153,6 +162,21 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PKCE is mandatory and S256-only (ARCHITECTURE.md §10.4; the MCP authorization
+	// spec requires PKCE for MCP clients). RFC 7636 defaults a missing
+	// code_challenge_method to "plain", which we deliberately do not support — the
+	// discovery documents advertise code_challenge_methods_supported: ["S256"].
+	if codeChallenge == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request",
+			"code_challenge is required (PKCE is mandatory)")
+		return
+	}
+	if codeChallengeMethod != "S256" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request",
+			"code_challenge_method must be S256")
+		return
+	}
+
 	// Validate redirect_uri parses as an absolute URL so we don't emit a garbage Location.
 	redir, err := url.Parse(redirectURI)
 	if err != nil || !redir.IsAbs() {
@@ -163,16 +187,17 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 
 	code := uuid.NewString()
 	if err := h.Store.PutAuthCode(AuthCode{
-		Code:        code,
-		TenantID:    tenantID,
-		Runtime:     runtime,
-		PersonaID:   personaID,
-		PoolID:      poolID,
-		ClientID:    clientID,
-		RedirectURI: redirectURI,
-		State:       state,
-		Scope:       scope,
-		CreatedAt:   time.Now().UTC(),
+		Code:          code,
+		TenantID:      tenantID,
+		Runtime:       runtime,
+		PersonaID:     personaID,
+		PoolID:        poolID,
+		ClientID:      clientID,
+		RedirectURI:   redirectURI,
+		State:         state,
+		Scope:         scope,
+		CodeChallenge: codeChallenge,
+		CreatedAt:     time.Now().UTC(),
 	}); err != nil {
 		h.Logger.Error("authorize_store_failed", "err", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue code")
@@ -197,7 +222,8 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 // validation yet.
 //
 // Orchestration, in order:
-//  1. consume auth code (one-shot)
+//  1. consume auth code (one-shot) and verify the PKCE code_verifier against
+//     the stored S256 code_challenge (mandatory — invalid_grant on mismatch)
 //  2. create a pending install locally
 //  3. fetch persona scopes from persona-service
 //  4. claim an identity from pool-service
@@ -215,6 +241,7 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 	grantType := r.PostForm.Get("grant_type")
 	code := r.PostForm.Get("code")
 	clientID := r.PostForm.Get("client_id")
+	codeVerifier := r.PostForm.Get("code_verifier")
 
 	if grantType != "authorization_code" {
 		httpx.WriteError(w, http.StatusBadRequest, "unsupported_grant_type",
@@ -223,6 +250,13 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 	}
 	if code == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
+		return
+	}
+	// PKCE is mandatory: checked before consuming the code so a request that is
+	// missing the verifier outright does not burn the one-shot code.
+	if codeVerifier == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request",
+			"code_verifier is required (PKCE is mandatory)")
 		return
 	}
 
@@ -237,6 +271,16 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 	}
 	if time.Since(ac.CreatedAt) > time.Duration(AuthCodeTTLSeconds)*time.Second {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "code expired")
+		return
+	}
+	// PKCE verification (RFC 7636 §4.6, S256): base64url-without-padding of
+	// SHA-256(code_verifier) must equal the challenge stored at /authorize time.
+	// A code with no stored challenge (impossible via /authorize, but reachable by
+	// direct-seeded codes) is rejected too — there is no PKCE-optional path.
+	if ac.CodeChallenge == "" ||
+		subtle.ConstantTimeCompare([]byte(pkceChallengeS256(codeVerifier)), []byte(ac.CodeChallenge)) != 1 {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant",
+			"code_verifier does not match the code_challenge")
 		return
 	}
 
@@ -490,6 +534,15 @@ func (h *OIDCHandlers) markInstallRevoked(i Install) {
 	if _, err := h.Store.UpdateInstall(i); err != nil {
 		h.Logger.Warn("install_mark_revoked_failed", "err", err, "install_id", i.ID)
 	}
+}
+
+// pkceChallengeS256 derives the PKCE S256 code challenge from a code verifier
+// per RFC 7636 §4.2: BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) without
+// padding. /token recomputes it from the presented code_verifier and compares
+// against the challenge stored at /authorize time.
+func pkceChallengeS256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // hashToken returns the SHA-256 hex digest of a token. The digest — never the

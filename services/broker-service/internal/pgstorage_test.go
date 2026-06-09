@@ -20,7 +20,7 @@ import (
 //
 //	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
 //	  -e POSTGRES_DB=broker_db -p 5432:5432 postgres:16
-//	# then apply services/broker-service/migrations/000001_init.up.sql
+//	# then apply the migrations under services/broker-service/migrations/ in order
 //	BROKER_PG_DSN="postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
 //	  go test ./services/broker-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
@@ -317,16 +317,17 @@ func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	code := uuid.NewString()
 	if err := s.PutAuthCode(AuthCode{
-		Code:        code,
-		TenantID:    "tenant-a",
-		Runtime:     RuntimeClaude,
-		PersonaID:   "persona-1",
-		PoolID:      "pool-1",
-		ClientID:    "client-1",
-		RedirectURI: "https://app.example.com/cb",
-		State:       "xyz",
-		Scope:       "openid mcp",
-		CreatedAt:   now,
+		Code:          code,
+		TenantID:      "tenant-a",
+		Runtime:       RuntimeClaude,
+		PersonaID:     "persona-1",
+		PoolID:        "pool-1",
+		ClientID:      "client-1",
+		RedirectURI:   "https://app.example.com/cb",
+		State:         "xyz",
+		Scope:         "openid mcp",
+		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		CreatedAt:     now,
 	}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -336,6 +337,9 @@ func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	}
 	if ac.TenantID != "tenant-a" || ac.PoolID != "pool-1" || ac.State != "xyz" || ac.Scope != "openid mcp" {
 		t.Fatalf("roundtrip mismatch: %+v", ac)
+	}
+	if ac.CodeChallenge != "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" {
+		t.Fatalf("code_challenge mismatch: %q", ac.CodeChallenge)
 	}
 	if !ac.CreatedAt.Equal(now) {
 		t.Fatalf("created_at mismatch: got %v want %v", ac.CreatedAt, now)

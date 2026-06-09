@@ -120,6 +120,11 @@ type Challenge struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	ExpiresAt       time.Time  `json:"expires_at"`
 	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	// LastAttemptAt is when the most recent FAILED verification happened. It
+	// feeds the §10.5 layer-3 exponential backoff (see backoffRemaining in
+	// abuse.go): the next verify is allowed 2^Attempts seconds after it.
+	// nil until the first failure.
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
 }
 
 // IsValidMethod reports whether m is one of the supported method strings.

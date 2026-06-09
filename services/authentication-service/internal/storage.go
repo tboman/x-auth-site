@@ -41,6 +41,11 @@ type Storage interface {
 	PutToken(t Token) error
 	GetTokenByHash(hash string) (Token, error)
 	RevokeTokenByHash(hash string) error
+	// RevokeTokenFamily stamps RevokedAt on every live token (access AND
+	// refresh) carrying familyID — the §10.1 theft response when a rotated-out
+	// refresh token is replayed. Returns the number of tokens revoked. An empty
+	// familyID is a no-op (guards legacy rows migrated without a real family).
+	RevokeTokenFamily(familyID string) (int, error)
 
 	// Auth codes — one-shot
 	PutAuthCode(ac AuthCode) error
@@ -277,6 +282,28 @@ func (s *MemStorage) RevokeTokenByHash(hash string) error {
 	t.RevokedAt = &now
 	s.tokens[hash] = t
 	return nil
+}
+
+// RevokeTokenFamily stamps RevokedAt on every live token in familyID. Already-
+// revoked tokens are left untouched (their original revocation instant is the
+// interesting forensic datum) and do not count toward the returned total.
+func (s *MemStorage) RevokeTokenFamily(familyID string) (int, error) {
+	if familyID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	revoked := 0
+	for hash, t := range s.tokens {
+		if t.FamilyID != familyID || t.RevokedAt != nil {
+			continue
+		}
+		t.RevokedAt = &now
+		s.tokens[hash] = t
+		revoked++
+	}
+	return revoked, nil
 }
 
 // ---- Auth codes ----

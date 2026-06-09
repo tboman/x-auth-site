@@ -122,11 +122,24 @@ const (
 // AND a live (non-revoked) record, so RFC 7009 /revoke keeps taking effect
 // immediately. Drop the access-token record only when distributed revocation
 // lands.
+//
+// FamilyID groups every token descending from one authorization-code login
+// (ARCHITECTURE.md §10.1 family-based revocation): the code grant mints a
+// fresh family id and every refresh rotation issues its replacement tokens
+// into the same family. Presenting a refresh token that was already
+// rotated-out is treated as a theft signal and revokes the whole family.
+//
+// ClientID is the OAuth client the tokens were issued to (from the auth code
+// at login). The refresh grant sources the `aud` claim of rotated access
+// tokens from here, so it no longer depends on what the client presents at
+// refresh time.
 type Token struct {
 	TokenHash string     `json:"-"`
 	SessionID string     `json:"session_id"`
 	UserID    string     `json:"user_id"`
 	TenantID  string     `json:"tenant_id"`
+	ClientID  string     `json:"client_id,omitempty"`
+	FamilyID  string     `json:"family_id,omitempty"`
 	TokenType string     `json:"token_type"`
 	Scope     string     `json:"scope,omitempty"`
 	IssuedAt  time.Time  `json:"issued_at"`
@@ -136,17 +149,23 @@ type Token struct {
 
 // AuthCode is the transient record created by /authorize and consumed by /token.
 // Single-use by construction — the storage layer deletes it on read.
+//
+// CodeChallenge is the PKCE S256 challenge from the /authorize request
+// (ARCHITECTURE.md §10.4). It is always present on codes minted by /authorize
+// — PKCE is mandatory and S256-only, so no method field is stored: anything
+// other than S256 is rejected at the /authorize boundary.
 type AuthCode struct {
-	Code        string
-	ClientID    string
-	TenantID    string
-	UserID      string
-	SessionID   string
-	RedirectURI string
-	Scope       string
-	State       string
-	Nonce       string
-	CreatedAt   time.Time
+	Code          string
+	ClientID      string
+	TenantID      string
+	UserID        string
+	SessionID     string
+	RedirectURI   string
+	Scope         string
+	State         string
+	Nonce         string
+	CodeChallenge string
+	CreatedAt     time.Time
 }
 
 // OIDCClient is a registered OAuth/OIDC client. Phase 1 seeds a single dev
@@ -174,10 +193,10 @@ type SocialProfile struct {
 // Centralised here so tests can reason about expected lifetimes without repeating
 // magic numbers throughout the handlers.
 const (
-	SessionTTLSeconds      = 3600  // 1 hour
-	AccessTokenTTLSeconds  = 3600  // 1 hour per ARCHITECTURE.md §10.1; per-client overrides arrive with dynamic client registration
-	RefreshTokenTTLSeconds = 86400 // 24 hours
-	AuthCodeTTLSeconds     = 300   // 5 minutes
+	SessionTTLSeconds      = 3600    // 1 hour
+	AccessTokenTTLSeconds  = 3600    // 1 hour per ARCHITECTURE.md §10.1; per-client overrides arrive with dynamic client registration
+	RefreshTokenTTLSeconds = 2592000 // 30 days per ARCHITECTURE.md §6.2 (oidc_clients.refresh_ttl_sec default)
+	AuthCodeTTLSeconds     = 300     // 5 minutes
 
 	// DefaultClientID is the dev client seeded at startup. Using a stable, well-
 	// known value keeps smoke tests and local cURL examples simple.

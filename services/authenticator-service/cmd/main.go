@@ -15,6 +15,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/ratex"
 	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/authenticator-service/internal"
 )
@@ -62,8 +63,33 @@ func main() {
 	}
 	go runPurgeSweeper(ctx, log, store, interval)
 
+	// §10.5 layer-3 abuse controls. Both are ratex sliding windows keyed
+	// tenant|user — in-memory and PER REPLICA until shared Redis lands; the
+	// per-challenge exponential backoff needs no config (derived from
+	// persisted challenge state). "off" disables a control; an unparseable
+	// value is fatal — never boot with a silently-missing abuse control.
+	var limits internal.Limits
+	if n, window, on, err := rateFromEnv("CHALLENGE_RATE_LIMIT", "10/1m"); err != nil {
+		log.Error("invalid_challenge_rate_limit", "err", err)
+		os.Exit(1)
+	} else if on {
+		limits.ChallengeCreate = ratex.New(n, window)
+		log.Info("challenge_rate_limit_enabled", "limit", n, "window", window.String())
+	} else {
+		log.Warn("challenge_rate_limit_disabled")
+	}
+	if n, window, on, err := rateFromEnv("LOCKOUT_THRESHOLD", "5/15m"); err != nil {
+		log.Error("invalid_lockout_threshold", "err", err)
+		os.Exit(1)
+	} else if on {
+		limits.Lockout = internal.NewLockout(n, window, store.Now)
+		log.Info("account_lockout_enabled", "threshold", n, "window", window.String())
+	} else {
+		log.Warn("account_lockout_disabled")
+	}
+
 	registry := internal.NewRegistry(log)
-	handler := internal.Router(log, store, registry)
+	handler := internal.Router(log, store, registry, limits)
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS_CERT_FILE/TLS_KEY_FILE
 	// enable TLS, TLS_CLIENT_CA_FILE additionally enforces mTLS. With none set
@@ -79,6 +105,25 @@ func main() {
 		log.Error("server_exit", "err", err)
 		os.Exit(1)
 	}
+}
+
+// rateFromEnv reads an "N/window" rate (ratex.ParseRate syntax, e.g. "10/1m")
+// from the named env var, falling back to def when unset. The literal "off"
+// disables the control (enabled=false, nil error); anything else that fails
+// to parse is returned as an error for the caller to treat as fatal.
+func rateFromEnv(name, def string) (limit int, window time.Duration, enabled bool, err error) {
+	v := os.Getenv(name)
+	if v == "" {
+		v = def
+	}
+	if v == "off" {
+		return 0, 0, false, nil
+	}
+	n, d, err := ratex.ParseRate(v)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return n, d, true, nil
 }
 
 // runPurgeSweeper deletes expired challenges every interval until ctx is
