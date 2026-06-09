@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
@@ -1074,6 +1075,174 @@ func TestSocialUnsupportedProvider(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("unsupported provider: expected 400, got %d", w.Code)
+	}
+}
+
+// seedSession plants a user and a live session directly in the store so the
+// internal-alias tests can focus on routing and auth, not session semantics.
+func seedSession(t *testing.T, store Storage) Session {
+	t.Helper()
+	u, err := store.CreateUser(User{ID: "usr_internal", TenantID: "ten_a", Email: "internal@e.com"})
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	now := time.Now().UTC()
+	sess, err := store.CreateSession(Session{
+		ID: "ses_internal", TenantID: "ten_a", UserID: u.ID, RiskLevel: RiskLow,
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return sess
+}
+
+// --- /internal/v1/sessions alias serves the same handlers as /v1 (dev mode) ---
+
+func TestInternalSessionsAliasParityDevMode(t *testing.T) {
+	// Force dev mode: no shared secret, no TLS — the alias must be open and
+	// behave exactly like the public tree.
+	t.Setenv(httpx.EnvInternalAuthSecret, "")
+	r, store := newTestRouter(t)
+	sess := seedSession(t, store)
+
+	// GET parity: same status, same body, both paths.
+	var bodies []string
+	for _, path := range []string{
+		"/v1/sessions/" + sess.ID,
+		"/internal/v1/sessions/" + sess.ID,
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Tenant-Id", "ten_a")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d (%s)", path, w.Code, w.Body.String())
+		}
+		bodies = append(bodies, w.Body.String())
+	}
+	if bodies[0] != bodies[1] {
+		t.Fatalf("alias body diverges:\n/v1:          %s\n/internal/v1: %s", bodies[0], bodies[1])
+	}
+
+	// Upgrade through the internal alias hits the same handler + store.
+	body := strings.NewReader(`{"risk_level":"low","step_up_completed":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/internal/v1/sessions/"+sess.ID+"/upgrade", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("internal upgrade: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var upgraded Session
+	_ = json.Unmarshal(w.Body.Bytes(), &upgraded)
+	if !upgraded.StepUpCompleted {
+		t.Fatalf("internal upgrade: step_up_completed not set")
+	}
+	stored, err := store.GetSession("ten_a", sess.ID)
+	if err != nil || !stored.StepUpCompleted {
+		t.Fatalf("internal upgrade not persisted: %+v, %v", stored, err)
+	}
+
+	// The internal alias must still enforce the tenant header (tenantx wraps it).
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/sessions/"+sess.ID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("internal without tenant header: expected 400, got %d", w.Code)
+	}
+
+	// Only the session subtree is aliased — internal users must 404.
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/users/usr_internal", nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("internal users alias should not exist: expected 404, got %d", w.Code)
+	}
+}
+
+// --- /internal/v1/sessions enforces the shared secret when configured ---
+
+func TestInternalSessionsSharedSecret(t *testing.T) {
+	t.Setenv(httpx.EnvInternalAuthSecret, "test-internal-secret")
+	r, store := newTestRouter(t) // router built AFTER the secret is set
+	sess := seedSession(t, store)
+
+	// Missing header → structured 401.
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing header: expected 401, got %d (%s)", w.Code, w.Body.String())
+	}
+	var errBody map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("401 body is not structured JSON: %v (%s)", err, w.Body.String())
+	}
+	if errBody["error"] != "internal_auth_required" {
+		t.Fatalf("401 error code = %v, want internal_auth_required", errBody["error"])
+	}
+
+	// Wrong secret → 401.
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	req.Header.Set(httpx.InternalAuthHeader, "wrong")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong secret: expected 401, got %d", w.Code)
+	}
+
+	// Correct secret → 200 (and SetInternalAuth stamps the same header a real
+	// internal caller would send).
+	req = httptest.NewRequest(http.MethodGet, "/internal/v1/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	httpx.SetInternalAuth(req)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("correct secret: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Public /v1 tree stays open — no internal header required.
+	req = httptest.NewRequest(http.MethodGet, "/v1/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Tenant-Id", "ten_a")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("public /v1 with secret configured: expected 200, got %d", w.Code)
+	}
+}
+
+// --- Outbound client stamps X-Internal-Auth when the secret is configured ---
+
+func TestHTTPAuthenticatorClientSetsInternalAuth(t *testing.T) {
+	t.Setenv(httpx.EnvInternalAuthSecret, "client-secret")
+
+	var gotHeader, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get(httpx.InternalAuthHeader)
+		gotPath = r.URL.Path
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"authenticators": []any{}})
+	}))
+	defer srv.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client, err := NewHTTPAuthenticatorClient(logger, srv.URL)
+	if err != nil {
+		t.Fatalf("construct client: %v", err)
+	}
+	if _, err := client.ListAuthenticators(context.Background(), "ten_a", "usr_1"); err != nil {
+		t.Fatalf("ListAuthenticators: %v", err)
+	}
+	if gotHeader != "client-secret" {
+		t.Fatalf("%s header = %q, want client-secret", httpx.InternalAuthHeader, gotHeader)
+	}
+	if gotPath != "/internal/v1/authenticators" {
+		t.Fatalf("path = %q, want /internal/v1/authenticators", gotPath)
 	}
 }
 

@@ -35,7 +35,18 @@ func NewHandlers(grants GrantStore, audit AuditStore, logger *slog.Logger) *Hand
 }
 
 // Router builds an http.Handler wiring every route for the grant-service.
-// /healthz is served without tenant enforcement; /v1/* sits behind tenantx.Middleware.
+//
+//   - /healthz is served without tenant enforcement.
+//   - /v1/* sits behind tenantx.Middleware (kept open for phase-1 back-compat).
+//   - /internal/v1/* aliases the ENTIRE /v1 route tree (same handlers, same
+//     store) additionally wrapped in httpx.InternalAuth — the
+//     service-to-service entry point (ARCHITECTURE.md §10.3). It admits
+//     verified mTLS peers or callers presenting the X-Internal-Auth shared
+//     secret; with neither configured it is open (local dev). broker-service
+//     calls POST /internal/v1/grants,
+//     POST /internal/v1/installs/{id}/revoke-grants, and
+//     POST /internal/v1/revoke.
+//
 // The whole tree is wrapped in Recover + Logging.
 func (h *Handlers) Router() http.Handler {
 	mux := http.NewServeMux()
@@ -46,11 +57,17 @@ func (h *Handlers) Router() http.Handler {
 	v1.HandleFunc("GET /v1/grants/{id}", h.GetGrant)
 	v1.HandleFunc("POST /v1/grants/{id}/revoke", h.RevokeGrant)
 	v1.HandleFunc("POST /v1/installs/{install_id}/revoke-grants", h.RevokeGrantsForInstall)
+	v1.HandleFunc("POST /v1/revoke", h.RevokeByToken)
 	v1.HandleFunc("POST /v1/introspect", h.Introspect)
 	v1.HandleFunc("POST /v1/audit", h.AppendAudit)
 	v1.HandleFunc("GET /v1/audit", h.QueryAudit)
 
-	mux.Handle("/v1/", tenantx.Middleware(v1))
+	tenanted := tenantx.Middleware(v1)
+	mux.Handle("/v1/", tenanted)
+
+	// Alias: /internal/v1/... → InternalAuth → strip "/internal" → the same
+	// tenant-scoped v1 mux. One registration, zero handler duplication.
+	mux.Handle("/internal/v1/", httpx.InternalAuth(h.Logger)(http.StripPrefix("/internal", tenanted)))
 
 	return httpx.Recover(h.Logger)(httpx.Logging(h.Logger)(mux))
 }
@@ -229,6 +246,78 @@ func (h *Handlers) RevokeGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// RevokeByToken handles POST /v1/revoke — revocation by token value (RFC 7009
+// shape), the path broker-service forwards its public /revoke endpoint to
+// (clients.go RevokeToken → POST {GRANT_SERVICE_URL}/v1/revoke). The plaintext
+// access token is hashed (SHA-256) and resolved to a grant; if the grant
+// belongs to the calling tenant it is revoked.
+//
+// Per RFC 7009 §2.2 the endpoint answers 200 whether the token was revoked,
+// already revoked, or never existed — an unknown (or other-tenant) token must
+// not be distinguishable from a revoked one. Refresh tokens are not resolvable
+// in phase 2 (no refresh-hash index) and fall into the same silent-200 path.
+func (h *Handlers) RevokeByToken(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
+
+	var req RevokeTokenRequest
+	if err := httpx.ReadJSON(r, &req); err != nil {
+		if errors.Is(err, io.EOF) {
+			httpx.WriteError(w, http.StatusBadRequest, "empty_body", "request body required")
+			return
+		}
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		// RFC 7009 inherits RFC 6749 error handling: a missing token parameter
+		// is invalid_request, unlike an unknown token (which is a silent 200).
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+
+	ok200 := func() { httpx.WriteJSON(w, http.StatusOK, struct{}{}) }
+
+	g, err := h.Grants.FindByAccessTokenHash(HashToken(token))
+	if err != nil || g.TenantID != tenantID {
+		// Unknown token, or a token issued to another tenant: same silent 200.
+		ok200()
+		return
+	}
+
+	now := h.Now()
+	updated, alreadyRevoked, err := h.Grants.Revoke(tenantID, g.ID, now)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Race with a concurrent revoke/cleanup — still a successful no-op.
+			ok200()
+			return
+		}
+		h.Logger.Error("token_revoke_failed", "err", err, "tenant_id", tenantID, "grant_id", g.ID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to revoke token")
+		return
+	}
+	if !alreadyRevoked {
+		if _, auditErr := h.Audit.Append(AuditEvent{
+			ID:        uuid.NewString(),
+			TenantID:  tenantID,
+			Type:      "grant_revoked",
+			Actor:     "system",
+			InstallID: updated.InstallID,
+			GrantID:   updated.ID,
+			Payload:   map[string]any{"cause": "token_revocation"},
+			CreatedAt: now,
+		}); auditErr != nil {
+			h.Logger.Error("token_revoke_audit_failed", "err", auditErr, "grant_id", updated.ID)
+		}
+	}
+	ok200()
 }
 
 // RevokeGrantsForInstall handles POST /v1/installs/{install_id}/revoke-grants.

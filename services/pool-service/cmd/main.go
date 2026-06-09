@@ -13,6 +13,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/pool-service/internal"
 )
 
@@ -46,8 +47,17 @@ func main() {
 	// Wrap the service handler with shared middleware (recover + structured logging).
 	handler := httpx.Recover(logger)(httpx.Logging(logger)(srv.Handler()))
 
+	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
+	// TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE env vars. A nil config
+	// means plaintext local dev; a partial config is fatal.
+	tlsConf, err := tlsx.ServerConfig(logger)
+	if err != nil {
+		logger.Error("tls_config_failed", "err", err)
+		os.Exit(1)
+	}
+
 	addr := config.Addr(8181)
-	if err := httpx.Run(ctx, logger, addr, handler); err != nil {
+	if err := httpx.RunTLS(ctx, logger, addr, handler, tlsConf); err != nil {
 		logger.Error("server_failed", "err", err)
 		os.Exit(1)
 	}

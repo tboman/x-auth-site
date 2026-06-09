@@ -42,6 +42,11 @@ func NewHandlers(store Storage, logger *slog.Logger) *Handlers {
 //   - /healthz is unauthenticated.
 //   - /v1/* sits behind tenantx.Middleware so every evaluation / policy
 //     operation is tenant-scoped.
+//   - /internal/v1/* is the same route tree (same handlers) additionally
+//     wrapped in httpx.InternalAuth — the service-to-service entry point
+//     (ARCHITECTURE.md §10.3). It accepts verified mTLS peers or the
+//     X-Internal-Auth shared secret; with neither configured it is open
+//     (local dev). /v1/* stays as-is for back-compat with phase-1 callers.
 //
 // The whole tree is wrapped in Recover + Logging so every request is logged
 // and handler panics turn into 500 instead of crashing the process.
@@ -60,6 +65,11 @@ func (h *Handlers) Router() http.Handler {
 	v1.HandleFunc("DELETE /v1/policies/{id}", h.DeletePolicy)
 
 	mux.Handle("/v1/", tenantx.Middleware(v1))
+
+	// Alias: /internal/v1/... → InternalAuth → strip "/internal" → the same
+	// tenant-scoped v1 mux. One registration, zero handler duplication.
+	mux.Handle("/internal/v1/",
+		httpx.InternalAuth(h.Logger)(http.StripPrefix("/internal", tenantx.Middleware(v1))))
 
 	return httpx.Recover(h.Logger)(httpx.Logging(h.Logger)(mux))
 }

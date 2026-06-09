@@ -50,7 +50,10 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 - Real MCP protocol handling
 - ~~Persistent storage~~ — landed: Postgres-backed `PGStorage` (see **Storage** above)
 - Initial-access-token-gated DCR
-- Service-to-service mTLS / JWT
+- ~~Service-to-service mTLS / JWT~~ — landed: TLS/mTLS on the public listener via
+  `tlsx.ServerConfig`, client TLS on downstream calls via `tlsx.Transport`, and
+  `X-Internal-Auth` shared-secret header on every outbound request (see
+  **Transport security** below)
 - Scope intersection per OAuth semantics
 
 ## Endpoints
@@ -122,8 +125,8 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
   phase 2.
 - **`grant-service` revoke-by-install**: REQUIREMENTS.md §4 only lists
   `POST /v1/grants/{id}/revoke`. broker-service calls a convention endpoint
-  `POST /v1/installs/{install_id}/revoke-grants` on grant-service. Confirmed with
-  the parallel grant-service implementer; update `internal/clients.go:RevokeGrantsForInstall`
+  `POST /internal/v1/installs/{install_id}/revoke-grants` on grant-service. Confirmed
+  with the parallel grant-service implementer; update `internal/clients.go:RevokeGrantsForInstall`
   if the contract changes.
 
 ## Orchestration flow (`/authorize` → `/token`)
@@ -136,10 +139,10 @@ GET /authorize?...&persona_id=P&pool_id=PL&tenant_id=T
 POST /token with code=<uuid>
   1. consume code (one-shot)
   2. create pending Install
-  3. GET  persona-service /v1/personas/P        → Persona (scopes, ttl)
-  4. POST pool-service    /v1/pools/PL/claim    → Identity
+  3. GET  persona-service /internal/v1/personas/P     → Persona (scopes, ttl)
+  4. POST pool-service    /internal/v1/pools/PL/claim → Identity
   5. mint RS256 JWT access token + opaque refresh token
-  6. POST grant-service   /v1/grants             → Grant (SHA-256 token hashes)
+  6. POST grant-service   /internal/v1/grants          → Grant (SHA-256 token hashes)
      └─ on failure: release identity, revoke install, return 502
   7. mark Install active with identity_id
   → 200 { access_token, refresh_token, token_type, expires_in, scope }
@@ -164,6 +167,30 @@ mark install revoked) and the client receives 502 with `error: downstream_error`
 | `PG_DSN_BROKER_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `BROKER_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate the public listener presents; also presented as the client certificate on downstream calls. Must be set together with `TLS_KEY_FILE`; setting only one is a startup error. Both unset -> plaintext (local dev). |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set, client certificates are **required and verified** on the public listener (mTLS). Requires the cert/key pair above. |
+| `TLS_CA_FILE` | _(unset)_ | CA bundle used to verify persona/pool/grant-service certificates when dialing out. Unset -> system roots (or plaintext if downstreams serve plaintext). |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret sent as `X-Internal-Auth` on every downstream call when mTLS is not in play; must match the sister services' value. Unset -> header omitted (dev). |
+
+## Transport security (ARCHITECTURE.md §10.3)
+
+broker-service is on both sides of the trust boundary: it is the **public MCP
+broker** (TLS server) and a **caller** of the three internal sister services
+(TLS client).
+
+- **Listener** — `tlsx.ServerConfig` builds TLS from `TLS_CERT_FILE` /
+  `TLS_KEY_FILE` (plus optional `TLS_CLIENT_CA_FILE` for mTLS) and the server
+  starts via `httpx.RunTLS`. No TLS vars -> plaintext local dev; a partial pair
+  is a startup error, never a silent plaintext fallback.
+- **Downstream calls** — the shared `http.Client` uses `tlsx.Transport`
+  (`TLS_CA_FILE` verifies the callee, the cert/key pair is presented for the
+  callee's mTLS check), and every request carries `X-Internal-Auth` when
+  `INTERNAL_AUTH_SECRET` is set. All persona/pool/grant calls target the
+  sister services' guarded `/internal/v1/` trees:
+  `GET /internal/v1/personas/{id}`, `POST /internal/v1/pools/{id}/claim`,
+  `POST /internal/v1/identities/{id}/release`, `POST /internal/v1/grants`,
+  `POST /internal/v1/installs/{id}/revoke-grants`, `POST /internal/v1/revoke`.
 
 ## Local run
 

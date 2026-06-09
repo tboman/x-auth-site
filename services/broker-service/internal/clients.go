@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -116,9 +117,11 @@ type HTTPClients struct {
 
 // NewHTTPClients constructs the inter-service clients with a shared http.Client
 // using defaultClientTimeout. A single http.Client is safe for concurrent use.
-func NewHTTPClients(personaURL, poolURL, grantURL string) *HTTPClients {
+// transport carries the ARCHITECTURE.md §10.3 client TLS settings (from
+// tlsx.Transport); nil falls back to http.DefaultTransport (plaintext dev).
+func NewHTTPClients(transport http.RoundTripper, personaURL, poolURL, grantURL string) *HTTPClients {
 	return &HTTPClients{
-		HTTP:       &http.Client{Timeout: defaultClientTimeout},
+		HTTP:       &http.Client{Timeout: defaultClientTimeout, Transport: transport},
 		PersonaURL: personaURL,
 		PoolURL:    poolURL,
 		GrantURL:   grantURL,
@@ -154,6 +157,9 @@ func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID str
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	// Service-to-service auth (ARCHITECTURE.md §10.3): X-Internal-Auth from
+	// INTERNAL_AUTH_SECRET when configured; redundant but harmless under mTLS.
+	httpx.SetInternalAuth(req)
 	if tenantID != "" {
 		req.Header.Set(tenantx.Header, tenantID)
 	}
@@ -176,30 +182,31 @@ func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID str
 	return nil
 }
 
-// GetPersona calls GET {PERSONA_SERVICE_URL}/v1/personas/{id}.
+// GetPersona calls GET {PERSONA_SERVICE_URL}/internal/v1/personas/{id} — the
+// service-to-service tree guarded by httpx.InternalAuth (mTLS or shared secret).
 // The REQUIREMENTS doc says "POST /v1/personas/{id}" for fetch in the broker orchestration
 // section, but REQUIREMENTS.md §4 defines this endpoint as a GET. The GET is semantically
 // correct and matches what persona-service actually implements.
 func (c *HTTPClients) GetPersona(ctx context.Context, tenantID, personaID string) (Persona, error) {
 	var p Persona
-	url := fmt.Sprintf("%s/v1/personas/%s", c.PersonaURL, personaID)
+	url := fmt.Sprintf("%s/internal/v1/personas/%s", c.PersonaURL, personaID)
 	if err := c.do(ctx, "persona-service", http.MethodGet, url, tenantID, nil, &p); err != nil {
 		return Persona{}, err
 	}
 	return p, nil
 }
 
-// claimRequest is the body for pool-service POST /v1/pools/{id}/claim.
+// claimRequest is the body for pool-service POST /internal/v1/pools/{id}/claim.
 type claimRequest struct {
 	PersonaID string `json:"persona_id"`
 	InstallID string `json:"install_id"`
 }
 
-// ClaimIdentity calls POST {POOL_SERVICE_URL}/v1/pools/{pool_id}/claim.
+// ClaimIdentity calls POST {POOL_SERVICE_URL}/internal/v1/pools/{pool_id}/claim.
 // pool-service returns the claimed Identity on success.
 func (c *HTTPClients) ClaimIdentity(ctx context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
 	var id Identity
-	url := fmt.Sprintf("%s/v1/pools/%s/claim", c.PoolURL, poolID)
+	url := fmt.Sprintf("%s/internal/v1/pools/%s/claim", c.PoolURL, poolID)
 	body := claimRequest{PersonaID: personaID, InstallID: installID}
 	if err := c.do(ctx, "pool-service", http.MethodPost, url, tenantID, body, &id); err != nil {
 		return Identity{}, err
@@ -207,17 +214,17 @@ func (c *HTTPClients) ClaimIdentity(ctx context.Context, tenantID, poolID, perso
 	return id, nil
 }
 
-// ReleaseIdentity calls POST {POOL_SERVICE_URL}/v1/identities/{id}/release.
+// ReleaseIdentity calls POST {POOL_SERVICE_URL}/internal/v1/identities/{id}/release.
 // Used by revoke and by compensation when a downstream call fails mid-orchestration.
 func (c *HTTPClients) ReleaseIdentity(ctx context.Context, tenantID, identityID string) error {
-	url := fmt.Sprintf("%s/v1/identities/%s/release", c.PoolURL, identityID)
+	url := fmt.Sprintf("%s/internal/v1/identities/%s/release", c.PoolURL, identityID)
 	return c.do(ctx, "pool-service", http.MethodPost, url, tenantID, nil, nil)
 }
 
-// CreateGrant calls POST {GRANT_SERVICE_URL}/v1/grants.
+// CreateGrant calls POST {GRANT_SERVICE_URL}/internal/v1/grants.
 func (c *HTTPClients) CreateGrant(ctx context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
 	var g Grant
-	url := fmt.Sprintf("%s/v1/grants", c.GrantURL)
+	url := fmt.Sprintf("%s/internal/v1/grants", c.GrantURL)
 	if err := c.do(ctx, "grant-service", http.MethodPost, url, tenantID, req, &g); err != nil {
 		return Grant{}, err
 	}
@@ -227,10 +234,10 @@ func (c *HTTPClients) CreateGrant(ctx context.Context, tenantID string, req Gran
 // RevokeGrantsForInstall asks grant-service to revoke every grant bound to installID.
 // grant-service exposes POST /v1/grants/{id}/revoke per REQUIREMENTS.md §4 but does not
 // list a bulk-by-install endpoint; phase 1 sends a POST to a convention path
-// /v1/installs/{install_id}/revoke-grants. grant-service is being implemented in
+// /internal/v1/installs/{install_id}/revoke-grants. grant-service is being implemented in
 // parallel — the agreed contract is documented here so grant-service can match it.
 func (c *HTTPClients) RevokeGrantsForInstall(ctx context.Context, tenantID, installID string) error {
-	url := fmt.Sprintf("%s/v1/installs/%s/revoke-grants", c.GrantURL, installID)
+	url := fmt.Sprintf("%s/internal/v1/installs/%s/revoke-grants", c.GrantURL, installID)
 	return c.do(ctx, "grant-service", http.MethodPost, url, tenantID, nil, nil)
 }
 
@@ -238,7 +245,7 @@ func (c *HTTPClients) RevokeGrantsForInstall(ctx context.Context, tenantID, inst
 // responsible for flipping the grant row; broker-service keeps its local token
 // cache in sync.
 func (c *HTTPClients) RevokeToken(ctx context.Context, tenantID, token string) error {
-	url := fmt.Sprintf("%s/v1/revoke", c.GrantURL)
+	url := fmt.Sprintf("%s/internal/v1/revoke", c.GrantURL)
 	body := map[string]string{"token": token}
 	return c.do(ctx, "grant-service", http.MethodPost, url, tenantID, body, nil)
 }

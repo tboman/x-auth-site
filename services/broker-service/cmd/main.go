@@ -21,6 +21,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/broker-service/internal"
 )
 
@@ -49,7 +50,16 @@ func main() {
 	jwtIssuer := config.Env("JWT_ISSUER", issuer)
 	verifier := jwtx.NewVerifier(jwtIssuer, &signingKey.PublicKey)
 
-	clients := internal.NewHTTPClients(personaURL, poolURL, grantURL)
+	// Downstream transport (ARCHITECTURE.md §10.3): TLS_CA_FILE verifies the
+	// sister services, TLS_CERT_FILE/TLS_KEY_FILE is presented as the client
+	// certificate for their mTLS check. Unconfigured → http.DefaultTransport
+	// (plaintext local dev); a partial configuration is fatal.
+	transport, err := tlsx.Transport(logger)
+	if err != nil {
+		logger.Error("tls_client_config_failed", "err", err)
+		os.Exit(1)
+	}
+	clients := internal.NewHTTPClients(transport, personaURL, poolURL, grantURL)
 
 	// Resolve storage. Postgres is the phase-2 default; the in-memory fallback is
 	// preserved so the service still boots during local dev or CI without a DB —
@@ -89,8 +99,18 @@ func main() {
 		DefaultTTL: internal.DefaultTokenTTLSeconds,
 	})
 
+	// Transport security for the public listener (ARCHITECTURE.md §10.3): TLS
+	// from TLS_CERT_FILE / TLS_KEY_FILE, optional client-cert verification via
+	// TLS_CLIENT_CA_FILE. nil config = plaintext local dev; a partial
+	// configuration is fatal rather than a silent plaintext fallback.
+	tlsConf, err := tlsx.ServerConfig(logger)
+	if err != nil {
+		logger.Error("tls_config_failed", "err", err)
+		os.Exit(1)
+	}
+
 	addr := config.Addr(8182)
-	if err := httpx.Run(ctx, logger, addr, handler); err != nil {
+	if err := httpx.RunTLS(ctx, logger, addr, handler, tlsConf); err != nil {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
 	}

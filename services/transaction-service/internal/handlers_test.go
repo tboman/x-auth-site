@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -95,6 +96,18 @@ func newServer(t *testing.T, risk RiskClient, auth AuthenticationClient, authr A
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
 	return NewHandlers(store, logger, risk, auth, authr).Router(), store
+}
+
+// newTestClients builds the real HTTPClients pointed at a fake downstream URL
+// (used for all three sister services), failing the test on a transport error.
+func newTestClients(t *testing.T, baseURL string) *HTTPClients {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	clients, err := NewHTTPClients(logger, baseURL, baseURL, baseURL)
+	if err != nil {
+		t.Fatalf("NewHTTPClients: %v", err)
+	}
+	return clients
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path, tenant string, body any) *httptest.ResponseRecorder {
@@ -666,7 +679,7 @@ func TestListTransactionsPagination(t *testing.T) {
 // are readable back via GET /v1/transactions/{id}.
 func TestAdviceMatchedPoliciesFlowEndToEnd(t *testing.T) {
 	riskSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/evaluations" {
+		if r.URL.Path != "/internal/v1/evaluations" {
 			http.NotFound(w, r)
 			return
 		}
@@ -696,7 +709,7 @@ func TestAdviceMatchedPoliciesFlowEndToEnd(t *testing.T) {
 	}))
 	defer riskSrv.Close()
 
-	clients := NewHTTPClients(riskSrv.URL, riskSrv.URL, riskSrv.URL)
+	clients := newTestClients(t, riskSrv.URL)
 	h, store := newServer(t, clients, clients, clients)
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
@@ -737,6 +750,70 @@ func TestAdviceMatchedPoliciesFlowEndToEnd(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &txn)
 	if txn.PolicyID != "pol_first" {
 		t.Fatalf("GET /v1/transactions/{id} policy_id=%q, want pol_first", txn.PolicyID)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Service-to-service auth (ARCHITECTURE.md §10.3)
+// -----------------------------------------------------------------------------
+
+// TestOutboundCallsCarryInternalAuthHeader asserts that with
+// INTERNAL_AUTH_SECRET configured, every outbound call from the real
+// HTTPClients targets the /internal/v1 tree and carries the X-Internal-Auth
+// header — the non-mTLS fallback the callee's httpx.InternalAuth middleware
+// verifies.
+func TestOutboundCallsCarryInternalAuthHeader(t *testing.T) {
+	const secret = "txn-test-secret"
+	t.Setenv(httpx.EnvInternalAuthSecret, secret)
+
+	var mu sync.Mutex
+	seen := map[string]string{} // path -> X-Internal-Auth header value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Get(httpx.InternalAuthHeader)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+
+	clients := newTestClients(t, srv.URL)
+	ctx := context.Background()
+
+	if _, err := clients.Evaluate(ctx, testTenant, RiskEvaluateRequest{UserID: "u", Action: "a"}); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if _, err := clients.CreateChallenge(ctx, testTenant, ChallengeCreateRequest{UserID: "u"}); err != nil {
+		t.Fatalf("CreateChallenge: %v", err)
+	}
+	if _, err := clients.VerifyChallenge(ctx, testTenant, "ch_1", "otp", nil); err != nil {
+		t.Fatalf("VerifyChallenge: %v", err)
+	}
+	if _, err := clients.GetSession(ctx, testTenant, "ses_1"); err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if _, err := clients.UpdateSession(ctx, testTenant, "ses_1", SessionUpdateRequest{RiskLevel: TierLow}); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+
+	wantPaths := []string{
+		"/internal/v1/evaluations",
+		"/internal/v1/challenges",
+		"/internal/v1/challenges/ch_1/verify",
+		"/internal/v1/sessions/ses_1",
+		"/internal/v1/sessions/ses_1/upgrade",
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range wantPaths {
+		got, ok := seen[p]
+		if !ok {
+			t.Errorf("downstream never saw %s; saw %v", p, seen)
+			continue
+		}
+		if got != secret {
+			t.Errorf("%s: %s header = %q, want %q", p, httpx.InternalAuthHeader, got, secret)
+		}
 	}
 }
 
@@ -782,7 +859,7 @@ func TestEvaluateUnblocksOnContextCancel(t *testing.T) {
 	defer srv.Close()
 	defer close(done) // runs before srv.Close (LIFO), releasing the handler
 
-	clients := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	clients := newTestClients(t, srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(30 * time.Millisecond)
@@ -827,7 +904,7 @@ func TestAdviceCallerDisconnectCancelsDownstream(t *testing.T) {
 	defer srv.Close()
 	defer close(done)
 
-	clients := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	clients := newTestClients(t, srv.URL)
 	h, _ := newServer(t, clients, clients, clients)
 
 	ctx, cancel := context.WithCancel(context.Background())

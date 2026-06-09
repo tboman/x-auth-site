@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 )
 
 // defaultClientTimeout is the per-request budget for outgoing calls to
@@ -72,11 +75,22 @@ type HTTPAuthenticatorClient struct {
 // NewHTTPAuthenticatorClient constructs a client with a shared http.Client and
 // the configured defaultClientTimeout. The single http.Client is safe for
 // concurrent use across all goroutines.
-func NewHTTPAuthenticatorClient(baseURL string) *HTTPAuthenticatorClient {
-	return &HTTPAuthenticatorClient{
-		HTTP:    &http.Client{Timeout: defaultClientTimeout},
-		BaseURL: baseURL,
+//
+// Transport security (ARCHITECTURE.md §10.3): the client transport comes from
+// tlsx.Transport — http.DefaultTransport in plaintext local dev, or a clone
+// carrying the TLS_CA_FILE / TLS_CERT_FILE / TLS_KEY_FILE client configuration
+// so calls to authenticator-service run over (m)TLS. A partial TLS
+// configuration is an error; the caller must exit rather than silently fall
+// back to plaintext.
+func NewHTTPAuthenticatorClient(logger *slog.Logger, baseURL string) (*HTTPAuthenticatorClient, error) {
+	transport, err := tlsx.Transport(logger)
+	if err != nil {
+		return nil, err
 	}
+	return &HTTPAuthenticatorClient{
+		HTTP:    &http.Client{Timeout: defaultClientTimeout, Transport: transport},
+		BaseURL: baseURL,
+	}, nil
 }
 
 // do is the shared request helper. Marshals body (if any), sets Content-Type,
@@ -111,6 +125,11 @@ func (c *HTTPAuthenticatorClient) do(ctx context.Context, method, url, tenantID 
 	if tenantID != "" {
 		req.Header.Set(tenantx.Header, tenantID)
 	}
+	// Service-to-service auth: outbound calls target authenticator-service's
+	// /internal/v1 tree, which is guarded by httpx.InternalAuth. Under full
+	// mTLS the header is redundant but harmless; with INTERNAL_AUTH_SECRET
+	// unset this is a no-op (plaintext local dev).
+	httpx.SetInternalAuth(req)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

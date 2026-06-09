@@ -48,6 +48,12 @@ type IntrospectRequest struct {
 	Token string `json:"token"`
 }
 
+// RevokeTokenRequest is the body of POST /v1/revoke (RFC 7009 shape, as
+// forwarded by broker-service's public /revoke endpoint).
+type RevokeTokenRequest struct {
+	Token string `json:"token"`
+}
+
 // IntrospectResponse is the RFC 7662 response shape. Only `active` is present when the
 // token is unknown, expired, or revoked; the tenant-scoped fields are populated only on
 // active tokens.

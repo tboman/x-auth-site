@@ -28,6 +28,14 @@ func NewHandlers(store Storage, logger *slog.Logger) *Handlers {
 
 // Router builds an http.Handler wiring every route for the persona-service.
 // /healthz is served without tenant enforcement; /v1/* sits behind tenantx.Middleware.
+//
+// The same route tree is aliased under /internal/v1/ for service-to-service
+// callers (ARCHITECTURE.md §10.3) — e.g. broker-service's
+// GET /internal/v1/personas/{id} — guarded by httpx.InternalAuth (verified
+// mTLS peer certificate or the INTERNAL_AUTH_SECRET shared-secret header;
+// open when neither is configured, the local-dev mode). /v1/* remains
+// reachable for back-compat during the transition.
+//
 // The whole tree is wrapped in Recover + Logging so every request (including /healthz)
 // is logged and any panic returns 500 instead of crashing the process.
 func (h *Handlers) Router() http.Handler {
@@ -41,7 +49,11 @@ func (h *Handlers) Router() http.Handler {
 	v1.HandleFunc("PATCH /v1/personas/{id}", h.Update)
 	v1.HandleFunc("DELETE /v1/personas/{id}", h.Delete)
 
-	mux.Handle("/v1/", tenantx.Middleware(v1))
+	public := tenantx.Middleware(v1)
+	mux.Handle("/v1/", public)
+	// Strip the /internal prefix so the one v1 mux serves both trees with
+	// identical handlers and path values.
+	mux.Handle("/internal/v1/", httpx.InternalAuth(h.Logger)(http.StripPrefix("/internal", public)))
 
 	return httpx.Recover(h.Logger)(httpx.Logging(h.Logger)(mux))
 }

@@ -41,7 +41,7 @@ storage layer: a transaction created under tenant A is invisible (404) to tenant
 1. Validate input. `user_id`, `action`, and `context.ip_address` are required.
 2. Mint a `txn_*` UUID and persist a `pending` transaction up-front so we have a paper
    trail even if step 3 fails.
-3. Call `POST {RISK_SERVICE_URL}/internal/v1/evaluate`.
+3. Call `POST {RISK_SERVICE_URL}/internal/v1/evaluations`.
 4. Tier decides what happens next:
    - `low`    -> `allow`, no step-up.
    - `medium` -> create challenge with methods `["otp", "magic_link"]`, return
@@ -54,7 +54,7 @@ storage layer: a transaction created under tenant A is invisible (404) to tenant
 1. Load the transaction (must be in `step_up_required` and match `challenge_id`).
 2. Call `POST {AUTHENTICATOR_SERVICE_URL}/internal/v1/challenges/{id}/verify`.
 3. If verified and the request carried `session_id`, upgrade the session via
-   `PATCH {AUTHENTICATION_SERVICE_URL}/internal/v1/sessions/{id}`.
+   `POST {AUTHENTICATION_SERVICE_URL}/internal/v1/sessions/{id}/upgrade`.
 4. Persist `decision: step_up_satisfied` and return `decision: allow` to the caller.
 
 A soft verification failure (HTTP 200 with `verified: false`) returns 401 and leaves the
@@ -126,6 +126,19 @@ transaction is still persisted with `decision: "error"` so the caller can audit.
 | `PG_DSN_TRANSACTION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `TXN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate this service presents — as server on the public listener and as client certificate when dialing sister services (mTLS). Requires `TLS_KEY_FILE`. |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. Both unset -> plaintext local dev; exactly one set is fatal. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set the public listener requires and verifies client certificates (mTLS). |
+| `TLS_CA_FILE` | _(unset)_ | CA bundle used to verify sister services on outbound calls. |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret sent as `X-Internal-Auth` on every outbound downstream call — the non-mTLS fallback the callees' `/internal/v1` trees verify. |
+
+All downstream calls target the sister services' **`/internal/v1`** trees
+(ARCHITECTURE.md §10.3) — `POST /internal/v1/evaluations` (risk),
+`POST /internal/v1/challenges` and `POST /internal/v1/challenges/{id}/verify`
+(authenticator), `GET /internal/v1/sessions/{id}` and
+`POST /internal/v1/sessions/{id}/upgrade` (authentication). Those routes are
+guarded by internal auth on the callee side: a verified mTLS client
+certificate, or the `X-Internal-Auth` shared secret.
 
 ## Run locally
 

@@ -32,6 +32,27 @@ storage layer: a persona created under tenant A is invisible (404) to tenant B.
 | PATCH | `/v1/personas/{id}` | 200, 400, 404 |
 | DELETE | `/v1/personas/{id}` | 204, 400, 404 |
 
+### Internal tree (`/internal/v1/`)
+
+The entire `/v1` route tree is also mounted under `/internal/v1/` (same handlers, same
+status codes — e.g. `GET /internal/v1/personas/{id}`, the call broker-service makes when
+resolving an install's persona). This is the service-to-service surface reintroduced per
+ARCHITECTURE.md §10.3 and is guarded by `httpx.InternalAuth`: a request is accepted when
+it arrives over mTLS with a verified client certificate, **or** when `INTERNAL_AUTH_SECRET`
+is set and the request carries a matching `X-Internal-Auth` header. With neither
+configured the tree is open (local-dev mode) and a warning is logged at startup.
+Unauthenticated requests once a mechanism is configured get a structured
+`401 internal_auth_required`.
+
+`/v1/*` remains reachable for back-compat during the transition; new service-to-service
+callers should use `/internal/v1/*` only.
+
+```bash
+curl -s http://localhost:8180/internal/v1/personas/$ID \
+  -H 'X-Tenant-Id: tenant-a' \
+  -H "X-Internal-Auth: $INTERNAL_AUTH_SECRET"
+```
+
 ### List pagination
 
 `GET /v1/personas` returns personas newest-first (`created_at` DESC, `id` DESC as
@@ -83,6 +104,10 @@ curl -s 'http://localhost:8180/v1/personas?limit=2&cursor=2026-04-20T12:00:00.12
 | `PG_DSN_PERSONA_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `PERSONA_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate the server presents. Must be set together with `TLS_KEY_FILE`; setting only one is a startup error. Both unset -> plaintext (local dev). |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set, client certificates are **required and verified** (mTLS). Requires the cert/key pair above. |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for `/internal/v1/*` when mTLS is not in play; callers send it in `X-Internal-Auth`. Unset and no mTLS -> internal tree is open (dev). |
 
 ## Run locally
 

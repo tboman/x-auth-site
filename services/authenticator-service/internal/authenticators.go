@@ -78,13 +78,23 @@ func (h *AuthenticatorHandlers) List(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "user_id query param is required")
 		return
 	}
+	// The service-to-service contract (ARCHITECTURE.md §4.4) carries tenant_id
+	// in the query string as well as the X-Tenant-Id header (which
+	// authentication-service's client always forwards). The header — already
+	// validated by tenantx.Middleware — stays authoritative; the query param is
+	// accepted and cross-checked so a caller can't read tenant A's rows while
+	// claiming tenant B in the URL.
+	if qt := strings.TrimSpace(r.URL.Query().Get("tenant_id")); qt != "" && qt != tenantID {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant_id query param does not match X-Tenant-Id header")
+		return
+	}
 	items, err := h.store.ListAuthenticators(tenantID, userID)
 	if err != nil {
 		h.log.Error("authenticator_list_failed", "err", err, "user_id", userID, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to list authenticators")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, ListResponse{Items: items})
+	httpx.WriteJSON(w, http.StatusOK, ListResponse{Authenticators: items})
 }
 
 // Get handles GET /v1/authenticators/{id}.

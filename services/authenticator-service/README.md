@@ -30,7 +30,7 @@ and scoring (owned by risk-service); orchestration (transaction-service).
 
 | Port | Visibility | Notes |
 |---|---|---|
-| 8083 | internal only | `X-Tenant-Id` header required on every `/v1/*` call |
+| 8083 | internal only | `X-Tenant-Id` header required on every `/v1/*` and `/internal/v1/*` call |
 
 `/healthz` is the one route that skips the tenant gate.
 
@@ -40,12 +40,31 @@ and scoring (owned by risk-service); orchestration (transaction-service).
 |---|---|---|
 | GET | `/healthz` | `{"status":"ok"}` |
 | POST | `/v1/authenticators` | Enroll `{user_id, method, metadata?}` |
-| GET | `/v1/authenticators?user_id=` | List enrollments for a user (tenant-scoped) |
+| GET | `/v1/authenticators?user_id=` | List enrollments for a user (tenant-scoped); returns `{"authenticators":[...]}` (ARCHITECTURE.md §4.4) |
 | GET | `/v1/authenticators/{id}` | Read one |
 | DELETE | `/v1/authenticators/{id}` | Soft-delete (status → `disabled`) — idempotent |
 | POST | `/v1/challenges` | Create `{user_id, methods:[...]}` → dispatch |
 | GET | `/v1/challenges/{id}` | Read status + attempt counter |
 | POST | `/v1/challenges/{id}/verify` | Verify `{response:{...}}` |
+
+### `/internal/v1/*` — service-to-service tree (ARCHITECTURE.md §10.3)
+
+The entire `/v1` route table above is also mounted at `/internal/v1/*` — same
+handlers, same storage — behind the shared `httpx.InternalAuth` gate. A request
+is accepted when it arrives over mTLS with a verified client certificate, or
+when `INTERNAL_AUTH_SECRET` is set and the `X-Internal-Auth` header matches it.
+With neither configured the gate is open (local dev). The plain `/v1/*` prefix
+stays mounted, ungated, for back-compat.
+
+Known callers:
+
+- `transaction-service` — `POST /internal/v1/challenges`,
+  `POST /internal/v1/challenges/{id}/verify`
+- `authentication-service` — `GET /internal/v1/authenticators?user_id={id}&tenant_id={id}`
+
+On the authenticators list, `tenant_id` may be passed in the query string (the
+§4.4 URL shape); the `X-Tenant-Id` header remains authoritative and a
+conflicting `tenant_id` query param is rejected with `400`.
 
 ## Method selection
 
@@ -79,6 +98,10 @@ adapter` comment at the swap point.
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `PURGE_INTERVAL` | `5m` | Go duration; how often the background sweeper deletes expired challenges (pending past `expires_at`, plus lazily-flipped `expired` rows). Completed/failed challenges are kept as the step-up audit trail. Each sweep logs `purge_expired` with the row count. |
 | `AUTHENTICATOR_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate the server presents. Set together with `TLS_KEY_FILE` to serve TLS; both unset -> plaintext (dev). Setting only one is a fatal startup error. |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set (with the pair above) client certificates are required and verified — mTLS. A verified peer cert satisfies the `/internal/v1/*` gate. |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for `/internal/v1/*` when mTLS is not in play: callers send it in `X-Internal-Auth`. Unset and no mTLS -> internal routes are open (dev). |
 
 ## Run locally
 

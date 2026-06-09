@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
@@ -877,7 +878,7 @@ func TestClientContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	c := NewHTTPClients(nil, srv.URL, srv.URL, srv.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 
@@ -891,6 +892,66 @@ func TestClientContextCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected error to wrap context.Canceled, got %v", err)
+	}
+}
+
+// --- HTTPClients hit the /internal/v1 trees and carry X-Internal-Auth ---
+
+// TestClientInternalAuthAndPaths spins up one fake downstream standing in for all
+// three sister services and drives every HTTPClients method through it, asserting
+// (a) each call targets the service-to-service /internal/v1/ tree (ARCHITECTURE.md
+// §10.3) and (b) every outbound request carries the X-Internal-Auth shared secret
+// when INTERNAL_AUTH_SECRET is set.
+func TestClientInternalAuthAndPaths(t *testing.T) {
+	t.Setenv(httpx.EnvInternalAuthSecret, "test-internal-secret")
+
+	type seen struct {
+		method, path, auth string
+	}
+	var got []seen
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, seen{r.Method, r.URL.Path, r.Header.Get(httpx.InternalAuthHeader)})
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "x"})
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClients(nil, srv.URL, srv.URL, srv.URL)
+	ctx := context.Background()
+
+	if _, err := c.GetPersona(ctx, "t", "p1"); err != nil {
+		t.Fatalf("GetPersona: %v", err)
+	}
+	if _, err := c.ClaimIdentity(ctx, "t", "pl1", "p1", "ins1"); err != nil {
+		t.Fatalf("ClaimIdentity: %v", err)
+	}
+	if err := c.ReleaseIdentity(ctx, "t", "id1"); err != nil {
+		t.Fatalf("ReleaseIdentity: %v", err)
+	}
+	if _, err := c.CreateGrant(ctx, "t", GrantCreateRequest{InstallID: "ins1"}); err != nil {
+		t.Fatalf("CreateGrant: %v", err)
+	}
+	if err := c.RevokeGrantsForInstall(ctx, "t", "ins1"); err != nil {
+		t.Fatalf("RevokeGrantsForInstall: %v", err)
+	}
+	if err := c.RevokeToken(ctx, "t", "tok"); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+
+	want := []seen{
+		{http.MethodGet, "/internal/v1/personas/p1", "test-internal-secret"},
+		{http.MethodPost, "/internal/v1/pools/pl1/claim", "test-internal-secret"},
+		{http.MethodPost, "/internal/v1/identities/id1/release", "test-internal-secret"},
+		{http.MethodPost, "/internal/v1/grants", "test-internal-secret"},
+		{http.MethodPost, "/internal/v1/installs/ins1/revoke-grants", "test-internal-secret"},
+		{http.MethodPost, "/internal/v1/revoke", "test-internal-secret"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("downstream saw %d requests, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("call %d: got %+v, want %+v", i, got[i], w)
+		}
 	}
 }
 

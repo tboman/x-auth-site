@@ -41,6 +41,24 @@ the storage layer — an evaluation or policy written for tenant A is invisible
 | PATCH | `/v1/policies/{id}` | 200, 400, 404 |
 | DELETE | `/v1/policies/{id}` | 204, 400, 404 |
 
+### `/internal/v1/` — service-to-service tree
+
+The entire `/v1` route set above is also mounted under `/internal/v1/` (same
+handlers, same contracts — e.g. `POST /internal/v1/evaluations`, plus the full
+`/internal/v1/policies` CRUD). This is the canonical entry point for sister
+services (ARCHITECTURE.md §10.3), guarded by `httpx.InternalAuth`:
+
+1. **mTLS** — a request arriving with a verified client certificate (the
+   server's `TLS_CLIENT_CA_FILE` already validated the peer) is accepted.
+2. **Shared secret** — otherwise, if `INTERNAL_AUTH_SECRET` is set, the
+   request must carry a matching `X-Internal-Auth` header; mismatch or absence
+   yields a structured `401 internal_auth_required`.
+3. **Open (dev)** — with neither mechanism configured, `/internal/v1/*` is
+   open, mirroring the plaintext/in-memory local-dev fallbacks.
+
+`/v1/*` stays unguarded for phase-1 back-compat; new callers should use
+`/internal/v1/*`.
+
 `GET /v1/policies` is keyset-paginated (same contract as transaction-service's
 `GET /v1/transactions`):
 
@@ -142,6 +160,10 @@ Example policy:
 | `PG_DSN_RISK_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `RISK_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate the service presents. Must be set together with `TLS_KEY_FILE`; setting only one is a fatal startup error. Both unset -> plaintext (dev). |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle. When set (with the pair above) the server **requires and verifies client certificates** (mTLS); verified peers pass `/internal/v1/*` auth without a shared secret. |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for `/internal/v1/*` when mTLS is not in play. Callers send it as `X-Internal-Auth`; mismatch -> `401 internal_auth_required`. Unset (and no mTLS) -> internal routes are open (dev). |
 
 ## Run locally
 

@@ -243,11 +243,11 @@ func TestListReturnsOnlyOwnTenant(t *testing.T) {
 	resp := do(t, srv, http.MethodGet, "/v1/authenticators?user_id=u1", nil)
 	var list ListResponse
 	decode(t, resp, &list)
-	if len(list.Items) != 1 {
-		t.Fatalf("want 1 item scoped to tenant, got %d", len(list.Items))
+	if len(list.Authenticators) != 1 {
+		t.Fatalf("want 1 item scoped to tenant, got %d", len(list.Authenticators))
 	}
-	if list.Items[0].TenantID != testTenant {
-		t.Fatalf("cross-tenant leakage: %q", list.Items[0].TenantID)
+	if list.Authenticators[0].TenantID != testTenant {
+		t.Fatalf("cross-tenant leakage: %q", list.Authenticators[0].TenantID)
 	}
 }
 

@@ -35,6 +35,13 @@ type Deps struct {
 //     authorization code or the bearer token's claims)
 //   - /v1/social/{provider}/authorize|/callback — public social-login stub
 //   - /v1/users/*, /v1/sessions/* — tenant-scoped, behind tenantx.Middleware
+//   - /internal/v1/sessions/* — service-to-service alias of the session
+//     endpoints (same handlers), additionally wrapped in httpx.InternalAuth
+//     (ARCHITECTURE.md §10.3). transaction-service calls GET
+//     /internal/v1/sessions/{id} and POST /internal/v1/sessions/{id}/upgrade
+//     here. Verified mTLS peers or the X-Internal-Auth shared secret are
+//     accepted; with neither configured the tree is open (local dev). Only the
+//     session subtree is aliased — the OIDC/user surface stays public-only.
 //
 // The whole tree is wrapped in Recover + Logging so every request logs and
 // handler panics turn into 500 instead of crashing the process.
@@ -111,6 +118,15 @@ func Router(d Deps) http.Handler {
 	mux.Handle("/v1/users/", tenantx.Middleware(v1))
 	mux.Handle("/v1/sessions", tenantx.Middleware(v1))
 	mux.Handle("/v1/sessions/", tenantx.Middleware(v1))
+
+	// Internal alias: /internal/v1/sessions... → InternalAuth → strip
+	// "/internal" → the same tenant-scoped v1 mux. One registration, zero
+	// handler duplication. Mounted only on the session subtree so the user
+	// CRUD endpoints don't grow an internal alias they have no caller for.
+	internalSessions := httpx.InternalAuth(d.Logger)(
+		http.StripPrefix("/internal", tenantx.Middleware(v1)))
+	mux.Handle("/internal/v1/sessions", internalSessions)
+	mux.Handle("/internal/v1/sessions/", internalSessions)
 
 	return httpx.Recover(d.Logger)(httpx.Logging(d.Logger)(mux))
 }

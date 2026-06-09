@@ -15,6 +15,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/authenticator-service/internal"
 )
 
@@ -64,7 +65,17 @@ func main() {
 	registry := internal.NewRegistry(log)
 	handler := internal.Router(log, store, registry)
 
-	if err := httpx.Run(ctx, log, config.Addr(8083), handler); err != nil {
+	// Transport security (ARCHITECTURE.md §10.3): TLS_CERT_FILE/TLS_KEY_FILE
+	// enable TLS, TLS_CLIENT_CA_FILE additionally enforces mTLS. With none set
+	// the service serves plaintext (local dev). Partial config is fatal — never
+	// silently fall back to plaintext because one path was mistyped.
+	tlsConf, err := tlsx.ServerConfig(log)
+	if err != nil {
+		log.Error("tls_config_failed", "err", err)
+		os.Exit(1)
+	}
+
+	if err := httpx.RunTLS(ctx, log, config.Addr(8083), handler, tlsConf); err != nil {
 		log.Error("server_exit", "err", err)
 		os.Exit(1)
 	}

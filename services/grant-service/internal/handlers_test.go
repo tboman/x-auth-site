@@ -267,6 +267,108 @@ func TestGrantTenantIsolation(t *testing.T) {
 	}
 }
 
+func TestRevokeByTokenRoundTrip(t *testing.T) {
+	h := newServer(t).Router()
+	token := "tok-rfc7009"
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, map[string]any{
+		"install_id": "i", "identity_id": "id", "persona_id": "p",
+		"access_token_hash": HashToken(token),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create want 201, got %d", rec.Code)
+	}
+	var g Grant
+	_ = json.Unmarshal(rec.Body.Bytes(), &g)
+
+	// Revoke by token value.
+	rec = doJSON(t, h, http.MethodPost, "/v1/revoke", testTenant, map[string]any{"token": token})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Token is now inactive.
+	rec = doJSON(t, h, http.MethodPost, "/v1/introspect", testTenant, map[string]any{"token": token})
+	var intro IntrospectResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &intro)
+	if intro.Active {
+		t.Fatalf("expected inactive after token revocation, got %+v", intro)
+	}
+
+	// Grant row reflects revoked + a grant_revoked audit event was emitted.
+	rec = doJSON(t, h, http.MethodGet, "/v1/grants/"+g.ID, testTenant, nil)
+	var got Grant
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Status != StatusRevoked {
+		t.Fatalf("want revoked grant, got %+v", got)
+	}
+	rec = doJSON(t, h, http.MethodGet, "/v1/audit?type=grant_revoked&grant_id="+g.ID, testTenant, nil)
+	var list AuditListResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list.Items) != 1 {
+		t.Fatalf("want 1 grant_revoked audit event, got %d", len(list.Items))
+	}
+
+	// Idempotent: revoking again is still 200.
+	rec = doJSON(t, h, http.MethodPost, "/v1/revoke", testTenant, map[string]any{"token": token})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second revoke want 200, got %d", rec.Code)
+	}
+}
+
+func TestRevokeByTokenUnknownIsSilent200(t *testing.T) {
+	// RFC 7009: unknown token → 200, indistinguishable from a revoked one.
+	rec := doJSON(t, newServer(t).Router(), http.MethodPost, "/v1/revoke", testTenant,
+		map[string]any{"token": "never-issued"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+}
+
+func TestRevokeByTokenValidation(t *testing.T) {
+	h := newServer(t).Router()
+	// Missing token parameter (unlike unknown token) is invalid_request → 400.
+	rec := doJSON(t, h, http.MethodPost, "/v1/revoke", testTenant, map[string]any{"token": "  "})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("blank token: want 400, got %d", rec.Code)
+	}
+	// Missing tenant header → 400.
+	rec = doJSON(t, h, http.MethodPost, "/v1/revoke", "", map[string]any{"token": "t"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("no tenant: want 400, got %d", rec.Code)
+	}
+}
+
+func TestRevokeByTokenCrossTenantIsNoOp(t *testing.T) {
+	h := newServer(t).Router()
+	token := "tenant-a-token"
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/grants", "tenant-a", map[string]any{
+		"install_id": "i", "identity_id": "id", "persona_id": "p",
+		"access_token_hash": HashToken(token),
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create want 201, got %d", rec.Code)
+	}
+
+	// tenant-b "revoking" tenant-a's token: silent 200, nothing leaked …
+	rec = doJSON(t, h, http.MethodPost, "/v1/revoke", "tenant-b", map[string]any{"token": token})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cross-tenant revoke want 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "tenant-a") {
+		t.Fatalf("response leaks other tenant info: %s", rec.Body.String())
+	}
+
+	// … and tenant-a's grant is untouched.
+	rec = doJSON(t, h, http.MethodPost, "/v1/introspect", "tenant-a", map[string]any{"token": token})
+	var intro IntrospectResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &intro)
+	if !intro.Active {
+		t.Fatalf("cross-tenant revoke must not revoke the grant, got %+v", intro)
+	}
+}
+
 func TestRevokeUnknownGrant(t *testing.T) {
 	rec := doJSON(t, newServer(t).Router(), http.MethodPost, "/v1/grants/does-not-exist/revoke", testTenant, nil)
 	if rec.Code != http.StatusNotFound {

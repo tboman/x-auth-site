@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 )
 
 // defaultClientTimeout is the per-request timeout for all inter-service HTTP calls.
@@ -153,13 +156,23 @@ type HTTPClients struct {
 
 // NewHTTPClients constructs the inter-service clients with a shared http.Client using
 // defaultClientTimeout. A single http.Client is safe for concurrent use.
-func NewHTTPClients(riskURL, authenticationURL, authenticatorURL string) *HTTPClients {
+//
+// Transport security (ARCHITECTURE.md §10.3): the client transport comes from
+// tlsx.Transport — http.DefaultTransport in plaintext local dev, or a clone
+// carrying the TLS_CA_FILE / TLS_CERT_FILE / TLS_KEY_FILE client configuration
+// so calls to sister services run over (m)TLS. A partial TLS configuration is
+// an error; callers must exit rather than silently fall back to plaintext.
+func NewHTTPClients(logger *slog.Logger, riskURL, authenticationURL, authenticatorURL string) (*HTTPClients, error) {
+	transport, err := tlsx.Transport(logger)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPClients{
-		HTTP:              &http.Client{Timeout: defaultClientTimeout},
+		HTTP:              &http.Client{Timeout: defaultClientTimeout, Transport: transport},
 		RiskURL:           riskURL,
 		AuthenticationURL: authenticationURL,
 		AuthenticatorURL:  authenticatorURL,
-	}
+	}, nil
 }
 
 // do is the shared request helper: marshals body (if any), sets headers, forwards the
@@ -194,6 +207,11 @@ func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID str
 	if tenantID != "" {
 		req.Header.Set(tenantx.Header, tenantID)
 	}
+	// Service-to-service auth: every outbound call targets the callee's
+	// /internal/v1 tree, which is guarded by httpx.InternalAuth. Under full mTLS
+	// the header is redundant but harmless; with INTERNAL_AUTH_SECRET unset this
+	// is a no-op (plaintext local dev).
+	httpx.SetInternalAuth(req)
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -213,30 +231,30 @@ func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID str
 	return nil
 }
 
-// Evaluate calls POST {RISK_SERVICE_URL}/v1/evaluations.
+// Evaluate calls POST {RISK_SERVICE_URL}/internal/v1/evaluations.
 func (c *HTTPClients) Evaluate(ctx context.Context, tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error) {
 	var out RiskEvaluationResult
-	url := c.RiskURL + "/v1/evaluations"
+	url := c.RiskURL + "/internal/v1/evaluations"
 	if err := c.do(ctx, "risk-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return RiskEvaluationResult{}, err
 	}
 	return out, nil
 }
 
-// CreateChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/v1/challenges.
+// CreateChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/internal/v1/challenges.
 func (c *HTTPClients) CreateChallenge(ctx context.Context, tenantID string, req ChallengeCreateRequest) (Challenge, error) {
 	var out Challenge
-	url := c.AuthenticatorURL + "/v1/challenges"
+	url := c.AuthenticatorURL + "/internal/v1/challenges"
 	if err := c.do(ctx, "authenticator-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return Challenge{}, err
 	}
 	return out, nil
 }
 
-// VerifyChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/v1/challenges/{id}/verify.
+// VerifyChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/internal/v1/challenges/{id}/verify.
 func (c *HTTPClients) VerifyChallenge(ctx context.Context, tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error) {
 	var out ChallengeVerifyResult
-	url := fmt.Sprintf("%s/v1/challenges/%s/verify", c.AuthenticatorURL, challengeID)
+	url := fmt.Sprintf("%s/internal/v1/challenges/%s/verify", c.AuthenticatorURL, challengeID)
 	body := map[string]any{"method": method, "response": response}
 	if err := c.do(ctx, "authenticator-service", http.MethodPost, url, tenantID, body, &out); err != nil {
 		return ChallengeVerifyResult{}, err
@@ -244,21 +262,21 @@ func (c *HTTPClients) VerifyChallenge(ctx context.Context, tenantID, challengeID
 	return out, nil
 }
 
-// GetSession calls GET {AUTHENTICATION_SERVICE_URL}/v1/sessions/{id}.
+// GetSession calls GET {AUTHENTICATION_SERVICE_URL}/internal/v1/sessions/{id}.
 func (c *HTTPClients) GetSession(ctx context.Context, tenantID, sessionID string) (Session, error) {
 	var out Session
-	url := fmt.Sprintf("%s/v1/sessions/%s", c.AuthenticationURL, sessionID)
+	url := fmt.Sprintf("%s/internal/v1/sessions/%s", c.AuthenticationURL, sessionID)
 	if err := c.do(ctx, "authentication-service", http.MethodGet, url, tenantID, nil, &out); err != nil {
 		return Session{}, err
 	}
 	return out, nil
 }
 
-// UpdateSession calls POST {AUTHENTICATION_SERVICE_URL}/v1/sessions/{id}/upgrade.
+// UpdateSession calls POST {AUTHENTICATION_SERVICE_URL}/internal/v1/sessions/{id}/upgrade.
 // authentication-service's upgrade endpoint accepts {risk_level, step_up_completed}.
 func (c *HTTPClients) UpdateSession(ctx context.Context, tenantID, sessionID string, req SessionUpdateRequest) (Session, error) {
 	var out Session
-	url := fmt.Sprintf("%s/v1/sessions/%s/upgrade", c.AuthenticationURL, sessionID)
+	url := fmt.Sprintf("%s/internal/v1/sessions/%s/upgrade", c.AuthenticationURL, sessionID)
 	if err := c.do(ctx, "authentication-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return Session{}, err
 	}

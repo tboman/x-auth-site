@@ -37,7 +37,16 @@ func NewServer(storage Storage, logger *slog.Logger) *Server {
 }
 
 // Handler returns the top-level http.Handler for this service, with middleware wired.
-// /healthz is public; everything under /v1/ is behind tenantx.Middleware.
+//
+//   - /healthz is public.
+//   - /v1/* is behind tenantx.Middleware (kept as-is for back-compat with
+//     phase-1 callers).
+//   - /internal/v1/* aliases the same route tree (same handlers) additionally
+//     wrapped in httpx.InternalAuth — the service-to-service entry point
+//     (ARCHITECTURE.md §10.3). It accepts verified mTLS peers or the
+//     X-Internal-Auth shared secret; with neither configured it is open
+//     (local dev). broker-service calls POST /internal/v1/pools/{id}/claim
+//     and POST /internal/v1/identities/{id}/release.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -57,6 +66,11 @@ func (s *Server) Handler() http.Handler {
 	authed.HandleFunc("POST /v1/identities/{id}/revoke", s.handleRevoke)
 
 	mux.Handle("/v1/", tenantx.Middleware(authed))
+
+	// Alias: /internal/v1/... → InternalAuth → strip "/internal" → the same
+	// tenant-scoped v1 mux. One registration, zero handler duplication.
+	mux.Handle("/internal/v1/",
+		httpx.InternalAuth(s.Logger)(http.StripPrefix("/internal", tenantx.Middleware(authed))))
 
 	return mux
 }

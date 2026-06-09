@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 )
 
@@ -21,6 +22,13 @@ func newServer(t *testing.T) http.Handler {
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path, tenant string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	return doJSONAuth(t, h, method, path, tenant, "", body)
+}
+
+// doJSONAuth is doJSON with an optional X-Internal-Auth shared secret for
+// requests against the /internal/v1/ tree.
+func doJSONAuth(t *testing.T, h http.Handler, method, path, tenant, internalSecret string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -36,6 +44,9 @@ func doJSON(t *testing.T, h http.Handler, method, path, tenant string, body any)
 	}
 	if tenant != "" {
 		req.Header.Set("X-Tenant-Id", tenant)
+	}
+	if internalSecret != "" {
+		req.Header.Set(httpx.InternalAuthHeader, internalSecret)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -210,6 +221,114 @@ func TestListRejectsInvalidCursor(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "invalid_cursor") {
 		t.Fatalf("want invalid_cursor error, got %s", rec.Body.String())
+	}
+}
+
+// TestInternalV1ParityDevMode verifies that the /internal/v1/ alias serves the
+// exact same route tree as /v1 when neither mTLS nor INTERNAL_AUTH_SECRET is
+// configured (local-dev open mode).
+func TestInternalV1ParityDevMode(t *testing.T) {
+	h := newServer(t)
+
+	// Create through the internal tree.
+	rec := doJSON(t, h, http.MethodPost, "/internal/v1/personas", testTenant, map[string]any{
+		"name":   "internal-made",
+		"scopes": []string{"read:reports"},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("internal create want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created Persona
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created: %v", err)
+	}
+
+	// Same persona is visible on both trees — including broker-service's
+	// exact call shape, GET /internal/v1/personas/{id}.
+	for _, path := range []string{
+		"/v1/personas/" + created.ID,
+		"/internal/v1/personas/" + created.ID,
+	} {
+		rec = doJSON(t, h, http.MethodGet, path, testTenant, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s want 200, got %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		var got Persona
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("GET %s unmarshal: %v", path, err)
+		}
+		if got.ID != created.ID || got.Name != "internal-made" {
+			t.Fatalf("GET %s returned wrong persona: %+v", path, got)
+		}
+	}
+
+	// List parity.
+	for _, path := range []string{"/v1/personas", "/internal/v1/personas"} {
+		rec = doJSON(t, h, http.MethodGet, path, testTenant, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s want 200, got %d", path, rec.Code)
+		}
+		var list ListResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("GET %s unmarshal: %v", path, err)
+		}
+		if len(list.Items) != 1 || list.Items[0].ID != created.ID {
+			t.Fatalf("GET %s unexpected items: %+v", path, list.Items)
+		}
+	}
+
+	// Tenant enforcement applies on the internal tree too.
+	rec = doJSON(t, h, http.MethodGet, "/internal/v1/personas", "", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("internal list without tenant want 400, got %d", rec.Code)
+	}
+}
+
+// TestInternalV1SharedSecret verifies the INTERNAL_AUTH_SECRET gate on the
+// /internal/v1/ tree: missing/wrong header -> structured 401, correct header
+// -> through to the handler, and the public /v1 tree stays open.
+func TestInternalV1SharedSecret(t *testing.T) {
+	const secret = "test-internal-secret"
+	t.Setenv(httpx.EnvInternalAuthSecret, secret)
+	// InternalAuth captures the secret at construction, so the router must be
+	// built after t.Setenv.
+	h := newServer(t)
+
+	// Missing header -> structured 401.
+	rec := doJSON(t, h, http.MethodGet, "/internal/v1/personas", testTenant, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing header want 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("401 want application/json, got %q", ct)
+	}
+	var errBody struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("unmarshal 401 body: %v (body=%s)", err, rec.Body.String())
+	}
+	if errBody.Error != "internal_auth_required" || errBody.Message == "" {
+		t.Fatalf("unexpected 401 body: %+v", errBody)
+	}
+
+	// Wrong secret -> 401.
+	rec = doJSONAuth(t, h, http.MethodGet, "/internal/v1/personas", testTenant, "wrong-secret", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong secret want 401, got %d", rec.Code)
+	}
+
+	// Correct secret -> 200.
+	rec = doJSONAuth(t, h, http.MethodGet, "/internal/v1/personas", testTenant, secret, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct secret want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Public /v1 tree is unaffected by the secret.
+	rec = doJSON(t, h, http.MethodGet, "/v1/personas", testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1 without header want 200, got %d", rec.Code)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/authentication-service/internal"
 )
 
@@ -98,7 +99,14 @@ func main() {
 		}
 	}()
 
-	authenticator := internal.NewHTTPAuthenticatorClient(authenticatorURL)
+	// Outbound (m)TLS to authenticator-service comes from the same TLS env
+	// vars (tlsx.Transport inside the constructor). A partial TLS
+	// configuration is fatal — never silently fall back to plaintext.
+	authenticator, err := internal.NewHTTPAuthenticatorClient(logger, authenticatorURL)
+	if err != nil {
+		logger.Error("client_tls_config_failed", "err", err)
+		os.Exit(1)
+	}
 
 	handler := internal.Router(internal.Deps{
 		Store:         store,
@@ -109,8 +117,17 @@ func main() {
 		JWTIssuer:     jwtIssuer,
 	})
 
+	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
+	// TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE env vars. A nil config
+	// means plaintext local dev; a partial config is fatal.
+	tlsConf, err := tlsx.ServerConfig(logger)
+	if err != nil {
+		logger.Error("tls_config_failed", "err", err)
+		os.Exit(1)
+	}
+
 	addr := config.Addr(8082)
-	if err := httpx.Run(ctx, logger, addr, handler); err != nil {
+	if err := httpx.RunTLS(ctx, logger, addr, handler, tlsConf); err != nil {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
 	}

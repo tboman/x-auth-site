@@ -84,9 +84,11 @@ type VerifyResponse struct {
 	Reason          string `json:"reason,omitempty"`
 }
 
-// ListResponse envelopes GET /v1/authenticators.
+// ListResponse envelopes GET /v1/authenticators (and its /internal/v1 alias).
+// The wire key is "authenticators" per ARCHITECTURE.md §4.4 — that is the
+// envelope authentication-service's ListAuthenticators client decodes.
 type ListResponse struct {
-	Items []Authenticator `json:"items"`
+	Authenticators []Authenticator `json:"authenticators"`
 }
 
 // -----------------------------------------------------------------------------

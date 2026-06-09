@@ -123,6 +123,25 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | `POST` | `/v1/sessions/{id}/invalidate` | Stamp `invalidated_at`; idempotent 204 |
 | `POST` | `/v1/sessions/{id}/upgrade` | Flip `step_up_completed` and optionally change `risk_level` |
 
+### Internal service-to-service (`/internal/v1/`, ARCHITECTURE.md §10.3)
+
+The **session subtree only** is aliased under `/internal/v1/` — same handlers,
+same `X-Tenant-Id` requirement — additionally guarded by `httpx.InternalAuth`:
+a request is accepted with a verified mTLS client certificate **or** a matching
+`X-Internal-Auth: <INTERNAL_AUTH_SECRET>` header. With neither mechanism
+configured the tree is open (local dev). The OIDC/user surface is public-only
+and is **not** aliased.
+
+| Method | Path | Caller |
+|---|---|---|
+| `POST` | `/internal/v1/sessions` | transaction-service (mint session after first-factor auth) |
+| `GET` | `/internal/v1/sessions/{id}` | transaction-service (read session posture) |
+| `POST` | `/internal/v1/sessions/{id}/refresh` | internal callers |
+| `POST` | `/internal/v1/sessions/{id}/invalidate` | internal callers |
+| `POST` | `/internal/v1/sessions/{id}/upgrade` | transaction-service (after step-up verification) |
+
+The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
+
 ## Phase-1 shortcuts
 
 - **Tenant on `/authorize`**: real OIDC sources the tenant from an authenticated
@@ -174,6 +193,11 @@ Providers: `google`, `github`, `microsoft`. Any other value returns 400.
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `PURGE_INTERVAL` | `5m` | Go duration (e.g. `30s`, `10m`) between background sweeps that purge expired tokens, stale auth codes, and long-expired sessions. Each sweep logs `purge_expired` with the count. |
 | `AUTHN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate this service presents — as the server, and as the client certificate on outbound calls to authenticator-service. Unset (with `TLS_KEY_FILE` also unset) -> plaintext local dev with a `tls_disabled` warning. Setting only one of the pair is fatal. |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set the server **requires and verifies** client certificates (mTLS). Verified peers pass `httpx.InternalAuth` without the shared secret. |
+| `TLS_CA_FILE` | _(unset)_ | CA bundle used to verify authenticator-service's certificate on outbound calls (`tlsx.Transport`). |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for the `/internal/v1/` tree when mTLS is not in play. Inbound: requests must carry `X-Internal-Auth: <secret>` (constant-time compare) or arrive over verified mTLS, else structured 401. Outbound: the same value is stamped on calls to authenticator-service. Unset -> internal routes are open (local dev). |
 
 ## Run locally
 
@@ -301,5 +325,9 @@ verifies cryptographically but whose stored record is revoked), foreign-key
 rejection (`/userinfo` 401s a JWT signed by a different RSA key even with a
 planted record), `/revoke` always-200 semantics, unregistered-redirect
 rejection, social authorize → callback round-trip, expired-artifact purge
-(expired removed, live kept, purged token no longer authenticates), and
-SHA-256 token hashing determinism.
+(expired removed, live kept, purged token no longer authenticates), SHA-256
+token hashing determinism, `/internal/v1/sessions` alias parity with `/v1`
+in dev mode (identical bodies, tenant header still enforced, users subtree
+not aliased), `INTERNAL_AUTH_SECRET` enforcement (missing/wrong header →
+structured 401, correct header → 200, public `/v1` stays open), and the
+outbound authenticator client stamping `X-Internal-Auth`.

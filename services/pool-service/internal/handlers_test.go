@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 )
 
@@ -514,6 +515,135 @@ func TestAddIdentity_PoolFull(t *testing.T) {
 		AddIdentityRequest{SubjectID: "b"})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("second add: expected 409, got %d", w.Code)
+	}
+}
+
+// seedClaimable creates a pool with one available identity and returns both, so
+// the /internal/v1 tests can exercise the claim/release hot path broker-service uses.
+func seedClaimable(t *testing.T, h http.Handler) (Pool, Identity) {
+	t.Helper()
+	w := doJSON(t, h, http.MethodPost, "/v1/pools", "tenant-1",
+		CreatePoolRequest{Name: "pool", Size: 2, PersonaIDs: []string{"persona-a"}})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed pool: %d %s", w.Code, w.Body.String())
+	}
+	var pool Pool
+	_ = json.Unmarshal(w.Body.Bytes(), &pool)
+
+	w = doJSON(t, h, http.MethodPost, "/v1/pools/"+pool.ID+"/identities", "tenant-1",
+		AddIdentityRequest{SubjectID: "sub-1"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed identity: %d %s", w.Code, w.Body.String())
+	}
+	var ident Identity
+	_ = json.Unmarshal(w.Body.Bytes(), &ident)
+	return pool, ident
+}
+
+// TestInternalAlias_DevModeParity proves the /internal/v1 tree is the same route
+// tree as /v1: with neither mTLS nor INTERNAL_AUTH_SECRET configured (local dev),
+// the broker-service claim/release calls work identically through the alias.
+func TestInternalAlias_DevModeParity(t *testing.T) {
+	t.Setenv(httpx.EnvInternalAuthSecret, "")
+	h := newTestServer(t).Handler()
+	pool, ident := seedClaimable(t, h)
+
+	// Claim via the internal alias — exactly what broker-service calls.
+	w := doJSON(t, h, http.MethodPost, "/internal/v1/pools/"+pool.ID+"/claim", "tenant-1",
+		ClaimRequest{PersonaID: "persona-a", InstallID: "install-1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("internal claim: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var claimed Identity
+	_ = json.Unmarshal(w.Body.Bytes(), &claimed)
+	if claimed.ID != ident.ID || claimed.Status != StatusClaimed {
+		t.Fatalf("internal claim mutated wrong row: %+v", claimed)
+	}
+
+	// The mutation is visible on the /v1 tree — same handlers, same storage.
+	w = doJSON(t, h, http.MethodPost, "/v1/pools/"+pool.ID+"/claim", "tenant-1",
+		ClaimRequest{PersonaID: "persona-a", InstallID: "install-2"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("/v1 claim after internal claim: expected 409, got %d", w.Code)
+	}
+
+	// Release via the internal alias.
+	w = doJSON(t, h, http.MethodPost, "/internal/v1/identities/"+ident.ID+"/release", "tenant-1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("internal release: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var released Identity
+	_ = json.Unmarshal(w.Body.Bytes(), &released)
+	if released.Status != StatusAvailable || released.ClaimedByInstallID != nil {
+		t.Fatalf("internal release: unexpected identity: %+v", released)
+	}
+
+	// Tenant scoping still applies on the alias.
+	w = doJSON(t, h, http.MethodPost, "/internal/v1/pools/"+pool.ID+"/claim", "",
+		ClaimRequest{PersonaID: "persona-a", InstallID: "install-3"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("internal claim without tenant: expected 400, got %d", w.Code)
+	}
+}
+
+// TestInternalAlias_SecretMode proves that once INTERNAL_AUTH_SECRET is set the
+// alias rejects unauthenticated callers with a structured 401, accepts the
+// correct X-Internal-Auth header, and leaves the /v1 tree open for back-compat.
+func TestInternalAlias_SecretMode(t *testing.T) {
+	t.Setenv(httpx.EnvInternalAuthSecret, "s3cret")
+	// Handler is built AFTER Setenv: InternalAuth reads the secret at construction.
+	h := newTestServer(t).Handler()
+	pool, ident := seedClaimable(t, h)
+
+	claimBody, _ := json.Marshal(ClaimRequest{PersonaID: "persona-a", InstallID: "install-1"})
+	newClaimReq := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost,
+			"/internal/v1/pools/"+pool.ID+"/claim", bytes.NewReader(claimBody))
+		req.Header.Set("X-Tenant-Id", "tenant-1")
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+
+	// Missing header → structured 401.
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, newClaimReq())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing header: expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("401 body is not structured JSON: %v: %s", err, w.Body.String())
+	}
+	if body.Error != "internal_auth_required" || body.Message == "" {
+		t.Fatalf("unexpected 401 body: %s", w.Body.String())
+	}
+
+	// Correct header → 200.
+	w = httptest.NewRecorder()
+	req := newClaimReq()
+	req.Header.Set(httpx.InternalAuthHeader, "s3cret")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("correct header: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Release through the alias with the header.
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/internal/v1/identities/"+ident.ID+"/release", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	req.Header.Set(httpx.InternalAuthHeader, "s3cret")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("internal release with header: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// /v1 stays open — no X-Internal-Auth needed (phase-1 back-compat).
+	w = doJSON(t, h, http.MethodGet, "/v1/pools/"+pool.ID, "tenant-1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/v1 must stay open with secret set: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

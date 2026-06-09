@@ -1,13 +1,74 @@
 package httpx
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 )
+
+// InternalAuthHeader carries the shared secret on service-to-service calls
+// when mTLS is not in play (local dev, or transitional deployments).
+const InternalAuthHeader = "X-Internal-Auth"
+
+// EnvInternalAuthSecret names the env var holding the shared secret. Callers
+// setting the header and servers verifying it read the same variable.
+const EnvInternalAuthSecret = "INTERNAL_AUTH_SECRET"
+
+// InternalAuth guards service-to-service routes (the /internal/v1/ tree,
+// ARCHITECTURE.md §10.3). A request is accepted when either:
+//
+//  1. it arrived over mTLS with a verified client certificate (the TLS layer
+//     already authenticated the peer against TLS_CLIENT_CA_FILE), or
+//  2. INTERNAL_AUTH_SECRET is set and the X-Internal-Auth header matches it
+//     (constant-time compare) — the non-mesh fallback.
+//
+// With no TLS and no secret configured, requests pass through and a warning is
+// logged once at construction: that is the local-dev mode, mirroring the
+// plaintext/ephemeral-key fallbacks elsewhere. Once either mechanism is
+// configured, unauthenticated requests get a structured 401.
+func InternalAuth(logger *slog.Logger) func(http.Handler) http.Handler {
+	secret := os.Getenv(EnvInternalAuthSecret)
+	if secret == "" {
+		logger.Warn("internal_auth_open",
+			"reason", EnvInternalAuthSecret+" unset; /internal routes rely on mTLS or run unauthenticated (dev)")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// mTLS: the server's TLS config already verified the chain; a
+			// populated peer-certificate list is the post-handshake signal.
+			if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if secret != "" {
+				header := r.Header.Get(InternalAuthHeader)
+				if subtle.ConstantTimeCompare([]byte(header), []byte(secret)) != 1 {
+					WriteError(w, http.StatusUnauthorized, "internal_auth_required",
+						"service-to-service authentication required")
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Dev mode: nothing configured, allow.
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// SetInternalAuth adds the shared-secret header to an outbound
+// service-to-service request when INTERNAL_AUTH_SECRET is configured. Under
+// full mTLS the header is redundant but harmless.
+func SetInternalAuth(r *http.Request) {
+	if secret := os.Getenv(EnvInternalAuthSecret); secret != "" {
+		r.Header.Set(InternalAuthHeader, secret)
+	}
+}
 
 // Logging writes one structured log line per completed request.
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {

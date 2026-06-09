@@ -19,6 +19,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
+	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/risk-service/internal"
 )
 
@@ -49,8 +50,17 @@ func main() {
 
 	handlers := internal.NewHandlers(store, logger)
 
+	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
+	// TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE env vars. A nil config
+	// means plaintext local dev; a partial config is fatal.
+	tlsConf, err := tlsx.ServerConfig(logger)
+	if err != nil {
+		logger.Error("tls_config_failed", "err", err)
+		os.Exit(1)
+	}
+
 	addr := config.Addr(8081)
-	if err := httpx.Run(ctx, logger, addr, handlers.Router()); err != nil {
+	if err := httpx.RunTLS(ctx, logger, addr, handlers.Router(), tlsConf); err != nil {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
 	}

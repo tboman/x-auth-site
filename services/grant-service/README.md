@@ -41,9 +41,37 @@ All `/v1/*` endpoints require the `X-Tenant-Id` header.
 | POST | `/v1/grants` | 201, 400 |
 | GET | `/v1/grants/{id}` | 200, 400, 404 |
 | POST | `/v1/grants/{id}/revoke` | 204, 400, 404 (idempotent) |
+| POST | `/v1/installs/{install_id}/revoke-grants` | 200, 400 (cascade, idempotent) |
+| POST | `/v1/revoke` | 200, 400 (RFC 7009 revoke-by-token; unknown token → silent 200) |
 | POST | `/v1/introspect` | 200, 400 |
 | POST | `/v1/audit` | 201, 400 |
 | GET | `/v1/audit` | 200, 400 |
+
+### `/internal/v1/` — service-to-service tree (ARCHITECTURE.md §10.3)
+
+The **entire** `/v1` route tree above is also mounted under `/internal/v1/`
+(same handlers, same store) behind `httpx.InternalAuth`. A request to the
+internal tree is accepted when either:
+
+1. it arrived over **mTLS** with a client certificate verified against
+   `TLS_CLIENT_CA_FILE`, or
+2. `INTERNAL_AUTH_SECRET` is set and the request carries a matching
+   `X-Internal-Auth` header (constant-time compare).
+
+With neither mechanism configured the internal tree is open — local-dev mode.
+Once either is configured, unauthenticated internal requests get a structured
+`401 {"error":"internal_auth_required"}`.
+
+Sister services call the internal tree; broker-service specifically calls:
+
+- `POST /internal/v1/grants` — issue a grant during install binding
+- `POST /internal/v1/installs/{id}/revoke-grants` — install-revoke cascade
+- `POST /internal/v1/revoke` — RFC 7009 token revocation forwarded from the
+  broker's public `/revoke`
+
+`/v1/*` stays mounted **without** the internal-auth guard for phase-1
+back-compat; it will be retired once every caller has moved to
+`/internal/v1/`.
 
 ### Grant shape (response)
 
@@ -92,6 +120,10 @@ Results are sorted by `created_at` descending (most recent first).
 | `PG_DSN_GRANT_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `GRANT_PG_DSN` | _(unset)_ | DSN used by the `TestPG*` integration tests. Unset -> tests skip. |
+| `TLS_CERT_FILE` | _(unset)_ | PEM certificate the server presents. Set together with `TLS_KEY_FILE` to serve HTTPS; setting only one is a fatal startup error. Both unset -> plaintext (dev). |
+| `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
+| `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set the server **requires and verifies** client certificates (mTLS). Verified peers pass `InternalAuth` without the shared-secret header. |
+| `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for `/internal/v1/*` when mTLS is not in play. Callers send it in `X-Internal-Auth`; mismatch/absence -> 401. Unset (and no mTLS) -> internal tree open (dev). |
 
 ## Run locally
 
