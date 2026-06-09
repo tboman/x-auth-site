@@ -75,6 +75,50 @@ func TestCreatePool_MissingTenant(t *testing.T) {
 	}
 }
 
+// TestMissingTenantContext_AllHandlers calls every tenant-scoped handler directly —
+// bypassing tenantx.Middleware — to prove each one fails closed with the shared
+// structured missing_tenant error instead of running an unscoped storage query.
+func TestMissingTenantContext_AllHandlers(t *testing.T) {
+	srv := newTestServer(t)
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"create_pool", srv.handleCreatePool},
+		{"list_pools", srv.handleListPools},
+		{"get_pool", srv.handleGetPool},
+		{"delete_pool", srv.handleDeletePool},
+		{"add_identity", srv.handleAddIdentity},
+		{"list_identities", srv.handleListIdentities},
+		{"claim", srv.handleClaim},
+		{"release", srv.handleRelease},
+		{"revoke", srv.handleRevoke},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/anything", nil)
+			w := httptest.NewRecorder()
+			tc.handler(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not structured JSON: %v: %s", err, w.Body.String())
+			}
+			if body.Error != "missing_tenant" {
+				t.Fatalf("expected error code missing_tenant, got %q", body.Error)
+			}
+			if body.Message == "" {
+				t.Fatalf("expected non-empty message, got: %s", w.Body.String())
+			}
+		})
+	}
+}
+
 func TestCreatePool_ValidationErrors(t *testing.T) {
 	h := newTestServer(t).Handler()
 	cases := []struct {

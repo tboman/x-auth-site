@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,33 +36,48 @@ func (e *DownstreamError) Error() string {
 
 func (e *DownstreamError) Unwrap() error { return e.Err }
 
+// downstreamLogAttrs builds slog key/value pairs for logging a failed downstream
+// call: always "err", plus "service" and "status" when err wraps a DownstreamError,
+// followed by any handler-supplied request-scoped attrs. Keeping this in one place
+// guarantees every 502 translation logs the same detail set.
+func downstreamLogAttrs(err error, extra ...any) []any {
+	attrs := []any{"err", err}
+	var dse *DownstreamError
+	if errors.As(err, &dse) {
+		attrs = append(attrs, "service", dse.Service, "status", dse.Status)
+	}
+	return append(attrs, extra...)
+}
+
 // PersonaClient is the subset of persona-service that broker-service uses.
+// All methods take a context so callers can propagate request cancellation and
+// deadlines to the downstream HTTP call.
 type PersonaClient interface {
-	GetPersona(tenantID, personaID string) (Persona, error)
+	GetPersona(ctx context.Context, tenantID, personaID string) (Persona, error)
 }
 
 // PoolClient is the subset of pool-service that broker-service uses.
 type PoolClient interface {
-	ClaimIdentity(tenantID, poolID, personaID, installID string) (Identity, error)
-	ReleaseIdentity(tenantID, identityID string) error
+	ClaimIdentity(ctx context.Context, tenantID, poolID, personaID, installID string) (Identity, error)
+	ReleaseIdentity(ctx context.Context, tenantID, identityID string) error
 }
 
 // GrantClient is the subset of grant-service that broker-service uses.
 type GrantClient interface {
-	CreateGrant(tenantID string, req GrantCreateRequest) (Grant, error)
-	RevokeGrantsForInstall(tenantID, installID string) error
-	RevokeToken(tenantID, token string) error
+	CreateGrant(ctx context.Context, tenantID string, req GrantCreateRequest) (Grant, error)
+	RevokeGrantsForInstall(ctx context.Context, tenantID, installID string) error
+	RevokeToken(ctx context.Context, tenantID, token string) error
 }
 
 // Persona is the slimmed view of a persona returned by persona-service. Only the
 // fields broker-service needs are decoded; other fields are ignored.
 type Persona struct {
-	ID        string   `json:"id"`
-	TenantID  string   `json:"tenant_id"`
-	Name      string   `json:"name"`
-	Scopes    []string `json:"scopes"`
-	TokenTTL  int      `json:"token_ttl_seconds"`
-	PoolID    string   `json:"pool_id,omitempty"` // may be populated by persona-service once it tracks pool links; phase 1 callers can't rely on this.
+	ID       string   `json:"id"`
+	TenantID string   `json:"tenant_id"`
+	Name     string   `json:"name"`
+	Scopes   []string `json:"scopes"`
+	TokenTTL int      `json:"token_ttl_seconds"`
+	PoolID   string   `json:"pool_id,omitempty"` // may be populated by persona-service once it tracks pool links; phase 1 callers can't rely on this.
 }
 
 // Identity is the slimmed view of a pool identity returned by pool-service.
@@ -112,7 +128,9 @@ func NewHTTPClients(personaURL, poolURL, grantURL string) *HTTPClients {
 // do is the shared request helper: marshals body (if any), sets headers, forwards
 // the tenant id, decodes the response JSON (if out != nil), and returns a typed
 // DownstreamError on non-2xx responses so handlers can uniformly translate to 502.
-func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) error {
+// The supplied context bounds the request, so a cancelled caller aborts the
+// downstream call (compensation paths deliberately pass a non-cancellable context).
+func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID string, body, out any) error {
 	var bodyReader *bytes.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -125,9 +143,9 @@ func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) e
 	var req *http.Request
 	var err error
 	if bodyReader != nil {
-		req, err = http.NewRequest(method, url, bodyReader)
+		req, err = http.NewRequestWithContext(ctx, method, url, bodyReader)
 	} else {
-		req, err = http.NewRequest(method, url, nil)
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
 	}
 	if err != nil {
 		return &DownstreamError{Service: service, Err: err}
@@ -162,10 +180,10 @@ func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) e
 // The REQUIREMENTS doc says "POST /v1/personas/{id}" for fetch in the broker orchestration
 // section, but REQUIREMENTS.md §4 defines this endpoint as a GET. The GET is semantically
 // correct and matches what persona-service actually implements.
-func (c *HTTPClients) GetPersona(tenantID, personaID string) (Persona, error) {
+func (c *HTTPClients) GetPersona(ctx context.Context, tenantID, personaID string) (Persona, error) {
 	var p Persona
 	url := fmt.Sprintf("%s/v1/personas/%s", c.PersonaURL, personaID)
-	if err := c.do("persona-service", http.MethodGet, url, tenantID, nil, &p); err != nil {
+	if err := c.do(ctx, "persona-service", http.MethodGet, url, tenantID, nil, &p); err != nil {
 		return Persona{}, err
 	}
 	return p, nil
@@ -179,11 +197,11 @@ type claimRequest struct {
 
 // ClaimIdentity calls POST {POOL_SERVICE_URL}/v1/pools/{pool_id}/claim.
 // pool-service returns the claimed Identity on success.
-func (c *HTTPClients) ClaimIdentity(tenantID, poolID, personaID, installID string) (Identity, error) {
+func (c *HTTPClients) ClaimIdentity(ctx context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
 	var id Identity
 	url := fmt.Sprintf("%s/v1/pools/%s/claim", c.PoolURL, poolID)
 	body := claimRequest{PersonaID: personaID, InstallID: installID}
-	if err := c.do("pool-service", http.MethodPost, url, tenantID, body, &id); err != nil {
+	if err := c.do(ctx, "pool-service", http.MethodPost, url, tenantID, body, &id); err != nil {
 		return Identity{}, err
 	}
 	return id, nil
@@ -191,16 +209,16 @@ func (c *HTTPClients) ClaimIdentity(tenantID, poolID, personaID, installID strin
 
 // ReleaseIdentity calls POST {POOL_SERVICE_URL}/v1/identities/{id}/release.
 // Used by revoke and by compensation when a downstream call fails mid-orchestration.
-func (c *HTTPClients) ReleaseIdentity(tenantID, identityID string) error {
+func (c *HTTPClients) ReleaseIdentity(ctx context.Context, tenantID, identityID string) error {
 	url := fmt.Sprintf("%s/v1/identities/%s/release", c.PoolURL, identityID)
-	return c.do("pool-service", http.MethodPost, url, tenantID, nil, nil)
+	return c.do(ctx, "pool-service", http.MethodPost, url, tenantID, nil, nil)
 }
 
 // CreateGrant calls POST {GRANT_SERVICE_URL}/v1/grants.
-func (c *HTTPClients) CreateGrant(tenantID string, req GrantCreateRequest) (Grant, error) {
+func (c *HTTPClients) CreateGrant(ctx context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
 	var g Grant
 	url := fmt.Sprintf("%s/v1/grants", c.GrantURL)
-	if err := c.do("grant-service", http.MethodPost, url, tenantID, req, &g); err != nil {
+	if err := c.do(ctx, "grant-service", http.MethodPost, url, tenantID, req, &g); err != nil {
 		return Grant{}, err
 	}
 	return g, nil
@@ -211,16 +229,16 @@ func (c *HTTPClients) CreateGrant(tenantID string, req GrantCreateRequest) (Gran
 // list a bulk-by-install endpoint; phase 1 sends a POST to a convention path
 // /v1/installs/{install_id}/revoke-grants. grant-service is being implemented in
 // parallel — the agreed contract is documented here so grant-service can match it.
-func (c *HTTPClients) RevokeGrantsForInstall(tenantID, installID string) error {
+func (c *HTTPClients) RevokeGrantsForInstall(ctx context.Context, tenantID, installID string) error {
 	url := fmt.Sprintf("%s/v1/installs/%s/revoke-grants", c.GrantURL, installID)
-	return c.do("grant-service", http.MethodPost, url, tenantID, nil, nil)
+	return c.do(ctx, "grant-service", http.MethodPost, url, tenantID, nil, nil)
 }
 
 // RevokeToken forwards a RFC 7009 revocation to grant-service. grant-service is
 // responsible for flipping the grant row; broker-service keeps its local token
 // cache in sync.
-func (c *HTTPClients) RevokeToken(tenantID, token string) error {
+func (c *HTTPClients) RevokeToken(ctx context.Context, tenantID, token string) error {
 	url := fmt.Sprintf("%s/v1/revoke", c.GrantURL)
 	body := map[string]string{"token": token}
-	return c.do("grant-service", http.MethodPost, url, tenantID, body, nil)
+	return c.do(ctx, "grant-service", http.MethodPost, url, tenantID, body, nil)
 }

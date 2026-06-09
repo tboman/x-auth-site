@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/service ./services/persona-service
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/service /service
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=8180
+EXPOSE 8180
 USER nonroot:nonroot
 ENTRYPOINT ["/service"]

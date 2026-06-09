@@ -15,3 +15,14 @@ func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
+
+// isTokenHash reports whether s looks like a SHA-256 hex digest as produced by
+// HashToken (and by broker-service's hashToken): exactly 64 lowercase-or-uppercase
+// hex characters. Used to validate pre-hashed token fields on POST /v1/grants.
+func isTokenHash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}

@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -245,7 +248,7 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Fetch persona for scopes / TTL. A missing persona is the customer's fault (bad
 	// configuration), so translate to 400. Other errors from persona-service are 502.
-	persona, err := h.Clients.GetPersona(ac.TenantID, ac.PersonaID)
+	persona, err := h.Clients.GetPersona(r.Context(), ac.TenantID, ac.PersonaID)
 	if err != nil {
 		var dse *DownstreamError
 		if errors.As(err, &dse) && dse.Status == http.StatusNotFound {
@@ -253,7 +256,8 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "persona not found")
 			return
 		}
-		h.Logger.Error("token_persona_fetch_failed", "err", err, "tenant_id", ac.TenantID, "persona_id", ac.PersonaID)
+		h.Logger.Error("token_persona_fetch_failed",
+			downstreamLogAttrs(err, "tenant_id", ac.TenantID, "persona_id", ac.PersonaID)...)
 		h.markInstallRevoked(install)
 		httpx.WriteError(w, http.StatusBadGateway, "downstream_error", "persona-service unavailable")
 		return
@@ -261,7 +265,7 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Claim an identity from the pool. A full pool is not a 5xx on our side but
 	// a business-state error; surface as 400 so the caller can retry with a different pool.
-	identity, err := h.Clients.ClaimIdentity(ac.TenantID, ac.PoolID, ac.PersonaID, installID)
+	identity, err := h.Clients.ClaimIdentity(r.Context(), ac.TenantID, ac.PoolID, ac.PersonaID, installID)
 	if err != nil {
 		var dse *DownstreamError
 		if errors.As(err, &dse) && dse.Status == http.StatusConflict {
@@ -269,7 +273,8 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "no free identity in pool")
 			return
 		}
-		h.Logger.Error("token_claim_failed", "err", err, "tenant_id", ac.TenantID, "pool_id", ac.PoolID)
+		h.Logger.Error("token_claim_failed",
+			downstreamLogAttrs(err, "tenant_id", ac.TenantID, "pool_id", ac.PoolID)...)
 		h.markInstallRevoked(install)
 		httpx.WriteError(w, http.StatusBadGateway, "downstream_error", "pool-service unavailable")
 		return
@@ -287,7 +292,7 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 
 	// 5. Record the grant. If this fails, compensate by releasing the claimed identity
 	// so the pool does not leak a claimed-but-unusable slot.
-	_, err = h.Clients.CreateGrant(ac.TenantID, GrantCreateRequest{
+	_, err = h.Clients.CreateGrant(r.Context(), ac.TenantID, GrantCreateRequest{
 		InstallID:        installID,
 		IdentityID:       identity.ID,
 		PersonaID:        ac.PersonaID,
@@ -296,13 +301,17 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds:       ttl,
 	})
 	if err != nil {
-		h.Logger.Error("token_grant_create_failed", "err", err,
-			"tenant_id", ac.TenantID, "install_id", installID, "identity_id", identity.ID)
+		h.Logger.Error("token_grant_create_failed",
+			downstreamLogAttrs(err, "tenant_id", ac.TenantID, "install_id", installID, "identity_id", identity.ID)...)
 		// Best-effort compensation: release the identity. If release itself fails we
 		// log and move on — an operator will reconcile via the audit log in grant-service.
-		if relErr := h.Clients.ReleaseIdentity(ac.TenantID, identity.ID); relErr != nil {
-			h.Logger.Warn("token_compensation_release_failed", "err", relErr,
-				"tenant_id", ac.TenantID, "identity_id", identity.ID)
+		// Use a non-cancellable context: a common reason we land here is that the caller
+		// disconnected and r.Context() is already cancelled — the compensation call must
+		// still run or the pool leaks a claimed-but-unusable identity. The HTTP client's
+		// own timeout still bounds the call.
+		if relErr := h.Clients.ReleaseIdentity(context.WithoutCancel(r.Context()), ac.TenantID, identity.ID); relErr != nil {
+			h.Logger.Warn("token_compensation_release_failed",
+				downstreamLogAttrs(relErr, "tenant_id", ac.TenantID, "identity_id", identity.ID)...)
 		}
 		h.markInstallRevoked(install)
 		httpx.WriteError(w, http.StatusBadGateway, "downstream_error", "grant-service unavailable")
@@ -359,9 +368,12 @@ func (h *OIDCHandlers) Revoke(w http.ResponseWriter, r *http.Request) {
 		_ = h.Store.DeleteToken(token)
 	}
 
-	if err := h.Clients.RevokeToken(tenantID, token); err != nil {
+	// Non-cancellable context: revocation is security-relevant cleanup. If the client
+	// fires /revoke and disconnects, the grant must still be revoked downstream — the
+	// HTTP client's own timeout bounds the call instead of the request context.
+	if err := h.Clients.RevokeToken(context.WithoutCancel(r.Context()), tenantID, token); err != nil {
 		// Per RFC 7009 recommendation, we still ack to the client but log the forward failure.
-		h.Logger.Warn("revoke_forward_failed", "err", err)
+		h.Logger.Warn("revoke_forward_failed", downstreamLogAttrs(err)...)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -408,12 +420,14 @@ func (h *OIDCHandlers) markInstallRevoked(i Install) {
 	}
 }
 
-// hashToken returns an opaque stable identifier for a token. In phase 1 we just
-// reflect the token itself — grant-service only needs a consistent key, and since
-// the tokens are unguessable UUIDs this is safe enough for the in-memory happy
-// path. TODO(phase-2): replace with a SHA-256 hex digest.
+// hashToken returns the SHA-256 hex digest of a token. The digest — never the
+// plaintext token — is what gets sent to grant-service as access_token_hash /
+// refresh_token_hash, so a grant-service compromise does not yield usable bearer
+// tokens. The hash is computed at issue time and recomputed at lookup time, so
+// it only needs to be deterministic, not reversible.
 func hashToken(tok string) string {
-	return "stub-hash:" + tok
+	sum := sha256.Sum256([]byte(tok))
+	return hex.EncodeToString(sum[:])
 }
 
 // scopeString resolves the final scope claim from the persona's configured scopes

@@ -67,12 +67,12 @@ const (
 // EvaluateRequest is the JSON body for POST /v1/evaluations.
 // tenant_id comes from the X-Tenant-Id header and is never accepted in the body.
 type EvaluateRequest struct {
-	UserID              string         `json:"user_id"`
-	SessionID           string         `json:"session_id"`
-	Action              string         `json:"action"`
-	Resource            string         `json:"resource"`
-	ResourceSensitivity string         `json:"resource_sensitivity"`
-	Context             EvaluateCtx    `json:"context"`
+	UserID              string      `json:"user_id"`
+	SessionID           string      `json:"session_id"`
+	Action              string      `json:"action"`
+	Resource            string      `json:"resource"`
+	ResourceSensitivity string      `json:"resource_sensitivity"`
+	Context             EvaluateCtx `json:"context"`
 	// Signals is accepted for parity with ARCHITECTURE.md §4.2 but phase 1
 	// scorers ignore it — the four scorers read from Context only. The field
 	// is kept so callers can forward the richer payload without DisallowUnknownFields
@@ -180,7 +180,7 @@ type ListPoliciesResponse struct {
 
 // Validation bounds.
 const (
-	MaxNameLen      = 100
+	MaxNameLen        = 100
 	MaxRulesPerPolicy = 50
 )
 

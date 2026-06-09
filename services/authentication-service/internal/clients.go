@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,8 +49,8 @@ func (e *DownstreamError) Unwrap() error { return e.Err }
 // Defining the interface up front keeps cmd/main.go small and lets tests inject
 // a mock.
 type AuthenticatorClient interface {
-	ListAuthenticators(tenantID, userID string) ([]Authenticator, error)
-	VerifyFirstFactor(tenantID, userID, secret string) error
+	ListAuthenticators(ctx context.Context, tenantID, userID string) ([]Authenticator, error)
+	VerifyFirstFactor(ctx context.Context, tenantID, userID, secret string) error
 }
 
 // Authenticator is the slimmed view of an authenticator-service row. Fields we
@@ -80,8 +81,10 @@ func NewHTTPAuthenticatorClient(baseURL string) *HTTPAuthenticatorClient {
 
 // do is the shared request helper. Marshals body (if any), sets Content-Type,
 // forwards X-Tenant-Id, decodes JSON into out (if any), and returns a typed
-// DownstreamError on non-2xx responses.
-func (c *HTTPAuthenticatorClient) do(method, url, tenantID string, body, out any) error {
+// DownstreamError on non-2xx responses. The request is bound to ctx so a
+// caller disconnect (or deadline) cancels the in-flight downstream call; the
+// http.Client's 5s timeout still applies as an upper bound.
+func (c *HTTPAuthenticatorClient) do(ctx context.Context, method, url, tenantID string, body, out any) error {
 	var r *bytes.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -94,9 +97,9 @@ func (c *HTTPAuthenticatorClient) do(method, url, tenantID string, body, out any
 	var req *http.Request
 	var err error
 	if r != nil {
-		req, err = http.NewRequest(method, url, r)
+		req, err = http.NewRequestWithContext(ctx, method, url, r)
 	} else {
-		req, err = http.NewRequest(method, url, nil)
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
 	}
 	if err != nil {
 		return &DownstreamError{Service: "authenticator-service", Err: err}
@@ -129,13 +132,13 @@ func (c *HTTPAuthenticatorClient) do(method, url, tenantID string, body, out any
 
 // ListAuthenticators calls GET /internal/v1/authenticators?user_id={id}&tenant_id={id}.
 // The response shape is {"authenticators":[...]} per ARCHITECTURE.md §4.4.
-func (c *HTTPAuthenticatorClient) ListAuthenticators(tenantID, userID string) ([]Authenticator, error) {
+func (c *HTTPAuthenticatorClient) ListAuthenticators(ctx context.Context, tenantID, userID string) ([]Authenticator, error) {
 	url := fmt.Sprintf("%s/internal/v1/authenticators?user_id=%s&tenant_id=%s",
 		c.BaseURL, userID, tenantID)
 	var env struct {
 		Authenticators []Authenticator `json:"authenticators"`
 	}
-	if err := c.do(http.MethodGet, url, tenantID, nil, &env); err != nil {
+	if err := c.do(ctx, http.MethodGet, url, tenantID, nil, &env); err != nil {
 		return nil, err
 	}
 	return env.Authenticators, nil
@@ -148,6 +151,6 @@ func (c *HTTPAuthenticatorClient) ListAuthenticators(tenantID, userID string) ([
 // cmd/main.go can wire a real client and tests can mock both methods with a
 // single interface. TODO(phase-2): replace with the real contract once
 // authenticator-service adds a password/verify endpoint.
-func (c *HTTPAuthenticatorClient) VerifyFirstFactor(_, _, _ string) error {
+func (c *HTTPAuthenticatorClient) VerifyFirstFactor(_ context.Context, _, _, _ string) error {
 	return errors.New("VerifyFirstFactor not implemented in phase 1")
 }

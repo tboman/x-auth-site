@@ -215,7 +215,7 @@ type rowScanner interface {
 
 func scanTransaction(r rowScanner) (Transaction, error) {
 	var (
-		t         Transaction
+		t Transaction
 		sessionID, riskEvalID, riskTier, resource, sensitivity,
 		stepUpMethod, challengeID, policyID, reason *string
 		riskScore *float64

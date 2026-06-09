@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,50 +21,50 @@ import (
 type mockClients struct {
 	mu sync.Mutex
 
-	GetPersonaFn             func(tenantID, personaID string) (Persona, error)
-	ClaimIdentityFn          func(tenantID, poolID, personaID, installID string) (Identity, error)
-	ReleaseIdentityFn        func(tenantID, identityID string) error
-	CreateGrantFn            func(tenantID string, req GrantCreateRequest) (Grant, error)
-	RevokeGrantsForInstallFn func(tenantID, installID string) error
-	RevokeTokenFn            func(tenantID, token string) error
+	GetPersonaFn             func(ctx context.Context, tenantID, personaID string) (Persona, error)
+	ClaimIdentityFn          func(ctx context.Context, tenantID, poolID, personaID, installID string) (Identity, error)
+	ReleaseIdentityFn        func(ctx context.Context, tenantID, identityID string) error
+	CreateGrantFn            func(ctx context.Context, tenantID string, req GrantCreateRequest) (Grant, error)
+	RevokeGrantsForInstallFn func(ctx context.Context, tenantID, installID string) error
+	RevokeTokenFn            func(ctx context.Context, tenantID, token string) error
 
 	// Call counters for assertions.
 	ReleaseCalls int
 	RevokeCalls  int
 }
 
-func (m *mockClients) GetPersona(t, p string) (Persona, error) {
-	return m.GetPersonaFn(t, p)
+func (m *mockClients) GetPersona(ctx context.Context, t, p string) (Persona, error) {
+	return m.GetPersonaFn(ctx, t, p)
 }
-func (m *mockClients) ClaimIdentity(t, pool, p, ins string) (Identity, error) {
-	return m.ClaimIdentityFn(t, pool, p, ins)
+func (m *mockClients) ClaimIdentity(ctx context.Context, t, pool, p, ins string) (Identity, error) {
+	return m.ClaimIdentityFn(ctx, t, pool, p, ins)
 }
-func (m *mockClients) ReleaseIdentity(t, id string) error {
+func (m *mockClients) ReleaseIdentity(ctx context.Context, t, id string) error {
 	m.mu.Lock()
 	m.ReleaseCalls++
 	m.mu.Unlock()
 	if m.ReleaseIdentityFn == nil {
 		return nil
 	}
-	return m.ReleaseIdentityFn(t, id)
+	return m.ReleaseIdentityFn(ctx, t, id)
 }
-func (m *mockClients) CreateGrant(t string, r GrantCreateRequest) (Grant, error) {
-	return m.CreateGrantFn(t, r)
+func (m *mockClients) CreateGrant(ctx context.Context, t string, r GrantCreateRequest) (Grant, error) {
+	return m.CreateGrantFn(ctx, t, r)
 }
-func (m *mockClients) RevokeGrantsForInstall(t, ins string) error {
+func (m *mockClients) RevokeGrantsForInstall(ctx context.Context, t, ins string) error {
 	m.mu.Lock()
 	m.RevokeCalls++
 	m.mu.Unlock()
 	if m.RevokeGrantsForInstallFn == nil {
 		return nil
 	}
-	return m.RevokeGrantsForInstallFn(t, ins)
+	return m.RevokeGrantsForInstallFn(ctx, t, ins)
 }
-func (m *mockClients) RevokeToken(t, tok string) error {
+func (m *mockClients) RevokeToken(ctx context.Context, t, tok string) error {
 	if m.RevokeTokenFn == nil {
 		return nil
 	}
-	return m.RevokeTokenFn(t, tok)
+	return m.RevokeTokenFn(ctx, t, tok)
 }
 
 // newTestRouter wires a broker Router with an in-memory store and the supplied mock.
@@ -84,8 +86,9 @@ func newTestRouter(t *testing.T, mc *mockClients) (http.Handler, Storage) {
 // --- Happy path: /authorize -> /token -> install is active ---
 
 func TestAuthorizeToTokenHappyPath(t *testing.T) {
+	var grantReq GrantCreateRequest
 	mc := &mockClients{
-		GetPersonaFn: func(tenantID, personaID string) (Persona, error) {
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
 			return Persona{
 				ID:       personaID,
 				TenantID: tenantID,
@@ -94,7 +97,7 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 				TokenTTL: 600,
 			}, nil
 		},
-		ClaimIdentityFn: func(tenantID, poolID, personaID, installID string) (Identity, error) {
+		ClaimIdentityFn: func(_ context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
 			return Identity{
 				ID:        "id-123",
 				PoolID:    poolID,
@@ -102,7 +105,8 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 				Status:    "claimed",
 			}, nil
 		},
-		CreateGrantFn: func(tenantID string, req GrantCreateRequest) (Grant, error) {
+		CreateGrantFn: func(_ context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
+			grantReq = req
 			return Grant{ID: "grant-1", Status: "active", InstallID: req.InstallID}, nil
 		},
 	}
@@ -172,6 +176,33 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 		t.Fatalf("token: expires_in=%d, want 600 from persona.TokenTTL", tokResp.ExpiresIn)
 	}
 
+	// The grant must carry SHA-256 hex digests, never the plaintext tokens.
+	if grantReq.AccessTokenHash != hashToken(tokResp.AccessToken) {
+		t.Fatalf("grant access_token_hash = %q, want hashToken(access_token)", grantReq.AccessTokenHash)
+	}
+	if grantReq.RefreshTokenHash != hashToken(tokResp.RefreshToken) {
+		t.Fatalf("grant refresh_token_hash = %q, want hashToken(refresh_token)", grantReq.RefreshTokenHash)
+	}
+	if grantReq.AccessTokenHash == tokResp.AccessToken || strings.Contains(grantReq.AccessTokenHash, tokResp.AccessToken) {
+		t.Fatalf("grant access_token_hash leaks the plaintext token: %q", grantReq.AccessTokenHash)
+	}
+
+	// Introspection round-trip: the issued bearer token resolves via /userinfo.
+	req = httptest.NewRequest(http.MethodGet, "/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+tokResp.AccessToken)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("userinfo: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &claims); err != nil {
+		t.Fatalf("userinfo: invalid JSON: %v", err)
+	}
+	if claims["sub"] != "subject-abc" {
+		t.Fatalf("userinfo: sub = %v, want subject-abc", claims["sub"])
+	}
+
 	// Install should now be active with the claimed identity id filled in.
 	installs, _ := store.ListInstalls("tenant-1")
 	if len(installs) != 1 {
@@ -202,13 +233,13 @@ func TestAuthorizeToTokenHappyPath(t *testing.T) {
 
 func TestTokenGrantFailureReleasesIdentity(t *testing.T) {
 	mc := &mockClients{
-		GetPersonaFn: func(tenantID, personaID string) (Persona, error) {
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
 			return Persona{ID: personaID, TenantID: tenantID, Scopes: []string{"mcp"}, TokenTTL: 600}, nil
 		},
-		ClaimIdentityFn: func(tenantID, poolID, personaID, installID string) (Identity, error) {
+		ClaimIdentityFn: func(_ context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
 			return Identity{ID: "id-77", PoolID: poolID, SubjectID: "s-77", Status: "claimed"}, nil
 		},
-		CreateGrantFn: func(tenantID string, req GrantCreateRequest) (Grant, error) {
+		CreateGrantFn: func(_ context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
 			return Grant{}, &DownstreamError{Service: "grant-service", Status: 503, Body: "down"}
 		},
 	}
@@ -251,7 +282,7 @@ func TestTokenGrantFailureReleasesIdentity(t *testing.T) {
 
 func TestTokenPersonaNotFoundReturns400(t *testing.T) {
 	mc := &mockClients{
-		GetPersonaFn: func(tenantID, personaID string) (Persona, error) {
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
 			return Persona{}, &DownstreamError{Service: "persona-service", Status: 404}
 		},
 	}
@@ -303,13 +334,13 @@ func TestAuthorizeMissingParams(t *testing.T) {
 
 func TestTokenCodeReplay(t *testing.T) {
 	mc := &mockClients{
-		GetPersonaFn: func(tenantID, personaID string) (Persona, error) {
+		GetPersonaFn: func(_ context.Context, tenantID, personaID string) (Persona, error) {
 			return Persona{ID: personaID, TenantID: tenantID, TokenTTL: 60}, nil
 		},
-		ClaimIdentityFn: func(tenantID, poolID, personaID, installID string) (Identity, error) {
+		ClaimIdentityFn: func(_ context.Context, tenantID, poolID, personaID, installID string) (Identity, error) {
 			return Identity{ID: "id-1", PoolID: poolID, SubjectID: "s"}, nil
 		},
-		CreateGrantFn: func(tenantID string, req GrantCreateRequest) (Grant, error) {
+		CreateGrantFn: func(_ context.Context, tenantID string, req GrantCreateRequest) (Grant, error) {
 			return Grant{ID: "g"}, nil
 		},
 	}
@@ -461,5 +492,94 @@ func TestDownstreamErrorUnwrap(t *testing.T) {
 	e := &DownstreamError{Service: "x", Err: inner}
 	if !errors.Is(e, inner) {
 		t.Fatalf("DownstreamError does not unwrap inner error")
+	}
+}
+
+// --- hashToken is a real SHA-256 hex digest ---
+
+func TestHashTokenDigest(t *testing.T) {
+	h := hashToken("some-opaque-token")
+	if len(h) != 64 {
+		t.Fatalf("hashToken length = %d, want 64 hex chars", len(h))
+	}
+	if _, err := hex.DecodeString(h); err != nil {
+		t.Fatalf("hashToken output is not valid hex: %q (%v)", h, err)
+	}
+	if strings.Contains(h, "some-opaque-token") || strings.HasPrefix(h, "stub-hash:") {
+		t.Fatalf("hashToken leaks plaintext or stub prefix: %q", h)
+	}
+	if h != hashToken("some-opaque-token") {
+		t.Fatalf("hashToken is not deterministic")
+	}
+	if h == hashToken("another-token") {
+		t.Fatalf("hashToken collided on trivially different inputs")
+	}
+}
+
+// --- HTTPClients propagate context cancellation to downstream calls ---
+
+func TestClientContextCancellation(t *testing.T) {
+	// Downstream stub that would answer successfully — the cancelled context must
+	// abort the call before this response is consumed.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Persona{ID: "p"})
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	_, err := c.GetPersona(ctx, "t", "p")
+	if err == nil {
+		t.Fatalf("GetPersona with cancelled context: expected error, got nil")
+	}
+	var dse *DownstreamError
+	if !errors.As(err, &dse) {
+		t.Fatalf("expected DownstreamError, got %T (%v)", err, err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error to wrap context.Canceled, got %v", err)
+	}
+}
+
+// --- Revoke cascade survives a caller that disconnected mid-request ---
+
+func TestInstallRevokeCascadeSurvivesCancelledRequest(t *testing.T) {
+	var grantsCtxErr, releaseCtxErr error
+	mc := &mockClients{
+		RevokeGrantsForInstallFn: func(ctx context.Context, _, _ string) error {
+			grantsCtxErr = ctx.Err()
+			return nil
+		},
+		ReleaseIdentityFn: func(ctx context.Context, _, _ string) error {
+			releaseCtxErr = ctx.Err()
+			return nil
+		},
+	}
+	r, store := newTestRouter(t, mc)
+
+	ins, _ := store.CreateInstall(Install{
+		ID: "ins-cancel", TenantID: "t", Runtime: "claude",
+		PersonaID: "p", ClientID: "c", IdentityID: "id-55",
+		Status: InstallStatusActive,
+	})
+
+	// Simulate the caller disconnecting: the request context is already cancelled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/installs/"+ins.ID+"/revoke", nil).WithContext(ctx)
+	req.Header.Set("X-Tenant-Id", "t")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if mc.RevokeCalls != 1 || mc.ReleaseCalls != 1 {
+		t.Fatalf("cascade calls = revoke:%d release:%d, want 1/1", mc.RevokeCalls, mc.ReleaseCalls)
+	}
+	if grantsCtxErr != nil {
+		t.Fatalf("RevokeGrantsForInstall received cancelled context: %v", grantsCtxErr)
+	}
+	if releaseCtxErr != nil {
+		t.Fatalf("ReleaseIdentity received cancelled context: %v", releaseCtxErr)
 	}
 }

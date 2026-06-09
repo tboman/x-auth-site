@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,21 +17,21 @@ import (
 // method is a function field so individual tests can stub precisely the
 // behavior they need.
 type mockAuthenticator struct {
-	ListFn   func(tenantID, userID string) ([]Authenticator, error)
-	VerifyFn func(tenantID, userID, secret string) error
+	ListFn   func(ctx context.Context, tenantID, userID string) ([]Authenticator, error)
+	VerifyFn func(ctx context.Context, tenantID, userID, secret string) error
 }
 
-func (m *mockAuthenticator) ListAuthenticators(t, u string) ([]Authenticator, error) {
+func (m *mockAuthenticator) ListAuthenticators(ctx context.Context, t, u string) ([]Authenticator, error) {
 	if m.ListFn == nil {
 		return nil, nil
 	}
-	return m.ListFn(t, u)
+	return m.ListFn(ctx, t, u)
 }
-func (m *mockAuthenticator) VerifyFirstFactor(t, u, s string) error {
+func (m *mockAuthenticator) VerifyFirstFactor(ctx context.Context, t, u, s string) error {
 	if m.VerifyFn == nil {
 		return nil
 	}
-	return m.VerifyFn(t, u, s)
+	return m.VerifyFn(ctx, t, u, s)
 }
 
 // newTestRouter wires a fully-assembled Router with an in-memory store. Tests

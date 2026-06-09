@@ -16,11 +16,12 @@ import (
 // IS set, the test truncates the transactions table so it's safe to re-run.
 //
 // Recommended local setup:
-//   docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
-//     -e POSTGRES_DB=txn_db -p 5432:5432 postgres:16
-//   # then apply services/transaction-service/migrations/000001_init.up.sql
-//   TXN_PG_DSN="postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" \
-//     go test ./services/transaction-service/internal/ -run PG
+//
+//	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
+//	  -e POSTGRES_DB=txn_db -p 5432:5432 postgres:16
+//	# then apply services/transaction-service/migrations/000001_init.up.sql
+//	TXN_PG_DSN="postgres://postgres:postgres@localhost:5432/txn_db?sslmode=disable" \
+//	  go test ./services/transaction-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
 	t.Helper()
 	dsn := os.Getenv("TXN_PG_DSN")

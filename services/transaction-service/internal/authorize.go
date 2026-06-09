@@ -17,10 +17,10 @@ import (
 // Orchestration rule (phase 1):
 //   - Fetch the session from authentication-service.
 //   - Re-evaluate via risk-service if:
-//       * the session can't be read (no cached tier to trust), OR
-//       * the session is stale (updated_at older than SessionStaleAfter), OR
-//       * the requested resource_sensitivity (derived from the attributes, falling back
-//         to the session's last observed tier) is "high" or "critical".
+//   - the session can't be read (no cached tier to trust), OR
+//   - the session is stale (updated_at older than SessionStaleAfter), OR
+//   - the requested resource_sensitivity (derived from the attributes, falling back
+//     to the session's last observed tier) is "high" or "critical".
 //   - Otherwise use the session's cached risk_level to decide.
 //
 // Decision from the tier:
@@ -88,7 +88,7 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	txn.ResourceSensitivity = sensitivity
 
 	// --- Fetch session ---
-	sess, err := h.Authentication.GetSession(tenantID, req.SessionID)
+	sess, err := h.Authentication.GetSession(r.Context(), tenantID, req.SessionID)
 	sessionMissing := false
 	if err != nil {
 		// On a hard downstream failure we can't safely fall back to a risk re-eval
@@ -99,7 +99,7 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &de) && de.Status >= 400 && de.Status < 500 {
 			sessionMissing = true
 		} else {
-			h.Logger.Error("session_get_failed", "err", err, "txn_id", txn.ID)
+			h.logDownstream("session_get_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 			h.markError(&txn, "session_get_failed", err.Error())
 			writeUpstreamError(w, "authentication-service", txn.ID)
 			return
@@ -111,10 +111,10 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		sessionStale(sess)
 
 	tier := sess.RiskLevel
-	var policyID string
+	var matchedPolicies []string
 
 	if needFresh {
-		result, err := h.Risk.Evaluate(tenantID, RiskEvaluateRequest{
+		result, err := h.Risk.Evaluate(r.Context(), tenantID, RiskEvaluateRequest{
 			TenantID:            tenantID,
 			UserID:              req.UserID,
 			SessionID:           req.SessionID,
@@ -125,13 +125,13 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 			// and risk-service falls back to user/behavior history only.
 		})
 		if err != nil {
-			h.Logger.Error("risk_evaluate_failed", "err", err, "txn_id", txn.ID)
+			h.logDownstream("risk_evaluate_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 			h.markError(&txn, "risk_evaluate_failed", err.Error())
 			writeUpstreamError(w, "risk-service", txn.ID)
 			return
 		}
 		tier = result.Tier
-		policyID = result.PolicyID
+		matchedPolicies = result.MatchedPolicies
 		txn.RiskEvaluationID = result.ID
 		txn.RiskScore = result.Score
 		txn.History = append(txn.History, HistoryEntry{
@@ -147,6 +147,14 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	// --- Decide ---
 	decidedAt := time.Now().UTC()
 	txn.DecidedAt = &decidedAt
+
+	// risk-service reports every matched policy; the first (oldest by CreatedAt)
+	// is recorded as the transaction's primary policy_id for backward compatibility
+	// with the §4.1 response shape, and the full list rides alongside.
+	var policyID string
+	if len(matchedPolicies) > 0 {
+		policyID = matchedPolicies[0]
+	}
 	txn.PolicyID = policyID
 
 	switch tier {
@@ -157,10 +165,11 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 			h.Logger.Error("txn_update_failed", "err", err, "txn_id", txn.ID)
 		}
 		httpx.WriteJSON(w, http.StatusOK, AuthorizeResponse{
-			TransactionID: txn.ID,
-			Decision:      DecisionAllow,
-			PolicyID:      policyID,
-			EvaluatedAt:   decidedAt,
+			TransactionID:   txn.ID,
+			Decision:        DecisionAllow,
+			PolicyID:        policyID,
+			MatchedPolicies: matchedPolicies,
+			EvaluatedAt:     decidedAt,
 		})
 		return
 	case TierHigh:
@@ -171,11 +180,12 @@ func (h *Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
 			h.Logger.Error("txn_update_failed", "err", err, "txn_id", txn.ID)
 		}
 		httpx.WriteJSON(w, http.StatusForbidden, AuthorizeResponse{
-			TransactionID: txn.ID,
-			Decision:      DecisionDeny,
-			PolicyID:      policyID,
-			Reason:        "step_up_required",
-			EvaluatedAt:   decidedAt,
+			TransactionID:   txn.ID,
+			Decision:        DecisionDeny,
+			PolicyID:        policyID,
+			MatchedPolicies: matchedPolicies,
+			Reason:          "step_up_required",
+			EvaluatedAt:     decidedAt,
 		})
 		return
 	default:

@@ -17,11 +17,11 @@ const (
 // Decision values that transaction-service can emit. Stored on the Transaction record
 // and returned on the wire.
 const (
-	DecisionAllow            = "allow"
-	DecisionDeny             = "deny"
-	DecisionStepUpRequired   = "step_up_required"
-	DecisionStepUpSatisfied  = "step_up_satisfied"
-	DecisionError            = "error"
+	DecisionAllow           = "allow"
+	DecisionDeny            = "deny"
+	DecisionStepUpRequired  = "step_up_required"
+	DecisionStepUpSatisfied = "step_up_satisfied"
+	DecisionError           = "error"
 )
 
 // Pagination bounds for GET /v1/transactions.
@@ -126,12 +126,18 @@ type AuthorizeRequest struct {
 }
 
 // AuthorizeResponse is the wire shape for /v1/authorize.
+//
+// policy_id keeps the ARCHITECTURE.md §4.1 contract: it carries the first policy
+// risk-service matched. risk-service actually reports every matching policy
+// (matched_policies), so the full list is surfaced alongside for callers that
+// want more than the primary id.
 type AuthorizeResponse struct {
-	TransactionID string    `json:"transaction_id"`
-	Decision      string    `json:"decision"`
-	PolicyID      string    `json:"policy_id,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	EvaluatedAt   time.Time `json:"evaluated_at"`
+	TransactionID   string    `json:"transaction_id"`
+	Decision        string    `json:"decision"`
+	PolicyID        string    `json:"policy_id,omitempty"`
+	MatchedPolicies []string  `json:"matched_policies,omitempty"`
+	Reason          string    `json:"reason,omitempty"`
+	EvaluatedAt     time.Time `json:"evaluated_at"`
 }
 
 // ListResponse is the envelope returned by GET /v1/transactions.
@@ -142,30 +148,30 @@ type ListResponse struct {
 
 // HistoryEntry is one audit-trail row appended as a transaction transitions.
 type HistoryEntry struct {
-	At      time.Time `json:"at"`
-	Event   string    `json:"event"`
-	Detail  string    `json:"detail,omitempty"`
+	At     time.Time `json:"at"`
+	Event  string    `json:"event"`
+	Detail string    `json:"detail,omitempty"`
 }
 
 // Transaction is the persisted orchestration record. Phase 1 is in-memory, tenant-scoped.
 type Transaction struct {
-	ID                  string          `json:"id"`
-	TenantID            string          `json:"tenant_id"`
-	UserID              string          `json:"user_id"`
-	SessionID           string          `json:"session_id,omitempty"`
-	Action              string          `json:"action"`
-	Resource            string          `json:"resource,omitempty"`
-	ResourceSensitivity string          `json:"resource_sensitivity,omitempty"`
-	RiskEvaluationID    string          `json:"risk_evaluation_id,omitempty"`
-	RiskTier            string          `json:"risk_tier,omitempty"`
-	RiskScore           float64         `json:"risk_score,omitempty"`
-	Decision            string          `json:"decision"`
-	StepUpUsed          bool            `json:"step_up_used"`
-	StepUpMethod        string          `json:"step_up_method,omitempty"`
-	ChallengeID         string          `json:"challenge_id,omitempty"`
-	PolicyID            string          `json:"policy_id,omitempty"`
-	Reason              string          `json:"reason,omitempty"`
-	History             []HistoryEntry  `json:"history,omitempty"`
-	CreatedAt           time.Time       `json:"created_at"`
-	DecidedAt           *time.Time      `json:"decided_at,omitempty"`
+	ID                  string         `json:"id"`
+	TenantID            string         `json:"tenant_id"`
+	UserID              string         `json:"user_id"`
+	SessionID           string         `json:"session_id,omitempty"`
+	Action              string         `json:"action"`
+	Resource            string         `json:"resource,omitempty"`
+	ResourceSensitivity string         `json:"resource_sensitivity,omitempty"`
+	RiskEvaluationID    string         `json:"risk_evaluation_id,omitempty"`
+	RiskTier            string         `json:"risk_tier,omitempty"`
+	RiskScore           float64        `json:"risk_score,omitempty"`
+	Decision            string         `json:"decision"`
+	StepUpUsed          bool           `json:"step_up_used"`
+	StepUpMethod        string         `json:"step_up_method,omitempty"`
+	ChallengeID         string         `json:"challenge_id,omitempty"`
+	PolicyID            string         `json:"policy_id,omitempty"`
+	Reason              string         `json:"reason,omitempty"`
+	History             []HistoryEntry `json:"history,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	DecidedAt           *time.Time     `json:"decided_at,omitempty"`
 }

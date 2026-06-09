@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+
+	"github.com/xentranet/x-auth/pkg/httpx"
 )
 
 // Header is the HTTP header name carrying the tenant id in phase 1.
@@ -41,7 +43,7 @@ func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tenant, err := From(r)
 		if err != nil {
-			http.Error(w, "missing X-Tenant-Id header", http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "missing X-Tenant-Id header")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), tenant)))

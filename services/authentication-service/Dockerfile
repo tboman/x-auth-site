@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/service ./services/authentication-
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/service /service
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=8082
+EXPOSE 8082
 USER nonroot:nonroot
 ENTRYPOINT ["/service"]

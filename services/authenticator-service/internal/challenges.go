@@ -39,7 +39,11 @@ func NewChallengeHandlers(log *slog.Logger, store Storage, registry *Registry) *
 // and let us fall through. Oldest-first prevents surprise on a newly-added
 // authenticator while the user is mid-session.
 func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	var req ChallengeRequest
 	if err := httpx.ReadJSON(r, &req); err != nil {
@@ -119,7 +123,11 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 // (often `pending`) — status is only flipped to `expired` on a verify call.
 // This is intentional for phase 1; a real deployment would run a sweeper.
 func (h *ChallengeHandlers) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	id := r.PathValue("id")
 	if id == "" {
@@ -143,7 +151,11 @@ func (h *ChallengeHandlers) Get(w http.ResponseWriter, r *http.Request) {
 //   - `pending` + expired → mark `expired`, return 410.
 //   - Terminal states (`completed`, `failed`, `expired`) → 410 immediately.
 func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	id := r.PathValue("id")
 	if id == "" {
@@ -263,4 +275,3 @@ func selectAuthenticator(preferred []string, active []Authenticator) (string, Au
 	}
 	return "", Authenticator{}, false
 }
-

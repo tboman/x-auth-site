@@ -16,11 +16,12 @@ import (
 // IS set, the test truncates the personas table so it's safe to re-run.
 //
 // Recommended local setup:
-//   docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
-//     -e POSTGRES_DB=persona_db -p 5432:5432 postgres:16
-//   # then apply services/persona-service/migrations/000001_init.up.sql
-//   PERSONA_PG_DSN="postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" \
-//     go test ./services/persona-service/internal/ -run PG
+//
+//	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
+//	  -e POSTGRES_DB=persona_db -p 5432:5432 postgres:16
+//	# then apply services/persona-service/migrations/000001_init.up.sql
+//	PERSONA_PG_DSN="postgres://postgres:postgres@localhost:5432/persona_db?sslmode=disable" \
+//	  go test ./services/persona-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
 	t.Helper()
 	dsn := os.Getenv("PERSONA_PG_DSN")

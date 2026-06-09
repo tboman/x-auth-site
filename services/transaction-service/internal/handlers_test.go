@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
 const testTenant = "tenant-a"
@@ -25,12 +28,14 @@ type mockRisk struct {
 	Fn      func(tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error)
 	Calls   int
 	LastReq RiskEvaluateRequest
+	LastCtx context.Context
 }
 
-func (m *mockRisk) Evaluate(tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error) {
+func (m *mockRisk) Evaluate(ctx context.Context, tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error) {
 	m.mu.Lock()
 	m.Calls++
 	m.LastReq = req
+	m.LastCtx = ctx
 	m.mu.Unlock()
 	if m.Fn == nil {
 		return RiskEvaluationResult{}, errors.New("mockRisk.Fn not set")
@@ -45,7 +50,7 @@ type mockAuthr struct {
 	LastCreateReq ChallengeCreateRequest
 }
 
-func (m *mockAuthr) CreateChallenge(tenantID string, req ChallengeCreateRequest) (Challenge, error) {
+func (m *mockAuthr) CreateChallenge(_ context.Context, tenantID string, req ChallengeCreateRequest) (Challenge, error) {
 	m.mu.Lock()
 	m.LastCreateReq = req
 	m.mu.Unlock()
@@ -55,7 +60,7 @@ func (m *mockAuthr) CreateChallenge(tenantID string, req ChallengeCreateRequest)
 	return m.CreateFn(tenantID, req)
 }
 
-func (m *mockAuthr) VerifyChallenge(tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error) {
+func (m *mockAuthr) VerifyChallenge(_ context.Context, tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error) {
 	if m.VerifyFn == nil {
 		return ChallengeVerifyResult{}, errors.New("mockAuthr.VerifyFn not set")
 	}
@@ -67,14 +72,14 @@ type mockAuth struct {
 	UpdateFn func(tenantID, sessionID string, req SessionUpdateRequest) (Session, error)
 }
 
-func (m *mockAuth) GetSession(tenantID, sessionID string) (Session, error) {
+func (m *mockAuth) GetSession(_ context.Context, tenantID, sessionID string) (Session, error) {
 	if m.GetFn == nil {
 		return Session{}, errors.New("mockAuth.GetFn not set")
 	}
 	return m.GetFn(tenantID, sessionID)
 }
 
-func (m *mockAuth) UpdateSession(tenantID, sessionID string, req SessionUpdateRequest) (Session, error) {
+func (m *mockAuth) UpdateSession(_ context.Context, tenantID, sessionID string, req SessionUpdateRequest) (Session, error) {
 	if m.UpdateFn == nil {
 		return Session{}, errors.New("mockAuth.UpdateFn not set")
 	}
@@ -498,7 +503,7 @@ func TestAuthorizeUsesCachedTierWhenFresh(t *testing.T) {
 
 func TestAuthorizeReEvaluatesWhenStale(t *testing.T) {
 	risk := &mockRisk{Fn: func(_ string, _ RiskEvaluateRequest) (RiskEvaluationResult, error) {
-		return RiskEvaluationResult{ID: "rev_s", Tier: TierLow, Score: 0.1, PolicyID: "pol_v1"}, nil
+		return RiskEvaluationResult{ID: "rev_s", Tier: TierLow, Score: 0.1, MatchedPolicies: []string{"pol_v1"}}, nil
 	}}
 	auth := &mockAuth{GetFn: func(_, id string) (Session, error) {
 		return Session{ID: id, RiskLevel: TierLow,
@@ -519,6 +524,16 @@ func TestAuthorizeReEvaluatesWhenStale(t *testing.T) {
 	}
 	if risk.Calls != 1 {
 		t.Fatalf("expected risk-service call on stale session, got %d", risk.Calls)
+	}
+	// The matched policy flows through to the authorize response: first match as
+	// the primary policy_id, full list as matched_policies.
+	var resp AuthorizeResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.PolicyID != "pol_v1" {
+		t.Fatalf("policy_id should carry the matched policy, got %q", resp.PolicyID)
+	}
+	if len(resp.MatchedPolicies) != 1 || resp.MatchedPolicies[0] != "pol_v1" {
+		t.Fatalf("matched_policies not surfaced: %v", resp.MatchedPolicies)
 	}
 }
 
@@ -561,7 +576,7 @@ func TestAuthorizeDeniesHighTier(t *testing.T) {
 	h, _ := newServer(t, risk, auth, nil)
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/authorize", testTenant, map[string]any{
-		"user_id":    "u", "session_id": "s", "action": "a", "resource": "r",
+		"user_id": "u", "session_id": "s", "action": "a", "resource": "r",
 	})
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", rec.Code)
@@ -637,6 +652,211 @@ func TestListTransactionsPagination(t *testing.T) {
 	}
 	if list2.NextCursor != "" {
 		t.Fatalf("final page should not emit a cursor")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// matched_policies decoding (real HTTP client against a fake risk-service)
+// -----------------------------------------------------------------------------
+
+// TestAdviceMatchedPoliciesFlowEndToEnd runs the real HTTPClients against a fake
+// risk-service emitting the actual wire shape (matched_policies, nested signals,
+// policy_decision — no policy_id field), drives /v1/advice through the full
+// router, and asserts the matched policies land on the persisted transaction and
+// are readable back via GET /v1/transactions/{id}.
+func TestAdviceMatchedPoliciesFlowEndToEnd(t *testing.T) {
+	riskSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/evaluations" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		// Mirrors risk-service's RiskEvaluation JSON, including fields
+		// transaction-service ignores.
+		_, _ = io.WriteString(w, `{
+			"id": "rev_e2e",
+			"tenant_id": "tenant-a",
+			"user_id": "usr_abc",
+			"action": "transfer.initiate",
+			"resource_sensitivity": "high",
+			"tier": "low",
+			"score": 0.12,
+			"signals": {
+				"device":   {"score": 0.1, "flags": []},
+				"behavior": {"score": 0.1, "flags": []},
+				"network":  {"score": 0.2, "flags": ["vpn_detected"]},
+				"user":     {"score": 0.1, "flags": []}
+			},
+			"flags": ["vpn_detected"],
+			"policy_decision": "allow",
+			"matched_policies": ["pol_first", "pol_second"],
+			"created_at": "2026-06-09T00:00:00Z"
+		}`)
+	}))
+	defer riskSrv.Close()
+
+	clients := NewHTTPClients(riskSrv.URL, riskSrv.URL, riskSrv.URL)
+	h, store := newServer(t, clients, clients, clients)
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp AdviceResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Decision != DecisionAllow {
+		t.Fatalf("want allow, got %s", resp.Decision)
+	}
+
+	// Persisted transaction carries the primary policy id + the full match list
+	// in history.
+	saved, err := store.Get(testTenant, resp.TransactionID)
+	if err != nil {
+		t.Fatalf("persisted: %v", err)
+	}
+	if saved.PolicyID != "pol_first" {
+		t.Fatalf("txn policy_id should be the first matched policy, got %q", saved.PolicyID)
+	}
+	foundHistory := false
+	for _, e := range saved.History {
+		if e.Event == "policies_matched" && e.Detail == "pol_first,pol_second" {
+			foundHistory = true
+		}
+	}
+	if !foundHistory {
+		t.Fatalf("policies_matched history entry missing: %+v", saved.History)
+	}
+
+	// And it is visible through the public audit endpoint.
+	rec = doJSON(t, h, http.MethodGet, "/v1/transactions/"+resp.TransactionID, testTenant, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get txn: want 200, got %d", rec.Code)
+	}
+	var txn Transaction
+	_ = json.Unmarshal(rec.Body.Bytes(), &txn)
+	if txn.PolicyID != "pol_first" {
+		t.Fatalf("GET /v1/transactions/{id} policy_id=%q, want pol_first", txn.PolicyID)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Context propagation / cancellation
+// -----------------------------------------------------------------------------
+
+// TestAdvicePassesRequestContextToRisk asserts handlers hand r.Context() (the one
+// tenantx.Middleware decorated) to the risk client, not context.Background().
+func TestAdvicePassesRequestContextToRisk(t *testing.T) {
+	risk := &mockRisk{Fn: func(_ string, _ RiskEvaluateRequest) (RiskEvaluationResult, error) {
+		return RiskEvaluationResult{ID: "rev_ctx", Tier: TierLow, Score: 0.1}, nil
+	}}
+	h, _ := newServer(t, risk, nil, nil)
+	rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if risk.LastCtx == nil {
+		t.Fatal("risk client did not receive a context")
+	}
+	if tid, ok := tenantx.FromContext(risk.LastCtx); !ok || tid != testTenant {
+		t.Fatalf("risk client should receive the request context (tenant-scoped), got tenant=%q ok=%v", tid, ok)
+	}
+}
+
+// TestEvaluateUnblocksOnContextCancel exercises the raw HTTP client: a fake
+// risk-service that never responds must not pin the call until the 5s client
+// timeout — cancelling the context unblocks it immediately.
+func TestEvaluateUnblocksOnContextCancel(t *testing.T) {
+	// done unblocks the fake handler at test teardown; without it srv.Close()
+	// waits forever on the still-parked handler goroutine. The handler must also
+	// drain the body first — the net/http server only detects a client disconnect
+	// (and cancels r.Context()) once the request body has been consumed.
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done(): // caller went away
+		case <-done: // test teardown
+		}
+	}))
+	defer srv.Close()
+	defer close(done) // runs before srv.Close (LIFO), releasing the handler
+
+	clients := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := clients.Evaluate(ctx, testTenant, RiskEvaluateRequest{UserID: "u", Action: "a"})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after cancel")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled in chain, got %v", err)
+	}
+	var de *DownstreamError
+	if !errors.As(err, &de) || de.Service != "risk-service" {
+		t.Fatalf("want DownstreamError{Service: risk-service}, got %v", err)
+	}
+	if elapsed >= defaultClientTimeout {
+		t.Fatalf("cancel did not unblock the call (took %v)", elapsed)
+	}
+}
+
+// TestAdviceCallerDisconnectCancelsDownstream drives the full router with a
+// cancellable request context against a blocking fake downstream: the handler
+// must return promptly (502) and the downstream must observe cancellation.
+func TestAdviceCallerDisconnectCancelsDownstream(t *testing.T) {
+	downstreamCancelled := make(chan struct{})
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		// Drain the body so the server's background read can observe the client
+		// disconnect and cancel r.Context().
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+			close(downstreamCancelled)
+		case <-done: // test teardown — keeps srv.Close from hanging on failure
+		}
+	}))
+	defer srv.Close()
+	defer close(done)
+
+	clients := NewHTTPClients(srv.URL, srv.URL, srv.URL)
+	h, _ := newServer(t, clients, clients, clients)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body, _ := json.Marshal(sampleAdvice())
+	req := httptest.NewRequest(http.MethodPost, "/v1/advice", bytes.NewReader(body)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-Id", testTenant)
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel() // simulate the caller disconnecting mid-flight
+	}()
+
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if elapsed >= defaultClientTimeout {
+		t.Fatalf("handler blocked for %v — request context not propagated downstream", elapsed)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("want 502 after cancelled downstream call, got %d", rec.Code)
+	}
+	select {
+	case <-downstreamCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("downstream never observed the cancellation")
 	}
 }
 

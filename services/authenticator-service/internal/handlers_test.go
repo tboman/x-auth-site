@@ -104,6 +104,59 @@ func TestTenantHeaderRequired(t *testing.T) {
 	}
 }
 
+// TestHandlersRejectMissingTenantContext calls every handler directly — without
+// the tenantx middleware — and asserts each one refuses to run with an empty
+// tenant scope. This guards the cross-tenant-safety property: if the middleware
+// were ever bypassed or misconfigured, handlers must fail closed rather than
+// silently query with tenantID == "".
+func TestHandlersRejectMissingTenantContext(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	store := NewStore(clock.now)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ah := NewAuthenticatorHandlers(log, store)
+	ch := NewChallengeHandlers(log, store, NewRegistry(log))
+
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		path    string
+	}{
+		{"authenticators enroll", ah.Enroll, http.MethodPost, "/v1/authenticators"},
+		{"authenticators list", ah.List, http.MethodGet, "/v1/authenticators?user_id=u1"},
+		{"authenticators get", ah.Get, http.MethodGet, "/v1/authenticators/authr_x"},
+		{"authenticators delete", ah.Delete, http.MethodDelete, "/v1/authenticators/authr_x"},
+		{"challenges create", ch.Create, http.MethodPost, "/v1/challenges"},
+		{"challenges get", ch.Get, http.MethodGet, "/v1/challenges/ch_x"},
+		{"challenges verify", ch.Verify, http.MethodPost, "/v1/challenges/ch_x/verify"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			// No tenant on the context — simulates a bypassed middleware.
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("want 400 without tenant context, got %d", rec.Code)
+			}
+			var body struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error body: %v (raw: %q)", err, rec.Body.String())
+			}
+			if body.Error != "missing_tenant" {
+				t.Fatalf("want error=missing_tenant, got %q", body.Error)
+			}
+			if body.Message != "X-Tenant-Id required" {
+				t.Fatalf("want message %q, got %q", "X-Tenant-Id required", body.Message)
+			}
+		})
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Authenticator CRUD
 // -----------------------------------------------------------------------------
@@ -482,10 +535,10 @@ func TestAdapterStubs(t *testing.T) {
 	// The expected-prompt + golden-response table pins every adapter's
 	// canned behavior, including the negative path (wrong response → false).
 	cases := []struct {
-		method       string
-		wantPrompt   string
-		validResp    map[string]any
-		invalidResp  map[string]any
+		method      string
+		wantPrompt  string
+		validResp   map[string]any
+		invalidResp map[string]any
 	}{
 		{MethodFIDO2, "WebAuthn ceremony initiated (stub)",
 			map[string]any{"signature": "stub_valid_signature"},

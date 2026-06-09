@@ -53,7 +53,7 @@ func methodsForTier(tier string) []string {
 //  3. Call risk-service. On error mark the transaction "error" and return 502.
 //  4. tier == low                -> decision "allow".
 //  5. tier == medium | high      -> call authenticator-service for a challenge;
-//                                   decision "step_up_required".
+//     decision "step_up_required".
 //  6. unknown tier               -> 502 (risk-service contract violation).
 func (h *Handlers) Advice(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
@@ -108,9 +108,9 @@ func (h *Handlers) Advice(w http.ResponseWriter, r *http.Request) {
 		ResourceSensitivity: req.ResourceSensitivity,
 		Signals:             signalsFromContext(req.Context),
 	}
-	result, err := h.Risk.Evaluate(tenantID, rreq)
+	result, err := h.Risk.Evaluate(r.Context(), tenantID, rreq)
 	if err != nil {
-		h.Logger.Error("risk_evaluate_failed", "err", err, "txn_id", txn.ID, "tenant_id", tenantID)
+		h.logDownstream("risk_evaluate_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 		h.markError(&txn, "risk_evaluate_failed", err.Error())
 		writeUpstreamError(w, "risk-service", txn.ID)
 		return
@@ -124,6 +124,17 @@ func (h *Handlers) Advice(w http.ResponseWriter, r *http.Request) {
 		Event:  "risk_evaluated",
 		Detail: result.Tier,
 	})
+	// Record which tenant policies fired. The first match is the transaction's
+	// primary policy id (single policy_id column / audit field); the full set is
+	// preserved in history so nothing is lost when several policies match.
+	if len(result.MatchedPolicies) > 0 {
+		txn.PolicyID = result.MatchedPolicies[0]
+		txn.History = append(txn.History, HistoryEntry{
+			At:     time.Now().UTC(),
+			Event:  "policies_matched",
+			Detail: strings.Join(result.MatchedPolicies, ","),
+		})
+	}
 
 	evalView := buildRiskEvaluation(result)
 
@@ -146,7 +157,7 @@ func (h *Handlers) Advice(w http.ResponseWriter, r *http.Request) {
 
 	case TierMedium, TierHigh:
 		methods := methodsForTier(result.Tier)
-		ch, err := h.Authenticator.CreateChallenge(tenantID, ChallengeCreateRequest{
+		ch, err := h.Authenticator.CreateChallenge(r.Context(), tenantID, ChallengeCreateRequest{
 			TenantID: tenantID,
 			UserID:   req.UserID,
 			Methods:  methods,
@@ -157,7 +168,7 @@ func (h *Handlers) Advice(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		if err != nil {
-			h.Logger.Error("challenge_create_failed", "err", err, "txn_id", txn.ID, "tenant_id", tenantID)
+			h.logDownstream("challenge_create_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 			// Persist the risk evaluation even though we couldn't dispense a challenge,
 			// then surface the upstream failure to the caller. The transaction is marked
 			// "error" rather than "deny" — there's no policy verdict, just a broken
@@ -294,6 +305,23 @@ func (h *Handlers) markError(txn *Transaction, event, detail string) {
 	if _, err := h.Store.Update(*txn); err != nil {
 		h.Logger.Error("txn_error_persist_failed", "err", err, "txn_id", txn.ID)
 	}
+}
+
+// logDownstream records a failed call to a sister service at Error level before the
+// handler responds 502. When the error is a DownstreamError the service name and
+// upstream status are emitted as structured fields (alongside the full error) so
+// 502s are greppable by service without parsing the error string.
+func (h *Handlers) logDownstream(event string, err error, attrs ...any) {
+	args := []any{"err", err}
+	var de *DownstreamError
+	if errors.As(err, &de) {
+		args = append(args, "service", de.Service)
+		if de.Status != 0 {
+			args = append(args, "status", de.Status)
+		}
+	}
+	args = append(args, attrs...)
+	h.Logger.Error(event, args...)
 }
 
 // writeUpstreamError is the single choke-point for 502s — keeps the body shape uniform

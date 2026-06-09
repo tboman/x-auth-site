@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -152,13 +153,19 @@ func (h *InstallHandlers) Revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Clients.RevokeGrantsForInstall(tenantID, id); err != nil {
-		h.Logger.Warn("install_revoke_grants_failed", "err", err, "tenant_id", tenantID, "install_id", id)
+	// Non-cancellable context for the cascade: the install is already marked revoked
+	// locally, so if the caller disconnects now we must still revoke the grants and
+	// release the identity — otherwise a dropped connection leaves live grants behind
+	// a revoked install. The HTTP client's own timeout still bounds each call.
+	cascadeCtx := context.WithoutCancel(r.Context())
+	if err := h.Clients.RevokeGrantsForInstall(cascadeCtx, tenantID, id); err != nil {
+		h.Logger.Warn("install_revoke_grants_failed",
+			downstreamLogAttrs(err, "tenant_id", tenantID, "install_id", id)...)
 	}
 	if existing.IdentityID != "" {
-		if err := h.Clients.ReleaseIdentity(tenantID, existing.IdentityID); err != nil {
-			h.Logger.Warn("install_revoke_release_failed", "err", err,
-				"tenant_id", tenantID, "install_id", id, "identity_id", existing.IdentityID)
+		if err := h.Clients.ReleaseIdentity(cascadeCtx, tenantID, existing.IdentityID); err != nil {
+			h.Logger.Warn("install_revoke_release_failed",
+				downstreamLogAttrs(err, "tenant_id", tenantID, "install_id", id, "identity_id", existing.IdentityID)...)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

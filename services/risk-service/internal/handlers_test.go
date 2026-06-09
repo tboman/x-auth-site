@@ -343,11 +343,12 @@ func TestEvaluationLowTier(t *testing.T) {
 // comfortably clears the 0.70 threshold.
 //
 // Arithmetic sanity:
-//   device 0.5 * 0.25 = 0.125
-//   behavior 0.6 * 0.20 = 0.12   (unusual_time at 02:00)
-//   network 0.8 * 0.30 = 0.24    (flagged_ip + vpn_detected)
-//   user 0.5 * 0.25 = 0.125      (first_high_value_action)
-//   sum = 0.61 → * 1.3 (high sensitivity) = 0.793 → tier high.
+//
+//	device 0.5 * 0.25 = 0.125
+//	behavior 0.6 * 0.20 = 0.12   (unusual_time at 02:00)
+//	network 0.8 * 0.30 = 0.24    (flagged_ip + vpn_detected)
+//	user 0.5 * 0.25 = 0.125      (first_high_value_action)
+//	sum = 0.61 → * 1.3 (high sensitivity) = 0.793 → tier high.
 func TestEvaluationHighTier(t *testing.T) {
 	h, _ := newRouter(t, nightClock())
 	body := map[string]any{
@@ -355,8 +356,8 @@ func TestEvaluationHighTier(t *testing.T) {
 		"action":               "transfer.initiate",
 		"resource_sensitivity": "high",
 		"context": map[string]any{
-			"device_fingerprint": "fp_suspicious",  // unknown_device
-			"ip_address":         "203.0.113.100",   // flagged_ip + vpn_detected
+			"device_fingerprint": "fp_suspicious", // unknown_device
+			"ip_address":         "203.0.113.100", // flagged_ip + vpn_detected
 		},
 	}
 	rec := doJSON(t, h, http.MethodPost, "/v1/evaluations", testTenant, body)

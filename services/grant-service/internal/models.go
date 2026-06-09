@@ -32,13 +32,15 @@ type Grant struct {
 
 // CreateGrantRequest is the JSON body for POST /v1/grants.
 // tenant_id is sourced from the X-Tenant-Id header, never the body.
+// Token hashes arrive pre-computed (SHA-256 hex) per REQUIREMENTS.md §4 —
+// plaintext tokens never transit to or through grant-service on this path.
 type CreateGrantRequest struct {
-	InstallID    string `json:"install_id"`
-	IdentityID   string `json:"identity_id"`
-	PersonaID    string `json:"persona_id"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	TTLSeconds   int    `json:"ttl_seconds"`
+	InstallID        string `json:"install_id"`
+	IdentityID       string `json:"identity_id"`
+	PersonaID        string `json:"persona_id"`
+	AccessTokenHash  string `json:"access_token_hash"`
+	RefreshTokenHash string `json:"refresh_token_hash"`
+	TTLSeconds       int    `json:"ttl_seconds"`
 }
 
 // IntrospectRequest is the body of POST /v1/introspect (RFC 7662).

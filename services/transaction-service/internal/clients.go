@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,19 +41,26 @@ func (e *DownstreamError) Unwrap() error { return e.Err }
 
 // RiskEvaluationResult is the slimmed view of a risk-service evaluation. Only the
 // fields transaction-service needs are decoded; extra fields are ignored.
+//
+// Note: risk-service does not return a single `policy_id` — its policy engine
+// reports every matching policy as `matched_policies` (ordered by policy
+// CreatedAt). transaction-service records the first match as the transaction's
+// primary policy id and surfaces the full list on /v1/authorize.
 type RiskEvaluationResult struct {
 	ID                 string             `json:"id"`
 	Tier               string             `json:"tier"`
 	Score              float64            `json:"score"`
 	Scores             map[string]float64 `json:"scores"`
 	Flags              []string           `json:"flags"`
-	PolicyID           string             `json:"policy_id"`
+	MatchedPolicies    []string           `json:"matched_policies"`
 	SensitivityApplied bool               `json:"sensitivity_applied"`
 }
 
 // RiskClient is the subset of risk-service that transaction-service uses.
+// Every method takes the request context so a caller disconnect cancels the
+// in-flight downstream call instead of letting it run to the client timeout.
 type RiskClient interface {
-	Evaluate(tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error)
+	Evaluate(ctx context.Context, tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error)
 }
 
 // RiskEvaluateRequest is the body transaction-service sends to risk-service.
@@ -71,9 +79,9 @@ type RiskEvaluateRequest struct {
 // transaction-service. The challenge_data blob per method is opaque at this layer —
 // transaction-service forwards it verbatim to clients.
 type Challenge struct {
-	ID               string           `json:"id"`
+	ID               string            `json:"id"`
 	MethodsAvailable []ChallengeMethod `json:"methods_available"`
-	ExpiresAt        time.Time        `json:"expires_at"`
+	ExpiresAt        time.Time         `json:"expires_at"`
 }
 
 // ChallengeMethod is one entry in methods_available.
@@ -97,16 +105,16 @@ type ChallengeVerifyResult struct {
 
 // AuthenticatorClient is the subset of authenticator-service that transaction-service uses.
 type AuthenticatorClient interface {
-	CreateChallenge(tenantID string, req ChallengeCreateRequest) (Challenge, error)
-	VerifyChallenge(tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error)
+	CreateChallenge(ctx context.Context, tenantID string, req ChallengeCreateRequest) (Challenge, error)
+	VerifyChallenge(ctx context.Context, tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error)
 }
 
 // ChallengeCreateRequest is the body transaction-service sends to authenticator-service.
 type ChallengeCreateRequest struct {
-	TenantID string                 `json:"tenant_id"`
-	UserID   string                 `json:"user_id"`
-	Methods  []string               `json:"methods"`
-	Context  map[string]any         `json:"context,omitempty"`
+	TenantID string         `json:"tenant_id"`
+	UserID   string         `json:"user_id"`
+	Methods  []string       `json:"methods"`
+	Context  map[string]any `json:"context,omitempty"`
 }
 
 // Session is the slimmed view of an authentication-service session.
@@ -121,8 +129,8 @@ type Session struct {
 
 // AuthenticationClient is the subset of authentication-service that transaction-service uses.
 type AuthenticationClient interface {
-	GetSession(tenantID, sessionID string) (Session, error)
-	UpdateSession(tenantID, sessionID string, req SessionUpdateRequest) (Session, error)
+	GetSession(ctx context.Context, tenantID, sessionID string) (Session, error)
+	UpdateSession(ctx context.Context, tenantID, sessionID string, req SessionUpdateRequest) (Session, error)
 }
 
 // SessionUpdateRequest matches ARCHITECTURE.md §4.3 POST /v1/sessions/{id}/upgrade.
@@ -137,10 +145,10 @@ type SessionUpdateRequest struct {
 
 // HTTPClients wires concrete HTTP clients for each sister service.
 type HTTPClients struct {
-	HTTP                     *http.Client
-	RiskURL                  string
-	AuthenticationURL        string
-	AuthenticatorURL         string
+	HTTP              *http.Client
+	RiskURL           string
+	AuthenticationURL string
+	AuthenticatorURL  string
 }
 
 // NewHTTPClients constructs the inter-service clients with a shared http.Client using
@@ -157,7 +165,9 @@ func NewHTTPClients(riskURL, authenticationURL, authenticatorURL string) *HTTPCl
 // do is the shared request helper: marshals body (if any), sets headers, forwards the
 // tenant id, decodes the response JSON (if out != nil), and returns a typed
 // DownstreamError on non-2xx responses so handlers can uniformly translate to 502.
-func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) error {
+// The request is bound to ctx so a caller disconnect (or deadline) cancels the
+// downstream call immediately; the http.Client timeout remains the upper bound.
+func (c *HTTPClients) do(ctx context.Context, service, method, url, tenantID string, body, out any) error {
 	var bodyReader *bytes.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -170,9 +180,9 @@ func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) e
 	var req *http.Request
 	var err error
 	if bodyReader != nil {
-		req, err = http.NewRequest(method, url, bodyReader)
+		req, err = http.NewRequestWithContext(ctx, method, url, bodyReader)
 	} else {
-		req, err = http.NewRequest(method, url, nil)
+		req, err = http.NewRequestWithContext(ctx, method, url, nil)
 	}
 	if err != nil {
 		return &DownstreamError{Service: service, Err: err}
@@ -204,41 +214,41 @@ func (c *HTTPClients) do(service, method, url, tenantID string, body, out any) e
 }
 
 // Evaluate calls POST {RISK_SERVICE_URL}/v1/evaluations.
-func (c *HTTPClients) Evaluate(tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error) {
+func (c *HTTPClients) Evaluate(ctx context.Context, tenantID string, req RiskEvaluateRequest) (RiskEvaluationResult, error) {
 	var out RiskEvaluationResult
 	url := c.RiskURL + "/v1/evaluations"
-	if err := c.do("risk-service", http.MethodPost, url, tenantID, req, &out); err != nil {
+	if err := c.do(ctx, "risk-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return RiskEvaluationResult{}, err
 	}
 	return out, nil
 }
 
 // CreateChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/v1/challenges.
-func (c *HTTPClients) CreateChallenge(tenantID string, req ChallengeCreateRequest) (Challenge, error) {
+func (c *HTTPClients) CreateChallenge(ctx context.Context, tenantID string, req ChallengeCreateRequest) (Challenge, error) {
 	var out Challenge
 	url := c.AuthenticatorURL + "/v1/challenges"
-	if err := c.do("authenticator-service", http.MethodPost, url, tenantID, req, &out); err != nil {
+	if err := c.do(ctx, "authenticator-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return Challenge{}, err
 	}
 	return out, nil
 }
 
 // VerifyChallenge calls POST {AUTHENTICATOR_SERVICE_URL}/v1/challenges/{id}/verify.
-func (c *HTTPClients) VerifyChallenge(tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error) {
+func (c *HTTPClients) VerifyChallenge(ctx context.Context, tenantID, challengeID, method string, response map[string]any) (ChallengeVerifyResult, error) {
 	var out ChallengeVerifyResult
 	url := fmt.Sprintf("%s/v1/challenges/%s/verify", c.AuthenticatorURL, challengeID)
 	body := map[string]any{"method": method, "response": response}
-	if err := c.do("authenticator-service", http.MethodPost, url, tenantID, body, &out); err != nil {
+	if err := c.do(ctx, "authenticator-service", http.MethodPost, url, tenantID, body, &out); err != nil {
 		return ChallengeVerifyResult{}, err
 	}
 	return out, nil
 }
 
 // GetSession calls GET {AUTHENTICATION_SERVICE_URL}/v1/sessions/{id}.
-func (c *HTTPClients) GetSession(tenantID, sessionID string) (Session, error) {
+func (c *HTTPClients) GetSession(ctx context.Context, tenantID, sessionID string) (Session, error) {
 	var out Session
 	url := fmt.Sprintf("%s/v1/sessions/%s", c.AuthenticationURL, sessionID)
-	if err := c.do("authentication-service", http.MethodGet, url, tenantID, nil, &out); err != nil {
+	if err := c.do(ctx, "authentication-service", http.MethodGet, url, tenantID, nil, &out); err != nil {
 		return Session{}, err
 	}
 	return out, nil
@@ -246,10 +256,10 @@ func (c *HTTPClients) GetSession(tenantID, sessionID string) (Session, error) {
 
 // UpdateSession calls POST {AUTHENTICATION_SERVICE_URL}/v1/sessions/{id}/upgrade.
 // authentication-service's upgrade endpoint accepts {risk_level, step_up_completed}.
-func (c *HTTPClients) UpdateSession(tenantID, sessionID string, req SessionUpdateRequest) (Session, error) {
+func (c *HTTPClients) UpdateSession(ctx context.Context, tenantID, sessionID string, req SessionUpdateRequest) (Session, error) {
 	var out Session
 	url := fmt.Sprintf("%s/v1/sessions/%s/upgrade", c.AuthenticationURL, sessionID)
-	if err := c.do("authentication-service", http.MethodPost, url, tenantID, req, &out); err != nil {
+	if err := c.do(ctx, "authentication-service", http.MethodPost, url, tenantID, req, &out); err != nil {
 		return Session{}, err
 	}
 	return out, nil

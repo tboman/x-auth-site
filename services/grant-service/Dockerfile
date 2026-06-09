@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/service ./services/grant-service/c
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/service /service
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=8183
+EXPOSE 8183
 USER nonroot:nonroot
 ENTRYPOINT ["/service"]

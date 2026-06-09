@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,11 +17,12 @@ import (
 // IS set, the test truncates the pools + identities tables so it's safe to re-run.
 //
 // Recommended local setup:
-//   docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
-//     -e POSTGRES_DB=pool_db -p 5432:5432 postgres:16
-//   # then apply services/pool-service/migrations/000001_init.up.sql
-//   POOL_PG_DSN="postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" \
-//     go test ./services/pool-service/internal/ -run PG
+//
+//	docker run --rm -d --name xauth-pg -e POSTGRES_PASSWORD=postgres \
+//	  -e POSTGRES_DB=pool_db -p 5432:5432 postgres:16
+//	# then apply services/pool-service/migrations/000001_init.up.sql
+//	POOL_PG_DSN="postgres://postgres:postgres@localhost:5432/pool_db?sslmode=disable" \
+//	  go test ./services/pool-service/internal/ -run PG
 func newPGStorage(t *testing.T) *PGStorage {
 	t.Helper()
 	dsn := os.Getenv("POOL_PG_DSN")
@@ -49,7 +51,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 func seedPool(t *testing.T, s *PGStorage, size int, personaIDs []string, createdAt time.Time) Pool {
 	t.Helper()
 	p, err := s.CreatePool(Pool{
-		ID:         newUUID(),
+		ID:         uuid.NewString(),
 		TenantID:   "tenant-a",
 		Name:       "support-agents",
 		Size:       size,
@@ -107,7 +109,7 @@ func TestPGStorageDeletePoolCascades(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	p := seedPool(t, s, 5, nil, now)
 	ident, err := s.AddIdentity("tenant-a", p.ID, Identity{
-		ID: newUUID(), PoolID: p.ID, SubjectID: "agent-001",
+		ID: uuid.NewString(), PoolID: p.ID, SubjectID: "agent-001",
 		Status: StatusAvailable, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
@@ -136,14 +138,14 @@ func TestPGStorageAddIdentityPoolFull(t *testing.T) {
 	p := seedPool(t, s, 1, nil, now)
 
 	first := Identity{
-		ID: newUUID(), PoolID: p.ID, SubjectID: "agent-001",
+		ID: uuid.NewString(), PoolID: p.ID, SubjectID: "agent-001",
 		Status: StatusAvailable, CreatedAt: now, UpdatedAt: now,
 	}
 	if _, err := s.AddIdentity("tenant-a", p.ID, first); err != nil {
 		t.Fatalf("add 1: %v", err)
 	}
 	second := first
-	second.ID = newUUID()
+	second.ID = uuid.NewString()
 	second.SubjectID = "agent-002"
 	if _, err := s.AddIdentity("tenant-a", p.ID, second); !errors.Is(err, ErrPoolFull) {
 		t.Fatalf("add beyond size should be ErrPoolFull, got %v", err)
@@ -172,11 +174,11 @@ func TestPGStorageClaimReleaseRevoke(t *testing.T) {
 
 	// Oldest available identity wins the claim.
 	older := Identity{
-		ID: newUUID(), PoolID: p.ID, SubjectID: "agent-old",
+		ID: uuid.NewString(), PoolID: p.ID, SubjectID: "agent-old",
 		Status: StatusAvailable, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
 	}
 	newer := Identity{
-		ID: newUUID(), PoolID: p.ID, SubjectID: "agent-new",
+		ID: uuid.NewString(), PoolID: p.ID, SubjectID: "agent-new",
 		Status: StatusAvailable, CreatedAt: now, UpdatedAt: now,
 	}
 	for _, ident := range []Identity{newer, older} {

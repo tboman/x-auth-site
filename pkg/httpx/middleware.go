@@ -2,6 +2,8 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -39,11 +41,13 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// WriteJSON writes v as JSON with the given status code.
-func WriteJSON(w http.ResponseWriter, status int, v any) {
+// WriteJSON writes v as JSON with the given status code. The returned error is
+// non-nil when encoding fails after the header was already sent (the response is
+// truncated at that point); callers that can act on it should log it.
+func WriteJSON(w http.ResponseWriter, status int, v any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	return json.NewEncoder(w).Encode(v)
 }
 
 // WriteError writes a standard error body with status.
@@ -54,11 +58,23 @@ func WriteError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
-// ReadJSON decodes a JSON request body into v. Returns an error on malformed input.
+// MaxBodyBytes caps how much of a JSON request body ReadJSON will consume.
+// No X-Auth API accepts payloads anywhere near this; the cap exists so a
+// misbehaving client can't make a handler buffer unbounded input.
+const MaxBodyBytes = 1 << 20 // 1 MiB
+
+// ReadJSON decodes a JSON request body into v. Returns an error on malformed
+// input or when the body exceeds MaxBodyBytes.
 func ReadJSON(r *http.Request, v any) error {
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(io.LimitReader(r.Body, MaxBodyBytes+1))
 	dec.DisallowUnknownFields()
-	return dec.Decode(v)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if dec.InputOffset() > MaxBodyBytes {
+		return errors.New("request body exceeds size limit")
+	}
+	return nil
 }
 
 type statusWriter struct {

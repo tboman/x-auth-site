@@ -23,9 +23,9 @@ import (
 //  5. Persist the updated transaction with the method used, decision, and history.
 //
 // Failure modes:
-//  - Verification 401/false -> 401 to caller, transaction stays step_up_required (the
-//    challenge may still have retries; we don't flip to deny on a single miss).
-//  - Any upstream 5xx/network error -> 502, transaction marked error.
+//   - Verification 401/false -> 401 to caller, transaction stays step_up_required (the
+//     challenge may still have retries; we don't flip to deny on a single miss).
+//   - Any upstream 5xx/network error -> 502, transaction marked error.
 func (h *Handlers) StepUpVerify(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
 	if !ok {
@@ -78,9 +78,9 @@ func (h *Handlers) StepUpVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Verify via authenticator-service ---
-	result, err := h.Authenticator.VerifyChallenge(tenantID, req.ChallengeID, req.Method, req.Response)
+	result, err := h.Authenticator.VerifyChallenge(r.Context(), tenantID, req.ChallengeID, req.Method, req.Response)
 	if err != nil {
-		h.Logger.Error("challenge_verify_failed", "err", err, "txn_id", txn.ID)
+		h.logDownstream("challenge_verify_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 		h.markError(&txn, "challenge_verify_failed", err.Error())
 		writeUpstreamError(w, "authenticator-service", txn.ID)
 		return
@@ -104,7 +104,7 @@ func (h *Handlers) StepUpVerify(w http.ResponseWriter, r *http.Request) {
 	// --- Verified: promote the session if we have one ---
 	var sessView *SessionView
 	if txn.SessionID != "" {
-		upgraded, err := h.Authentication.UpdateSession(tenantID, txn.SessionID, SessionUpdateRequest{
+		upgraded, err := h.Authentication.UpdateSession(r.Context(), tenantID, txn.SessionID, SessionUpdateRequest{
 			RiskLevel:       txn.RiskTier,
 			StepUpCompleted: true,
 		})
@@ -114,7 +114,7 @@ func (h *Handlers) StepUpVerify(w http.ResponseWriter, r *http.Request) {
 			// that session promotion failed so the client knows to retry /authorize
 			// carefully. Return 502 with the verified txn so clients don't blindly
 			// assume allow.
-			h.Logger.Error("session_update_failed", "err", err, "txn_id", txn.ID)
+			h.logDownstream("session_update_failed", err, "txn_id", txn.ID, "tenant_id", tenantID)
 			h.markError(&txn, "session_update_failed", err.Error())
 			writeUpstreamError(w, "authentication-service", txn.ID)
 			return

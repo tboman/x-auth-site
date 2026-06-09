@@ -1,8 +1,6 @@
 package internal
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
@@ -31,7 +31,7 @@ func NewServer(storage Storage, logger *slog.Logger) *Server {
 		Storage: storage,
 		Logger:  logger,
 		Now:     func() time.Time { return time.Now().UTC() },
-		NewID:   newUUID,
+		NewID:   uuid.NewString,
 	}
 }
 
@@ -67,9 +67,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleCreatePool(w http.ResponseWriter, r *http.Request) {
-	tenant, ok := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
 	if !ok {
-		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "tenant id missing from context")
 		return
 	}
 	var req CreatePoolRequest
@@ -112,7 +111,10 @@ func (s *Server) handleCreatePool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListPools(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	pools, err := s.Storage.ListPools(tenant)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
@@ -122,7 +124,10 @@ func (s *Server) handleListPools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPool(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
@@ -141,7 +146,10 @@ func (s *Server) handleGetPool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeletePool(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
@@ -159,7 +167,10 @@ func (s *Server) handleDeletePool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddIdentity(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	poolID := r.PathValue("id")
 	if poolID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
@@ -200,7 +211,10 @@ func (s *Server) handleAddIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListIdentities(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	poolID := r.PathValue("id")
 	if poolID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
@@ -219,7 +233,10 @@ func (s *Server) handleListIdentities(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	poolID := r.PathValue("id")
 	if poolID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "pool id required")
@@ -255,7 +272,10 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "identity id required")
@@ -277,7 +297,10 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
-	tenant, _ := tenantx.FromContext(r.Context())
+	tenant, ok := tenantFromRequest(w, r)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_id", "identity id required")
@@ -296,6 +319,18 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 
 // ---------- helpers ----------
 
+// tenantFromRequest extracts the tenant id from the request context. If it is missing
+// (tenantx.Middleware bypassed or misconfigured) it writes the structured missing_tenant
+// error shared by every X-Auth service and returns ok=false, so no storage query ever
+// runs with an empty — and therefore unscoped — tenant id.
+func tenantFromRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tenant, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+	}
+	return tenant, ok
+}
+
 // decodeJSON decodes a request body using httpx.ReadJSON and normalises empty-body errors.
 func decodeJSON(r *http.Request, v any) error {
 	if r.Body == nil {
@@ -308,25 +343,4 @@ func decodeJSON(r *http.Request, v any) error {
 		return err
 	}
 	return nil
-}
-
-// newUUID returns an RFC 4122 v4 UUID string built from crypto/rand. Avoids the
-// external google/uuid dependency so we don't need to manage go.sum hashes offline.
-func newUUID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand.Read is documented never to return an error on supported OSes;
-		// panic is appropriate here because an RNG failure is unrecoverable.
-		panic(fmt.Sprintf("crypto/rand failed: %v", err))
-	}
-	// Version 4, variant RFC 4122.
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
-		hex.EncodeToString(b[0:4]),
-		hex.EncodeToString(b[4:6]),
-		hex.EncodeToString(b[6:8]),
-		hex.EncodeToString(b[8:10]),
-		hex.EncodeToString(b[10:16]),
-	)
 }

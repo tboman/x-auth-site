@@ -54,7 +54,7 @@ func TestHealthz(t *testing.T) {
 
 func TestCreateRequiresTenant(t *testing.T) {
 	rec := doJSON(t, newServer(t).Router(), http.MethodPost, "/v1/grants", "", map[string]any{
-		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token": "tok",
+		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("tok"),
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("want 400 without tenant, got %d", rec.Code)
@@ -64,11 +64,13 @@ func TestCreateRequiresTenant(t *testing.T) {
 func TestCreateValidatesFields(t *testing.T) {
 	h := newServer(t).Router()
 	cases := []map[string]any{
-		{"identity_id": "id", "persona_id": "p", "access_token": "t"},                 // missing install_id
-		{"install_id": "i", "persona_id": "p", "access_token": "t"},                   // missing identity_id
-		{"install_id": "i", "identity_id": "id", "access_token": "t"},                 // missing persona_id
-		{"install_id": "i", "identity_id": "id", "persona_id": "p"},                   // missing access_token
-		{"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token": "t", "ttl_seconds": 99999},
+		{"identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("t")},                                                 // missing install_id
+		{"install_id": "i", "persona_id": "p", "access_token_hash": HashToken("t")},                                                   // missing identity_id
+		{"install_id": "i", "identity_id": "id", "access_token_hash": HashToken("t")},                                                 // missing persona_id
+		{"install_id": "i", "identity_id": "id", "persona_id": "p"},                                                                   // missing access_token_hash
+		{"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": "not-a-hash"},                                // malformed hash
+		{"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("t"), "refresh_token_hash": "xyz"}, // malformed refresh hash
+		{"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("t"), "ttl_seconds": 99999},
 	}
 	for i, body := range cases {
 		rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, body)
@@ -81,11 +83,11 @@ func TestCreateValidatesFields(t *testing.T) {
 func TestCreateHashesTokens(t *testing.T) {
 	h := newServer(t).Router()
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, map[string]any{
-		"install_id":    "install-1",
-		"identity_id":   "identity-1",
-		"persona_id":    "persona-1",
-		"access_token":  "super-secret-access",
-		"refresh_token": "super-secret-refresh",
+		"install_id":         "install-1",
+		"identity_id":        "identity-1",
+		"persona_id":         "persona-1",
+		"access_token_hash":  HashToken("super-secret-access"),
+		"refresh_token_hash": HashToken("super-secret-refresh"),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d body=%s", rec.Code, rec.Body.String())
@@ -122,7 +124,7 @@ func TestIntrospectRoundTrip(t *testing.T) {
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, map[string]any{
 		"install_id": "i", "identity_id": "id", "persona_id": "p",
-		"access_token": token, "ttl_seconds": 300,
+		"access_token_hash": HashToken(token), "ttl_seconds": 300,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create want 201, got %d", rec.Code)
@@ -193,7 +195,7 @@ func TestIntrospectCrossTenantReturnsInactive(t *testing.T) {
 	token := "shared-token"
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", "tenant-a", map[string]any{
-		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token": token,
+		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken(token),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create want 201, got %d", rec.Code)
@@ -225,7 +227,7 @@ func TestIntrospectExpiredReturnsInactive(t *testing.T) {
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, map[string]any{
 		"install_id": "i", "identity_id": "id", "persona_id": "p",
-		"access_token": "tok", "ttl_seconds": 60,
+		"access_token_hash": HashToken("tok"), "ttl_seconds": 60,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create want 201, got %d", rec.Code)
@@ -246,7 +248,7 @@ func TestGrantTenantIsolation(t *testing.T) {
 	h := newServer(t).Router()
 
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", "tenant-a", map[string]any{
-		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token": "t",
+		"install_id": "i", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("t"),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create want 201, got %d", rec.Code)
@@ -292,7 +294,7 @@ func TestAuditRoundTrip(t *testing.T) {
 
 	// Seed with a create (which auto-emits grant_issued) + manual event.
 	rec := doJSON(t, h, http.MethodPost, "/v1/grants", testTenant, map[string]any{
-		"install_id": "install-1", "identity_id": "id", "persona_id": "p", "access_token": "t",
+		"install_id": "install-1", "identity_id": "id", "persona_id": "p", "access_token_hash": HashToken("t"),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create grant want 201, got %d", rec.Code)

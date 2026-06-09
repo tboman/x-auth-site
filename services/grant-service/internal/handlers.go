@@ -60,10 +60,10 @@ func (h *Handlers) Health(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// CreateGrant handles POST /v1/grants. Tokens arrive in plaintext and are hashed with
-// SHA-256 before persistence; the response returns only the hex digests. Also emits a
-// `grant_issued` audit event so the install lifecycle has a record even if the caller
-// forgets to post its own.
+// CreateGrant handles POST /v1/grants. Token hashes arrive pre-computed (SHA-256 hex,
+// matching HashToken's format) per REQUIREMENTS.md §4, so plaintext bearer tokens never
+// reach this service on the create path. Also emits a `grant_issued` audit event so the
+// install lifecycle has a record even if the caller forgets to post its own.
 func (h *Handlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantx.FromContext(r.Context())
 	if !ok {
@@ -96,8 +96,16 @@ func (h *Handlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_persona_id", "persona_id is required")
 		return
 	}
-	if strings.TrimSpace(req.AccessToken) == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_access_token", "access_token is required")
+	accessHash := strings.TrimSpace(req.AccessTokenHash)
+	refreshHash := strings.TrimSpace(req.RefreshTokenHash)
+	if !isTokenHash(accessHash) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_access_token_hash",
+			"access_token_hash must be a 64-char SHA-256 hex digest")
+		return
+	}
+	if refreshHash != "" && !isTokenHash(refreshHash) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_refresh_token_hash",
+			"refresh_token_hash must be empty or a 64-char SHA-256 hex digest")
 		return
 	}
 
@@ -118,8 +126,8 @@ func (h *Handlers) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		InstallID:        installID,
 		IdentityID:       identityID,
 		PersonaID:        personaID,
-		AccessTokenHash:  HashToken(req.AccessToken),
-		RefreshTokenHash: HashToken(req.RefreshToken),
+		AccessTokenHash:  accessHash,
+		RefreshTokenHash: refreshHash,
 		IssuedAt:         now,
 		ExpiresAt:        now.Add(time.Duration(ttl) * time.Second),
 	}

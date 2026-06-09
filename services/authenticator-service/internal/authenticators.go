@@ -23,7 +23,11 @@ func NewAuthenticatorHandlers(log *slog.Logger, store Storage) *AuthenticatorHan
 
 // Enroll handles POST /v1/authenticators — register a new authenticator for a user.
 func (h *AuthenticatorHandlers) Enroll(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	var req EnrollRequest
 	if err := httpx.ReadJSON(r, &req); err != nil {
@@ -58,7 +62,11 @@ func (h *AuthenticatorHandlers) Enroll(w http.ResponseWriter, r *http.Request) {
 // List handles GET /v1/authenticators?user_id=... — list authenticators for a user,
 // scoped to the request's tenant.
 func (h *AuthenticatorHandlers) List(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 	if userID == "" {
@@ -71,7 +79,11 @@ func (h *AuthenticatorHandlers) List(w http.ResponseWriter, r *http.Request) {
 
 // Get handles GET /v1/authenticators/{id}.
 func (h *AuthenticatorHandlers) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	id := r.PathValue("id")
 	if id == "" {
@@ -89,7 +101,11 @@ func (h *AuthenticatorHandlers) Get(w http.ResponseWriter, r *http.Request) {
 // Delete handles DELETE /v1/authenticators/{id} as a soft-delete
 // (status → `disabled`). Idempotent.
 func (h *AuthenticatorHandlers) Delete(w http.ResponseWriter, r *http.Request) {
-	tenantID, _ := tenantx.FromContext(r.Context())
+	tenantID, ok := tenantx.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "missing_tenant", "X-Tenant-Id required")
+		return
+	}
 
 	id := r.PathValue("id")
 	if id == "" {
