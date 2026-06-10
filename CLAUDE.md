@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-X-Auth is a marketing site for an identity security product (risk-based authentication, authorization, and risk intelligence) built by XentraNET. It is a **single-file static site** — `public/index.html` contains all HTML, CSS, and no JavaScript beyond inline code snippets shown as marketing content.
+X-Auth is a marketing site for an identity security product (risk-based authentication, authorization, and risk intelligence) built by XentraNET. It is a **single-file static site** — `public/index.html` contains all HTML, CSS, and two small inline scripts: a mailto-based contact form handler and a three.js (loaded from CDN) hero background animation. Both are progressive enhancements — the page must remain fully usable without them.
 
 ## Local Development
 
