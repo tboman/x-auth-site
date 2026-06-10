@@ -67,7 +67,7 @@
       <mxGeometry x="570" y="200" width="460" height="530" as="geometry"/>
     </mxCell>
 
-    <mxCell id="x_txnsvc" value="transaction-service :8080&#xa;OIDC Authorization Server&#xa;/authorize    /token    /userinfo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="x_platform">
+    <mxCell id="x_txnsvc" value="OIDC front door&#xa;authentication-service :8082 — /v1/authorize · /v1/token (PKCE S256) · /v1/auth/jwks (RS256)&#xa;transaction-service :8080 — /v1/advice · /v1/authorize (risk evaluation)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;fontStyle=1;" vertex="1" parent="x_platform">
       <mxGeometry x="20" y="45" width="420" height="60" as="geometry"/>
     </mxCell>
 
@@ -95,7 +95,7 @@
       <mxGeometry x="300" y="335" width="140" height="50" as="geometry"/>
     </mxCell>
 
-    <mxCell id="x_claims" value="Authorization Token Claims (returned to client)&#xa;&#xa;  risk_score:     0.87&#xa;  risk_tier:      &quot;high&quot;&#xa;  acr:            &quot;urn:x-auth:fido2&quot;&#xa;  threshold:      0.8&#xa;  threshold_met:  true&#xa;  scope:          &quot;txn:transfer&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=9;align=left;spacingLeft=8;spacingRight=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="x_platform">
+    <mxCell id="x_claims" value="Authorization Token Claims (roadmap shape — today&#39;s RS256 JWT carries&#xa;sub · iss · aud · exp · iat · tenant_id · scope · session_id)&#xa;&#xa;  risk_score:     0.87&#xa;  risk_tier:      &quot;high&quot;&#xa;  acr:            &quot;urn:x-auth:fido2&quot;&#xa;  threshold:      0.8&#xa;  threshold_met:  true&#xa;  scope:          &quot;txn:transfer&quot;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=9;align=left;spacingLeft=8;spacingRight=6;verticalAlign=middle;fontFamily=JetBrains Mono;" vertex="1" parent="x_platform">
       <mxGeometry x="20" y="410" width="420" height="105" as="geometry"/>
     </mxCell>
 

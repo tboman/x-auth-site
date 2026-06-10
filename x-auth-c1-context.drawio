@@ -1,0 +1,82 @@
+<mxGraphModel adaptiveColors="auto">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+
+    <mxCell id="title" value="X-Auth — C1 System Context (C4 model)" style="text;fontSize=18;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="320" y="20" width="640" height="30" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="end_user" value="End User&#xa;[Person]&#xa;&#xa;Customer of an X-Auth tenant; logs in, completes step-up challenges" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#08427B;strokeColor=#052E56;fontColor=#ffffff;fontSize=11;arcSize=20;" vertex="1" parent="1">
+      <mxGeometry x="80" y="100" width="220" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="operator" value="Tenant Operator&#xa;[Person]&#xa;&#xa;Configures policies, personas, identity pools, authenticators" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#08427B;strokeColor=#052E56;fontColor=#ffffff;fontSize=11;arcSize=20;" vertex="1" parent="1">
+      <mxGeometry x="980" y="100" width="220" height="100" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="customer_app" value="Customer Application&#xa;[Software System]&#xa;&#xa;The tenant&#39;s web/mobile app and backend; owns transaction data and risk thresholds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="80" y="320" width="220" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="agent_runtime" value="AI Agent Runtime&#xa;[Software System]&#xa;&#xa;MCP client (Claude, ChatGPT, Cursor, custom) installing tools on behalf of a tenant" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="980" y="320" width="220" height="110" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="xauth" value="X-Auth Platform&#xa;[Software System]&#xa;&#xa;Risk-based authentication, authorization, and agent identity.&#xa;X-Auth for Apps: risk-scored OIDC with adaptive step-up.&#xa;X-Auth for Agents: MCP-native identity broker — personas,&#xa;pooled identities, grants, RS256 JWTs verified via JWKS." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1168BD;strokeColor=#0B4884;fontColor=#ffffff;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="460" y="300" width="380" height="160" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="mcp_servers" value="Downstream MCP Servers / Tools&#xa;[Software System]&#xa;&#xa;Resource servers the agent calls; verify X-Auth JWTs via JWKS or introspection" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="980" y="540" width="220" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="vendors" value="Notification Vendors&#xa;[Software System]&#xa;&#xa;SMS / email / push providers for challenge dispatch (Twilio, APNs, FCM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="80" y="540" width="220" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="idps" value="Social Identity Providers&#xa;[Software System]&#xa;&#xa;Federated login (Google, GitHub, …)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="380" y="560" width="200" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="kms" value="KMS&#xa;[Software System]&#xa;&#xa;JWT signing keys, 90-day rotation (production)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="640" y="560" width="200" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="threat" value="Threat Intelligence&#xa;[Software System]&#xa;&#xa;IP reputation, device intel, fraud feeds" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#999999;strokeColor=#6B6B6B;fontColor=#ffffff;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="460" y="100" width="200" height="90" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e1" edge="1" parent="1" source="end_user" target="customer_app" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="Uses">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e2" edge="1" parent="1" source="customer_app" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="Risk advice + OIDC&#xa;[HTTPS/JSON]">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e3" edge="1" parent="1" source="end_user" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" value="Authenticates, completes&#xa;step-up challenges">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e4" edge="1" parent="1" source="agent_runtime" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="OAuth: DCR + PKCE S256&#xa;→ scoped agent identity (JWT)">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e5" edge="1" parent="1" source="operator" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;" value="Manages tenants, personas,&#xa;pools, policies">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e6" edge="1" parent="1" source="agent_runtime" target="mcp_servers" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="Calls tools with&#xa;X-Auth-issued JWT">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e7" edge="1" parent="1" source="mcp_servers" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;dashed=1;" value="Verifies tokens&#xa;[JWKS / RFC 7662 introspect]">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e8" edge="1" parent="1" source="xauth" target="vendors" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="Dispatches challenges&#xa;[OTP, push, magic link]">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e9" edge="1" parent="1" source="xauth" target="idps" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;" value="Federated login">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e10" edge="1" parent="1" source="xauth" target="kms" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;dashed=1;" value="Signing keys (prod)">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e11" edge="1" parent="1" source="threat" target="xauth" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666666;endArrow=block;endFill=1;dashed=1;" value="Risk signal enrichment">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="legend" value="C4 legend:   dark blue = person   ·   blue = system in scope   ·   grey = external system   ·   dashed = supporting/verification flow" style="text;whiteSpace=wrap;html=1;fontSize=10;fontStyle=2;fontColor=#666666;align=center;" vertex="1" parent="1">
+      <mxGeometry x="240" y="690" width="800" height="20" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

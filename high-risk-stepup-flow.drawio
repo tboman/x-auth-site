@@ -13,7 +13,7 @@
     <mxCell id="p_client" value="Client App&#xa;(Customer Backend)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="1">
       <mxGeometry x="250" y="10" width="160" height="45" as="geometry"/>
     </mxCell>
-    <mxCell id="p_txn" value="transaction-service&#xa;:8080 (OIDC AuthZ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+    <mxCell id="p_txn" value="transaction-service&#xa;:8080 (advice + authorization)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
       <mxGeometry x="490" y="10" width="170" height="45" as="geometry"/>
     </mxCell>
     <mxCell id="p_risk" value="risk-service&#xa;:8081" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
@@ -97,7 +97,7 @@
       <mxGeometry x="350" y="105" width="195" height="95" as="geometry"/>
     </mxCell>
 
-    <mxCell id="m02" value="302 → transaction-service /authorize" edge="1" parent="1" style="endArrow=open;endFill=0;dashed=1;dashPattern=8 4;strokeColor=#0000CC;fontColor=#0000CC;fontSize=10;verticalAlign=bottom;">
+    <mxCell id="m02" value="302 â†’ transaction-service /authorize" edge="1" parent="1" style="endArrow=open;endFill=0;dashed=1;dashPattern=8 4;strokeColor=#0000CC;fontColor=#0000CC;fontSize=10;verticalAlign=bottom;">
       <mxGeometry relative="1" as="geometry">
         <mxPoint x="330" y="215" as="sourcePoint"/>
         <mxPoint x="100" y="215" as="targetPoint"/>
@@ -111,14 +111,14 @@
       </mxGeometry>
     </mxCell>
 
-    <mxCell id="m04" value="POST /evaluate {session, device, network, behavior signals}" edge="1" parent="1" style="endArrow=block;endFill=1;strokeColor=#333333;fontColor=#333333;fontSize=10;verticalAlign=bottom;">
+    <mxCell id="m04" value="POST /internal/v1/evaluations {session, device, network, behavior signals} (mTLS)" edge="1" parent="1" style="endArrow=block;endFill=1;strokeColor=#333333;fontColor=#333333;fontSize=10;verticalAlign=bottom;">
       <mxGeometry relative="1" as="geometry">
         <mxPoint x="575" y="310" as="sourcePoint"/>
         <mxPoint x="810" y="310" as="targetPoint"/>
       </mxGeometry>
     </mxCell>
 
-    <mxCell id="n_scoring" value="4 parallel scorers:&#xa;  device   = 0.90 x 0.25&#xa;  behavior = 0.60 x 0.30&#xa;  network  = 0.80 x 0.25&#xa;  user     = 0.40 x 0.20&#xa;&#xa;aggregate = 0.87 → HIGH" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=9;align=left;spacingLeft=6;spacingRight=6;fontFamily=JetBrains Mono;verticalAlign=middle;" vertex="1" parent="1">
+    <mxCell id="n_scoring" value="4 parallel scorers:&#xa;  device   = 0.90 x 0.25&#xa;  behavior = 0.60 x 0.30&#xa;  network  = 0.80 x 0.25&#xa;  user     = 0.40 x 0.20&#xa;&#xa;aggregate = 0.87 â†’ HIGH" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=9;align=left;spacingLeft=6;spacingRight=6;fontFamily=JetBrains Mono;verticalAlign=middle;" vertex="1" parent="1">
       <mxGeometry x="830" y="325" width="180" height="105" as="geometry"/>
     </mxCell>
 
@@ -129,7 +129,7 @@
       </mxGeometry>
     </mxCell>
 
-    <mxCell id="n_compare" value="0.87 &gt;= threshold 0.8&#xa;→ step-up required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=9;fontStyle=1;align=left;spacingLeft=6;" vertex="1" parent="1">
+    <mxCell id="n_compare" value="0.87 &gt;= threshold 0.8&#xa;â†’ step-up required" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=9;fontStyle=1;align=left;spacingLeft=6;" vertex="1" parent="1">
       <mxGeometry x="595" y="455" width="150" height="30" as="geometry"/>
     </mxCell>
 
@@ -140,7 +140,7 @@
       <mxGeometry x="60" y="505" width="35" height="20" as="geometry"/>
     </mxCell>
 
-    <mxCell id="guard1" value="[score &lt; threshold — no step-up needed]" style="text;fontSize=10;fontStyle=2;fontColor=#82B366;" vertex="1" parent="1">
+    <mxCell id="guard1" value="[score &lt; threshold â€” no step-up needed]" style="text;fontSize=10;fontStyle=2;fontColor=#82B366;" vertex="1" parent="1">
       <mxGeometry x="105" y="510" width="280" height="20" as="geometry"/>
     </mxCell>
 
@@ -158,7 +158,7 @@
       </mxGeometry>
     </mxCell>
 
-    <mxCell id="guard2" value="[score &gt;= threshold — FIDO2 step-up required]" style="text;fontSize=10;fontStyle=2;fontColor=#B85450;" vertex="1" parent="1">
+    <mxCell id="guard2" value="[score &gt;= threshold â€” FIDO2 step-up required]" style="text;fontSize=10;fontStyle=2;fontColor=#B85450;" vertex="1" parent="1">
       <mxGeometry x="105" y="595" width="320" height="20" as="geometry"/>
     </mxCell>
 

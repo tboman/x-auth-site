@@ -54,7 +54,7 @@ The entire site lives in one file: `public/index.html`.
 - `REQUIREMENTS.md` — original product/design requirements (target audience, visual aesthetic, section goals).
 - `CONTENT_GUIDE.md` — approved copy, headlines, CTAs, and keyword lists for each section.
 - `ARCHITECTURE.md` — backend platform architecture requirements. Defines four Go microservices (transaction-service, risk-service, authentication-service, authenticator-service), domain model, REST API contracts, risk scoring pipeline, data stores, deployment topology, and compliance certification mapping (SOC 2, ISO 27001, GDPR, HIPAA, PCI DSS). This is the source of truth for all backend implementation.
-- `*.drawio` (repo root) — architecture diagrams referenced by `ARCHITECTURE.md`: `x-auth-system.drawio` (system overview), `oidc-transaction-integration.drawio`, `high-risk-stepup-flow.drawio`.
+- `*.drawio` (repo root) — architecture diagrams referenced by `ARCHITECTURE.md`: `x-auth-system.drawio` (full-platform overview, both products), C4 model views `x-auth-c1-context.drawio` / `x-auth-c2-container.drawio` / `x-auth-c3-component-broker.drawio`, service topology `x-auth-apps-services.drawio`, and flow diagrams `oidc-transaction-integration.drawio`, `high-risk-stepup-flow.drawio`, `submit-payment-stepup-flow.drawio`.
 
 When editing copy, cross-reference `CONTENT_GUIDE.md` to stay consistent with approved messaging.
 When implementing backend services, follow the contracts and patterns defined in `ARCHITECTURE.md`.
