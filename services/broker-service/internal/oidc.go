@@ -22,7 +22,9 @@ import (
 // OIDCHandlers implements the OIDC/OAuth surface of the broker:
 //   - discovery documents (RFC 8414 + OIDC) + JWKS publication
 //   - /authorize: stub consent — auto-approves, records a pending install
-//   - /token: exchanges code for tokens; orchestrates persona/pool/grant
+//   - /token: code grant (exchanges code for tokens; orchestrates
+//     persona/pool/grant) + refresh grant (rotation with install-as-family
+//     replay revocation, §10.1)
 //   - /revoke: forwards to grant-service
 //   - /userinfo: hybrid bearer introspection (JWT verification + local token cache)
 //
@@ -216,10 +218,26 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redir.String(), http.StatusFound)
 }
 
-// Token handles POST /token. Only `authorization_code` is supported in phase 1;
-// `refresh_token` returns a clear "unsupported_grant_type" error rather than
-// silently minting a new access token, because phase 1 has no grant-service-backed
-// validation yet.
+// Token handles POST /token for the `authorization_code` and `refresh_token`
+// grant types — exactly the set advertised in both discovery documents'
+// grant_types_supported. Anything else is a structured unsupported_grant_type.
+func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
+		return
+	}
+	switch r.PostForm.Get("grant_type") {
+	case "authorization_code":
+		h.handleCodeGrant(w, r)
+	case "refresh_token":
+		h.handleRefreshGrant(w, r)
+	default:
+		httpx.WriteError(w, http.StatusBadRequest, "unsupported_grant_type",
+			"only authorization_code and refresh_token are supported")
+	}
+}
+
+// handleCodeGrant redeems an authorization code for tokens.
 //
 // Orchestration, in order:
 //  1. consume auth code (one-shot) and verify the PKCE code_verifier against
@@ -233,21 +251,11 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 // Compensation: if step 4 succeeds but step 5 fails, the claimed identity is
 // released back to its pool so it does not stay stuck. The install is left in
 // pending/revoked state and the caller receives 502.
-func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
-		return
-	}
-	grantType := r.PostForm.Get("grant_type")
+func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 	code := r.PostForm.Get("code")
 	clientID := r.PostForm.Get("client_id")
 	codeVerifier := r.PostForm.Get("code_verifier")
 
-	if grantType != "authorization_code" {
-		httpx.WriteError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"only authorization_code is supported in phase 1")
-		return
-	}
 	if code == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
 		return
@@ -443,6 +451,207 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		"expires_in":    ttl,
 		"scope":         grantedScope,
 	})
+}
+
+// handleRefreshGrant rotates a refresh token: it validates the presented token,
+// mints a brand-new access JWT + opaque refresh token, records a NEW grant in
+// grant-service, and marks the old record rotated (ARCHITECTURE.md §10.1).
+//
+// Lifetime policy: a broker refresh token has no independent expiry — it lives
+// for as long as its install is active and it has not been rotated out. MCP
+// installs are long-lived by design; revoking the install is the kill switch.
+// (The rotated-out record itself is purged once its access token's expires_at
+// passes — see Storage.PurgeExpired.)
+//
+// Replay detection (§10.1 family revocation — the broker's token family == the
+// install): a refresh token that has already been rotated out is presented only
+// by a thief or a catastrophically broken client. Either way the install can no
+// longer be trusted, so the WHOLE install is revoked: grant cascade + identity
+// release (same orchestration as POST /v1/installs/{id}/revoke) and every local
+// token record for the install is deleted — which kills the replacement refresh
+// token too.
+//
+// Old access tokens are NOT revoked on a successful rotation (standard OAuth):
+// they stay valid until their own exp. The old grant in grant-service likewise
+// expires naturally.
+//
+// Failure ordering: nothing is rotated until the new grant is recorded. If
+// grant-service is down the caller gets 502 and the presented refresh token
+// remains usable — no compensation needed because nothing changed yet.
+func (h *OIDCHandlers) handleRefreshGrant(w http.ResponseWriter, r *http.Request) {
+	presented := r.PostForm.Get("refresh_token")
+	if presented == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+		return
+	}
+
+	rec, err := h.Store.GetTokenByRefresh(presented)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "refresh token is invalid")
+		return
+	}
+
+	// Replay of a rotated-out refresh token: theft signal. Revoke the whole
+	// install (the broker's token family), then reject.
+	if rec.RotatedAt != nil {
+		h.Logger.Warn("refresh_token_replay_install_revoked",
+			"install_id", rec.InstallID, "tenant_id", rec.TenantID, "identity_id", rec.IdentityID)
+		// Non-cancellable context: this is security-relevant cleanup — a thief
+		// disconnecting mid-request must not abort the revocation.
+		h.revokeInstallForReplay(context.WithoutCancel(r.Context()), rec)
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant",
+			"refresh token already used; install revoked")
+		return
+	}
+
+	// The install must still be active — a revoked (or vanished, or still-pending)
+	// install must not be able to refresh its way back to life.
+	install, err := h.Store.GetInstall(rec.TenantID, rec.InstallID)
+	if err != nil || install.Status != InstallStatusActive {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "install is not active")
+		return
+	}
+
+	// Optional client auth, same rules as the code grant: if the caller names a
+	// client it must be the one the install is bound to.
+	if clientID := r.PostForm.Get("client_id"); clientID != "" && clientID != install.ClientID {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_client", "client_id mismatch")
+		return
+	}
+
+	// Re-fetch the persona: its CURRENT scopes and TTL are the source of truth,
+	// matching install-time behaviour — a persona edit propagates at the next
+	// refresh. A deleted persona means the install has lost its authority.
+	persona, err := h.Clients.GetPersona(r.Context(), rec.TenantID, rec.PersonaID)
+	if err != nil {
+		var dse *DownstreamError
+		if errors.As(err, &dse) && dse.Status == http.StatusNotFound {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "persona no longer exists")
+			return
+		}
+		h.Logger.Error("refresh_persona_fetch_failed",
+			downstreamLogAttrs(err, "tenant_id", rec.TenantID, "persona_id", rec.PersonaID)...)
+		httpx.WriteError(w, http.StatusBadGateway, "downstream_error", "persona-service unavailable")
+		return
+	}
+
+	// Mint the replacement pair exactly like the code grant: RS256 JWT access
+	// token bound to the same subject/install triple, fresh exp/iat/jti; opaque
+	// UUID refresh token.
+	ttl := persona.TokenTTL
+	if ttl <= 0 {
+		ttl = h.DefaultTTL
+	}
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(time.Duration(ttl) * time.Second)
+	grantedScope := scopeString(persona.Scopes, rec.Scope)
+	accessToken, err := h.Signer.Sign(jwtx.Claims{
+		Sub:      rec.Subject,
+		Iss:      h.JWTIssuer,
+		Aud:      install.ClientID,
+		Exp:      expiresAt.Unix(),
+		Iat:      issuedAt.Unix(),
+		JTI:      uuid.NewString(),
+		TenantID: rec.TenantID,
+		Scope:    grantedScope,
+	}, map[string]any{
+		"install_id":  rec.InstallID,
+		"persona_id":  rec.PersonaID,
+		"identity_id": rec.IdentityID,
+	})
+	if err != nil {
+		h.Logger.Error("refresh_sign_failed", "err", err, "tenant_id", rec.TenantID, "install_id", rec.InstallID)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to sign access token")
+		return
+	}
+	refreshToken := uuid.NewString()
+
+	// Record a NEW grant (new token hashes, current persona TTL) BEFORE rotating
+	// anything. On failure the presented refresh token is still the live one, so
+	// the caller can simply retry — no compensation needed.
+	if _, err := h.Clients.CreateGrant(r.Context(), rec.TenantID, GrantCreateRequest{
+		InstallID:        rec.InstallID,
+		IdentityID:       rec.IdentityID,
+		PersonaID:        rec.PersonaID,
+		AccessTokenHash:  hashToken(accessToken),
+		RefreshTokenHash: hashToken(refreshToken),
+		TTLSeconds:       ttl,
+	}); err != nil {
+		h.Logger.Error("refresh_grant_create_failed",
+			downstreamLogAttrs(err, "tenant_id", rec.TenantID, "install_id", rec.InstallID)...)
+		httpx.WriteError(w, http.StatusBadGateway, "downstream_error", "grant-service unavailable")
+		return
+	}
+
+	// Only now rotate: stamp the old record (its access token stays valid until
+	// its own exp — PutToken is an upsert keyed by access token) and persist the
+	// replacement record.
+	rotatedAt := time.Now().UTC()
+	rec.RotatedAt = &rotatedAt
+	if err := h.Store.PutToken(rec); err != nil {
+		h.Logger.Error("refresh_rotate_mark_failed", "err", err, "install_id", rec.InstallID)
+	}
+	if err := h.Store.PutToken(TokenRecord{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		InstallID:    rec.InstallID,
+		PersonaID:    rec.PersonaID,
+		IdentityID:   rec.IdentityID,
+		Subject:      rec.Subject,
+		Scope:        grantedScope,
+		TenantID:     rec.TenantID,
+		ExpiresAt:    expiresAt,
+	}); err != nil {
+		h.Logger.Error("refresh_token_store_failed", "err", err, "install_id", rec.InstallID)
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    ttl,
+		"scope":         grantedScope,
+	})
+}
+
+// revokeInstallForReplay is the refresh-replay family revocation (§10.1): the
+// same cascade as POST /v1/installs/{id}/revoke — mark the install revoked,
+// revoke every grant bound to it, release the claimed identity — plus deletion
+// of every local token record for the install, which also kills the replacement
+// refresh token issued by the legitimate rotation. Every step is best-effort
+// and logged: a partial cascade still leaves the install revoked locally, which
+// is what gates future refreshes.
+func (h *OIDCHandlers) revokeInstallForReplay(ctx context.Context, rec TokenRecord) {
+	identityID := rec.IdentityID
+	install, err := h.Store.GetInstall(rec.TenantID, rec.InstallID)
+	if err != nil {
+		h.Logger.Warn("replay_revoke_install_read_failed", "err", err,
+			"tenant_id", rec.TenantID, "install_id", rec.InstallID)
+	} else {
+		if install.IdentityID != "" {
+			identityID = install.IdentityID
+		}
+		if install.Status != InstallStatusRevoked {
+			install.Status = InstallStatusRevoked
+			if _, err := h.Store.UpdateInstall(install); err != nil {
+				h.Logger.Warn("replay_revoke_install_update_failed", "err", err, "install_id", rec.InstallID)
+			}
+		}
+	}
+
+	if err := h.Clients.RevokeGrantsForInstall(ctx, rec.TenantID, rec.InstallID); err != nil {
+		h.Logger.Warn("replay_revoke_grants_failed",
+			downstreamLogAttrs(err, "tenant_id", rec.TenantID, "install_id", rec.InstallID)...)
+	}
+	if identityID != "" {
+		if err := h.Clients.ReleaseIdentity(ctx, rec.TenantID, identityID); err != nil {
+			h.Logger.Warn("replay_revoke_release_failed",
+				downstreamLogAttrs(err, "tenant_id", rec.TenantID, "identity_id", identityID)...)
+		}
+	}
+	if _, err := h.Store.DeleteTokensForInstall(rec.InstallID); err != nil {
+		h.Logger.Warn("replay_revoke_token_delete_failed", "err", err, "install_id", rec.InstallID)
+	}
 }
 
 // Revoke implements RFC 7009 token revocation by forwarding to grant-service and

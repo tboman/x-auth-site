@@ -284,15 +284,17 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 // Token records
 // -----------------------------------------------------------------------------
 
-// PutToken stores an issued token record (upsert, mirroring MemStorage).
+// PutToken stores an issued token record (upsert, mirroring MemStorage). The
+// upsert writes rotated_at too, so re-Putting a record with RotatedAt stamped
+// is how the refresh grant marks the old refresh token as rotated out.
 func (s *PGStorage) PutToken(t TokenRecord) error {
 	const q = `
 		INSERT INTO tokens (
 			access_token, refresh_token, install_id, persona_id, identity_id,
-			subject, scope, tenant_id, expires_at
+			subject, scope, tenant_id, expires_at, rotated_at
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9
+			$6, $7, $8, $9, $10
 		)
 		ON CONFLICT (access_token) DO UPDATE SET
 			refresh_token = EXCLUDED.refresh_token,
@@ -302,46 +304,58 @@ func (s *PGStorage) PutToken(t TokenRecord) error {
 			subject       = EXCLUDED.subject,
 			scope         = EXCLUDED.scope,
 			tenant_id     = EXCLUDED.tenant_id,
-			expires_at    = EXCLUDED.expires_at
+			expires_at    = EXCLUDED.expires_at,
+			rotated_at    = EXCLUDED.rotated_at
 	`
+	var rotatedAt any
+	if t.RotatedAt != nil {
+		rotatedAt = t.RotatedAt.UTC()
+	}
 	if _, err := s.pool.Exec(bgCtx(), q,
 		t.AccessToken, nullable(t.RefreshToken), t.InstallID,
 		nullable(t.PersonaID), nullable(t.IdentityID),
 		nullable(t.Subject), nullable(t.Scope), t.TenantID, t.ExpiresAt.UTC(),
+		rotatedAt,
 	); err != nil {
 		return fmt.Errorf("pgstorage put_token: %w", err)
 	}
 	return nil
 }
 
+// tokenColumns is the SELECT list scanToken expects, shared by GetToken and
+// GetTokenByRefresh so the two lookups cannot drift.
+const tokenColumns = `access_token, refresh_token, install_id, persona_id, identity_id,
+	       subject, scope, tenant_id, expires_at, rotated_at`
+
 // GetToken reads by access token.
 func (s *PGStorage) GetToken(accessToken string) (TokenRecord, error) {
-	const q = `
-		SELECT access_token, refresh_token, install_id, persona_id, identity_id,
-		       subject, scope, tenant_id, expires_at
-		  FROM tokens
-		 WHERE access_token = $1
-	`
-	var (
-		t                                           TokenRecord
-		refresh, personaID, identityID, subj, scope *string
-	)
-	err := s.pool.QueryRow(bgCtx(), q, accessToken).Scan(
-		&t.AccessToken, &refresh, &t.InstallID, &personaID, &identityID,
-		&subj, &scope, &t.TenantID, &t.ExpiresAt,
-	)
+	q := `SELECT ` + tokenColumns + ` FROM tokens WHERE access_token = $1`
+	t, err := scanToken(s.pool.QueryRow(bgCtx(), q, accessToken))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TokenRecord{}, ErrNotFound
 	}
 	if err != nil {
 		return TokenRecord{}, fmt.Errorf("pgstorage get_token: %w", err)
 	}
-	t.RefreshToken = derefString(refresh)
-	t.PersonaID = derefString(personaID)
-	t.IdentityID = derefString(identityID)
-	t.Subject = derefString(subj)
-	t.Scope = derefString(scope)
-	t.ExpiresAt = t.ExpiresAt.UTC()
+	return t, nil
+}
+
+// GetTokenByRefresh reads by refresh token (the refresh-grant lookup; served by
+// idx_tokens_refresh from migration 000003). Refresh tokens are fresh UUIDs, so
+// at most one row matches.
+func (s *PGStorage) GetTokenByRefresh(refreshToken string) (TokenRecord, error) {
+	if refreshToken == "" {
+		// refresh_token is nullable; an empty presented token must never match.
+		return TokenRecord{}, ErrNotFound
+	}
+	q := `SELECT ` + tokenColumns + ` FROM tokens WHERE refresh_token = $1`
+	t, err := scanToken(s.pool.QueryRow(bgCtx(), q, refreshToken))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TokenRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return TokenRecord{}, fmt.Errorf("pgstorage get_token_by_refresh: %w", err)
+	}
 	return t, nil
 }
 
@@ -358,6 +372,17 @@ func (s *PGStorage) DeleteToken(accessToken string) error {
 	return nil
 }
 
+// DeleteTokensForInstall removes every token record bound to installID and
+// returns the number removed (idx_tokens_install serves the scan). Used by the
+// refresh-grant replay revocation; zero rows is not an error — idempotent.
+func (s *PGStorage) DeleteTokensForInstall(installID string) (int, error) {
+	tag, err := s.pool.Exec(bgCtx(), `DELETE FROM tokens WHERE install_id = $1`, installID)
+	if err != nil {
+		return 0, fmt.Errorf("pgstorage delete_tokens_for_install: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // -----------------------------------------------------------------------------
 // Maintenance
 // -----------------------------------------------------------------------------
@@ -369,6 +394,12 @@ func (s *PGStorage) DeleteToken(accessToken string) error {
 //   - auth_codes have no stored expiry — /token rejects a code when
 //     time.Since(created_at) exceeds AuthCodeTTLSeconds, so the equivalent
 //     delete predicate is `created_at < now - AuthCodeTTLSeconds`.
+//
+// Rotated rows (rotated_at IS NOT NULL) need no extra predicate: rotation keeps
+// the row's original expires_at (the access-token expiry), so the expires_at
+// sweep already removes them once their access token dies — they cannot survive
+// indefinitely. Until then they must stay: the rotated marker powers
+// refresh-replay detection.
 func (s *PGStorage) PurgeExpired(now time.Time) (int, error) {
 	total := 0
 	tag, err := s.pool.Exec(bgCtx(),
@@ -412,6 +443,33 @@ func scanInstall(r rowScanner) (Install, error) {
 	i.CreatedAt = i.CreatedAt.UTC()
 	i.UpdatedAt = i.UpdatedAt.UTC()
 	return i, nil
+}
+
+// scanToken scans one tokens row (column order: tokenColumns) into a TokenRecord,
+// normalising NULLs to "" / nil and timestamps to UTC.
+func scanToken(r rowScanner) (TokenRecord, error) {
+	var (
+		t                                           TokenRecord
+		refresh, personaID, identityID, subj, scope *string
+		rotatedAt                                   *time.Time
+	)
+	if err := r.Scan(
+		&t.AccessToken, &refresh, &t.InstallID, &personaID, &identityID,
+		&subj, &scope, &t.TenantID, &t.ExpiresAt, &rotatedAt,
+	); err != nil {
+		return TokenRecord{}, err
+	}
+	t.RefreshToken = derefString(refresh)
+	t.PersonaID = derefString(personaID)
+	t.IdentityID = derefString(identityID)
+	t.Subject = derefString(subj)
+	t.Scope = derefString(scope)
+	t.ExpiresAt = t.ExpiresAt.UTC()
+	if rotatedAt != nil {
+		utc := rotatedAt.UTC()
+		t.RotatedAt = &utc
+	}
+	return t, nil
 }
 
 // encodeClientMetadata marshals the free-form RFC 7591 metadata object for the

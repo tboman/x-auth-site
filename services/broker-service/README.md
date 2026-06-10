@@ -70,7 +70,7 @@ Storage is swappable via the `Storage` interface in `internal/storage.go`:
 | POST | `/register` | RFC 7591 Dynamic Client Registration |
 | GET | `/metadata.json` | CIMD document for the default X-Auth MCP client |
 | GET | `/authorize` | phase-1 stub: auto-approves and redirects back with `code`. **PKCE required**: `code_challenge` + `code_challenge_method=S256` (anything else is a structured 400) |
-| POST | `/token` | exchanges `code` + `code_verifier` for a signed JWT access token + opaque refresh token, orchestrates install finalization. SHA-256(verifier) base64url-no-pad must equal the stored challenge or the grant is rejected with `invalid_grant` |
+| POST | `/token` | `grant_type=authorization_code`: exchanges `code` + `code_verifier` for a signed JWT access token + opaque refresh token, orchestrates install finalization. SHA-256(verifier) base64url-no-pad must equal the stored challenge or the grant is rejected with `invalid_grant`. `grant_type=refresh_token`: rotates the pair (see **Refresh grant** below) |
 | POST | `/revoke` | RFC 7009 token revocation, forwarded to grant-service |
 | GET | `/userinfo` | returns `{sub, persona, scopes, install_id}` for the bearer — hybrid check: JWT signature/exp/iss **and** unrevoked local record |
 
@@ -108,6 +108,37 @@ and ARCHITECTURE.md §10.4 applies it platform-wide.
   exp/iat with 30s leeway, issuer) *and* a local token-record lookup, which acts
   as the revocation deny-list — a revoked token stays cryptographically valid
   until `exp` but is rejected immediately.
+
+## Refresh grant (rotation, ARCHITECTURE.md §10.1)
+
+`POST /token` with `grant_type=refresh_token&refresh_token=<uuid>` (optionally
+`client_id`, which must match the install's bound client) rotates the token pair:
+
+1. look the record up by refresh token (`tokens.refresh_token`, indexed by
+   migration `000003`); unknown → `400 invalid_grant`
+2. the install must still be **active** — revoked installs cannot refresh
+3. re-fetch the persona from persona-service: its *current* scopes and
+   `token_ttl_seconds` are the source of truth (a persona edit propagates at
+   the next refresh; a deleted persona → `400 invalid_grant`)
+4. mint a fresh RS256 access JWT (same `sub`/install bindings, fresh
+   `exp`/`iat`/`jti`) + a new opaque refresh token, and record a **new grant**
+   in grant-service with the new token hashes. If grant-service is down the
+   caller gets 502 and **nothing rotates** — the presented refresh token stays
+   usable for a retry
+5. only after the grant is recorded: the old record is marked rotated
+   (`tokens.rotated_at`) and the new record is stored
+
+- **Old access tokens stay valid until their own `exp`** (standard OAuth —
+  rotation is not retroactive revocation); the old grant expires naturally.
+- **Replay = theft = install revocation.** Presenting an already-rotated
+  refresh token revokes the *whole install* — the broker's token family in the
+  §10.1 sense *is* the install: grants are cascade-revoked, the identity is
+  released back to its pool, the install flips to `revoked`, and every local
+  token record for the install is deleted (killing the replacement refresh
+  token too). The event is logged as `refresh_token_replay_install_revoked`.
+- **Lifetime policy**: a broker refresh token has **no independent expiry** —
+  it lives as long as its install is active and it has not been rotated out.
+  MCP installs are long-lived by design; install revocation is the kill switch.
 
 ### MCP stubs (phase 1)
 
@@ -242,7 +273,8 @@ migrate -path services/broker-service/migrations \
 # or, in order:
 psql "postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \
      -f services/broker-service/migrations/000001_init.up.sql \
-     -f services/broker-service/migrations/000002_auth_code_pkce.up.sql
+     -f services/broker-service/migrations/000002_auth_code_pkce.up.sql \
+     -f services/broker-service/migrations/000003_refresh_rotation.up.sql
 
 # 3. Run the service
 PG_DSN="postgres://postgres:postgres@localhost:5432/broker_db?sslmode=disable" \

@@ -406,3 +406,119 @@ func TestPGStorageTokenLifecycle(t *testing.T) {
 		t.Fatalf("double delete should be ErrNotFound, got %v", err)
 	}
 }
+
+func TestPGStorageGetTokenByRefresh(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	refresh := uuid.NewString()
+	rec := TokenRecord{
+		AccessToken:  uuid.NewString(),
+		RefreshToken: refresh,
+		InstallID:    "install-1",
+		PersonaID:    "persona-1",
+		IdentityID:   "identity-1",
+		Subject:      "agent-bot@tenant-a",
+		Scope:        "mcp",
+		TenantID:     "tenant-a",
+		ExpiresAt:    now.Add(15 * time.Minute),
+	}
+	if err := s.PutToken(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	got, err := s.GetTokenByRefresh(refresh)
+	if err != nil {
+		t.Fatalf("get by refresh: %v", err)
+	}
+	if got.AccessToken != rec.AccessToken || got.InstallID != "install-1" || got.Subject != rec.Subject {
+		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+	if got.RotatedAt != nil {
+		t.Fatalf("fresh record should have nil RotatedAt, got %v", got.RotatedAt)
+	}
+
+	// Unknown / empty refresh tokens miss with ErrNotFound. The empty case must
+	// never match rows whose refresh_token is NULL.
+	if err := s.PutToken(TokenRecord{
+		AccessToken: uuid.NewString(), InstallID: "i-nr", TenantID: "t",
+		ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("put refresh-less token: %v", err)
+	}
+	if _, err := s.GetTokenByRefresh(uuid.NewString()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown refresh should be ErrNotFound, got %v", err)
+	}
+	if _, err := s.GetTokenByRefresh(""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty refresh should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestPGStorageRotatedAtPersistence(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rec := TokenRecord{
+		AccessToken:  uuid.NewString(),
+		RefreshToken: uuid.NewString(),
+		InstallID:    "install-1",
+		TenantID:     "tenant-a",
+		ExpiresAt:    now.Add(15 * time.Minute),
+	}
+	if err := s.PutToken(rec); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Re-Put with RotatedAt stamped — the upsert must write the column.
+	rotated := now.Add(time.Minute)
+	rec.RotatedAt = &rotated
+	if err := s.PutToken(rec); err != nil {
+		t.Fatalf("re-put rotated: %v", err)
+	}
+	got, err := s.GetToken(rec.AccessToken)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.RotatedAt == nil || !got.RotatedAt.Equal(rotated) {
+		t.Fatalf("rotated_at did not round-trip: got %v want %v", got.RotatedAt, rotated)
+	}
+	byRefresh, err := s.GetTokenByRefresh(rec.RefreshToken)
+	if err != nil || byRefresh.RotatedAt == nil {
+		t.Fatalf("rotated_at missing via refresh lookup: rec=%+v err=%v", byRefresh, err)
+	}
+}
+
+func TestPGStorageDeleteTokensForInstall(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for range 2 {
+		if err := s.PutToken(TokenRecord{
+			AccessToken: uuid.NewString(), RefreshToken: uuid.NewString(),
+			InstallID: "install-doomed", TenantID: "t", ExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("seed doomed token: %v", err)
+		}
+	}
+	survivor := uuid.NewString()
+	if err := s.PutToken(TokenRecord{
+		AccessToken: survivor, RefreshToken: uuid.NewString(),
+		InstallID: "install-other", TenantID: "t", ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed survivor: %v", err)
+	}
+
+	removed, err := s.DeleteTokensForInstall("install-doomed")
+	if err != nil {
+		t.Fatalf("delete for install: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+	if _, err := s.GetToken(survivor); err != nil {
+		t.Fatalf("other install's token must survive: %v", err)
+	}
+
+	// Idempotent: deleting again removes nothing and is not an error.
+	removed, err = s.DeleteTokensForInstall("install-doomed")
+	if err != nil || removed != 0 {
+		t.Fatalf("second delete: removed=%d err=%v, want 0/nil", removed, err)
+	}
+}

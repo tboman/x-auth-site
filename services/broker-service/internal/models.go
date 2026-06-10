@@ -81,6 +81,12 @@ type AuthCode struct {
 // /revoke and install revocation delete it — and as the metadata source for
 // /userinfo's response. A later phase defers this to grant-service introspection
 // and drops the duplicated state.
+//
+// RotatedAt is stamped when the record's refresh token is rotated out by the
+// refresh grant. A rotated record's access token remains valid until ExpiresAt
+// (standard OAuth — rotation does not retroactively kill access tokens), but
+// presenting its refresh token again is a replay/theft signal that revokes the
+// whole install (ARCHITECTURE.md §10.1; the broker's token family == the install).
 type TokenRecord struct {
 	AccessToken  string
 	RefreshToken string
@@ -91,6 +97,7 @@ type TokenRecord struct {
 	Scope        string
 	TenantID     string
 	ExpiresAt    time.Time
+	RotatedAt    *time.Time
 }
 
 // Validation / default values.

@@ -36,10 +36,17 @@ type Storage interface {
 	PutAuthCode(ac AuthCode) error
 	ConsumeAuthCode(code string) (AuthCode, error) // read + delete
 
-	// Token records
+	// Token records. PutToken is an upsert keyed by access token — re-Putting an
+	// existing record (e.g. with RotatedAt stamped) replaces it in place.
+	// GetTokenByRefresh is the refresh-grant lookup; it returns ErrNotFound when
+	// no record carries the given refresh token. DeleteTokensForInstall removes
+	// every token record bound to an install (replay-revocation cleanup) and
+	// returns the number of records removed.
 	PutToken(t TokenRecord) error
 	GetToken(accessToken string) (TokenRecord, error)
+	GetTokenByRefresh(refreshToken string) (TokenRecord, error)
 	DeleteToken(accessToken string) error
+	DeleteTokensForInstall(installID string) (int, error)
 
 	// Maintenance. PurgeExpired removes tokens and auth codes whose TTLs have
 	// lapsed as of `now` and returns the total number of entries removed. The
@@ -193,6 +200,24 @@ func (s *MemStorage) GetToken(accessToken string) (TokenRecord, error) {
 	return t, nil
 }
 
+// GetTokenByRefresh reads by refresh token (linear scan — fine for the
+// in-memory phase; PGStorage uses the idx_tokens_refresh index). An empty
+// refresh token never matches: records issued without one must not be
+// reachable via the refresh grant.
+func (s *MemStorage) GetTokenByRefresh(refreshToken string) (TokenRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if refreshToken == "" {
+		return TokenRecord{}, ErrNotFound
+	}
+	for _, t := range s.tokens {
+		if t.RefreshToken == refreshToken {
+			return t, nil
+		}
+	}
+	return TokenRecord{}, ErrNotFound
+}
+
 // DeleteToken removes a token (used by /revoke).
 func (s *MemStorage) DeleteToken(accessToken string) error {
 	s.mu.Lock()
@@ -204,6 +229,23 @@ func (s *MemStorage) DeleteToken(accessToken string) error {
 	return nil
 }
 
+// DeleteTokensForInstall removes every token record bound to installID and
+// returns the number removed. Used by the refresh-grant replay revocation so a
+// stolen-and-replayed refresh token kills the rotated-out descendants too.
+// Deleting zero records is not an error — revocation is idempotent.
+func (s *MemStorage) DeleteTokensForInstall(installID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for k, t := range s.tokens {
+		if t.InstallID == installID {
+			delete(s.tokens, k)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
 // PurgeExpired sweeps the token and auth-code maps, removing entries whose TTLs
 // have lapsed as of `now`. The predicates mirror read-time enforcement exactly:
 //   - tokens: /userinfo rejects a bearer when now is after TokenRecord.ExpiresAt
@@ -211,6 +253,12 @@ func (s *MemStorage) DeleteToken(accessToken string) error {
 //   - auth codes: codes carry no stored expiry — /token rejects them when
 //     time.Since(CreatedAt) exceeds AuthCodeTTLSeconds, so the purge cutoff is
 //     CreatedAt older than now-AuthCodeTTLSeconds.
+//
+// Rotated records (RotatedAt != nil) need no extra predicate: rotation keeps
+// the record's original ExpiresAt (the access-token expiry), so the same
+// ExpiresAt sweep removes them once their access token dies — they cannot
+// survive the purge indefinitely. Until then they MUST stay: the rotated
+// marker is what powers refresh-replay detection.
 //
 // Returns the total number of entries removed across both maps.
 func (s *MemStorage) PurgeExpired(now time.Time) (int, error) {
