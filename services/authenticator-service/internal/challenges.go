@@ -79,7 +79,7 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		writeAccountLocked(w, retryAfter)
 		return
 	}
-	if ok, retryAfter := h.limits.ChallengeCreate.Allow(key); !ok {
+	if ok, retryAfter := allow(h.limits.ChallengeCreate, key); !ok {
 		h.log.Warn("challenge_create_rate_limited", "user_id", req.UserID, "tenant_id", tenantID)
 		writeRetryAfterError(w, http.StatusTooManyRequests, "rate_limited",
 			"challenge creation rate limit exceeded for user", retryAfter)

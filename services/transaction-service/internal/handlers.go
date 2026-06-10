@@ -34,14 +34,17 @@ func NewHandlers(store Storage, logger *slog.Logger, risk RiskClient, auth Authe
 
 // Router builds the http.Handler wiring every route. /healthz is served without tenant
 // enforcement; every /v1/* route sits behind the §10.5 layer-2 rate limiter (per
-// tenant + method + endpoint class; nil limiter disables) and then tenantx.Middleware.
-// The whole tree is wrapped in Recover + Logging so every request (including /healthz)
-// is logged and any panic returns 500 instead of crashing the process.
+// tenant + method + endpoint class; a nil Allower disables) and then
+// tenantx.Middleware. The limiter is any ratex.Allower — the Redis-backed
+// *ratex.RedisLimiter (shared across replicas) or the in-memory *ratex.Limiter
+// (per-replica fallback). The whole tree is wrapped in Recover + Logging so every
+// request (including /healthz) is logged and any panic returns 500 instead of
+// crashing the process.
 //
 // /v1/advice is the canonical endpoint. /v1/evaluate is an alias that points at the
 // same handler — keeping ARCHITECTURE.md §4.1's original contract callable while we
 // migrate clients to the new name.
-func (h *Handlers) Router(limiter *ratex.Limiter) http.Handler {
+func (h *Handlers) Router(limiter ratex.Allower) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.Health)
 

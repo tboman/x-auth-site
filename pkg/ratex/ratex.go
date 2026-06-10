@@ -17,6 +17,15 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 )
 
+// Allower is the rate-limit decision interface. *Limiter (in-memory sliding
+// window) and *RedisLimiter (shared fixed-window counters) both implement it;
+// Middleware and service wiring depend only on this.
+type Allower interface {
+	// Allow records an event for key and reports whether it is within the
+	// limit; retryAfter is how long until a slot frees when denied.
+	Allow(key string) (ok bool, retryAfter time.Duration)
+}
+
 // Limiter enforces "at most Limit events per Window per key" using a sliding
 // window log. Safe for concurrent use.
 type Limiter struct {
@@ -102,12 +111,12 @@ func (l *Limiter) sweepLocked(cutoff time.Time) {
 
 // Middleware wraps next with the limiter, keyed by keyFn. Over-limit requests
 // get a structured 429 with a Retry-After header (§10.5). A keyFn returning ""
-// bypasses the limiter for that request.
-func Middleware(l *Limiter, keyFn func(*http.Request) string) func(http.Handler) http.Handler {
+// bypasses the limiter for that request, as does a nil Allower.
+func Middleware(l Allower, keyFn func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := keyFn(r)
-			if key == "" {
+			if key == "" || l == nil {
 				next.ServeHTTP(w, r)
 				return
 			}

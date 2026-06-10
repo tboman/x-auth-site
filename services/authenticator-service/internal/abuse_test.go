@@ -127,6 +127,39 @@ func TestChallengeCreateRateLimitCoversInternalAlias(t *testing.T) {
 	}
 }
 
+// TestLimitsDisabledNilSafety pins the zero/disabled paths now that
+// Limits.ChallengeCreate is the ratex.Allower INTERFACE: a nil interface
+// (control disabled) must never be invoked — calling a method on a nil
+// interface panics — and a typed nil stored in the interface (the classic
+// typed-nil-in-interface trap: it compares != nil) must still behave as
+// "always allow" through the implementations' nil-receiver-safe Allow.
+func TestLimitsDisabledNilSafety(t *testing.T) {
+	cases := []struct {
+		name   string
+		limits Limits
+	}{
+		{"zero-value Limits (nil interface)", Limits{}},
+		{"typed-nil in-memory limiter", Limits{ChallengeCreate: (*ratex.Limiter)(nil)}},
+		{"typed-nil redis limiter", Limits{ChallengeCreate: (*ratex.RedisLimiter)(nil)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, _ := newTestServerWithLimits(t, func(func() time.Time) Limits { return tc.limits })
+			enroll(t, srv, "u1", MethodTOTP)
+			// Well past the default 10/1m budget — every create must pass.
+			for i := 1; i <= 12; i++ {
+				resp := do(t, srv, http.MethodPost, "/v1/challenges", ChallengeRequest{
+					UserID: "u1", Methods: []string{MethodTOTP},
+				})
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusCreated {
+					t.Fatalf("create %d with disabled limits: want 201, got %d", i, resp.StatusCode)
+				}
+			}
+		})
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Exponential backoff on failed verifications
 // -----------------------------------------------------------------------------

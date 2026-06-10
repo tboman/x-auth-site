@@ -9,12 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/xentranet/x-auth/pkg/ratex"
 )
 
 // newLimitedServer is newServer with an injected §10.5 limiter, so tests can
 // use a tight limit instead of going through the RATE_LIMIT env var.
-func newLimitedServer(t *testing.T, limiter *ratex.Limiter, risk RiskClient) http.Handler {
+func newLimitedServer(t *testing.T, limiter ratex.Allower, risk RiskClient) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewHandlers(NewMemStorage(), logger, risk, nil, nil).Router(limiter)
@@ -117,16 +120,21 @@ func TestRateLimitMissingTenantBypassesLimiter(t *testing.T) {
 	}
 }
 
+// TestRateLimitOffDisablesLimiting proves the RATE_LIMIT=off wiring still
+// bypasses now that Router takes a ratex.Allower: main.go leaves the Allower
+// an UNTYPED nil when ParseRateLimit reports enabled=false, and Middleware
+// bypasses on a nil interface.
 func TestRateLimitOffDisablesLimiting(t *testing.T) {
-	limiter, err := NewRateLimiter(RateLimitOff)
+	_, _, enabled, err := ParseRateLimit(RateLimitOff)
 	if err != nil {
-		t.Fatalf(`NewRateLimiter("off"): %v`, err)
+		t.Fatalf(`ParseRateLimit("off"): %v`, err)
 	}
-	if limiter != nil {
-		t.Fatalf(`NewRateLimiter("off") should return nil, got %v`, limiter)
+	if enabled {
+		t.Fatal(`ParseRateLimit("off") must report enabled=false`)
 	}
 
-	h := newLimitedServer(t, limiter, lowRisk())
+	// Untyped nil Allower — exactly what main.go passes when off.
+	h := newLimitedServer(t, nil, lowRisk())
 	for i := 0; i < 10; i++ {
 		rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
 		if rec.Code != http.StatusOK {
@@ -135,16 +143,82 @@ func TestRateLimitOffDisablesLimiting(t *testing.T) {
 	}
 }
 
-func TestNewRateLimiterParsesAndRejects(t *testing.T) {
-	limiter, err := NewRateLimiter("600/1m")
-	if err != nil || limiter == nil {
-		t.Fatalf("default spec should parse, got limiter=%v err=%v", limiter, err)
+// TestRateLimitTypedNilLimiterStillBypasses guards the typed-nil-in-interface
+// trap: a nil *ratex.Limiter wrapped in the Allower interface is a NON-nil
+// interface, so Middleware's nil check does not fire — the limiter's own
+// nil-receiver guard in Allow must keep "off" behaving as bypass.
+func TestRateLimitTypedNilLimiterStillBypasses(t *testing.T) {
+	var typedNil *ratex.Limiter
+	h := newLimitedServer(t, typedNil, lowRisk())
+	for i := 0; i < 10; i++ {
+		rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("typed-nil: call %d got %d", i+1, rec.Code)
+		}
+	}
+}
+
+func TestParseRateLimitParsesAndRejects(t *testing.T) {
+	limit, window, enabled, err := ParseRateLimit("600/1m")
+	if err != nil || !enabled || limit != 600 || window != time.Minute {
+		t.Fatalf("default spec: got limit=%d window=%v enabled=%v err=%v", limit, window, enabled, err)
 	}
 
 	for _, bad := range []string{"", "garbage", "600", "/1m", "0/1m", "-5/1m", "10/0s", "10/xyz"} {
-		if _, err := NewRateLimiter(bad); err == nil {
-			t.Errorf("NewRateLimiter(%q): want error, got nil", bad)
+		if _, _, _, err := ParseRateLimit(bad); err == nil {
+			t.Errorf("ParseRateLimit(%q): want error, got nil", bad)
 		}
+	}
+}
+
+// TestRateLimitRedisThroughRouter runs the real Redis-backed limiter (the
+// phase-2 production path: shared rate:txn:* counters, §6.3) through the
+// service router: with limit 2/min the 3rd same-tenant call must 429 with a
+// Retry-After header, same contract as the in-memory limiter.
+func TestRateLimitRedisThroughRouter(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	limiter := ratex.NewRedis(client, 2, time.Minute, "rate:txn", logger)
+	h := newLimitedServer(t, limiter, lowRisk())
+
+	for i := 1; i <= 2; i++ {
+		rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d: want 200, got %d body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := doJSON(t, h, http.MethodPost, "/v1/advice", testTenant, sampleAdvice())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("3rd call: want 429, got %d", rec.Code)
+	}
+	ra := rec.Header().Get("Retry-After")
+	if ra == "" {
+		t.Fatal("429 response missing Retry-After header")
+	}
+	if secs, err := strconv.Atoi(ra); err != nil || secs <= 0 {
+		t.Fatalf("Retry-After should be a positive integer, got %q", ra)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("429 body is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if body["error"] != "rate_limited" {
+		t.Fatalf(`429 body error=%v, want "rate_limited"`, body["error"])
+	}
+
+	// The counter lives in Redis under the §6.3 rate: prefix, not in-process —
+	// the property that makes the limit hold across replicas.
+	if got := len(mr.Keys()); got == 0 {
+		t.Fatal("expected rate:txn:* counter keys in Redis, found none")
+	}
+
+	// A different tenant has its own budget against the same shared backend.
+	if rec := doJSON(t, h, http.MethodPost, "/v1/advice", "tenant-b", sampleAdvice()); rec.Code != http.StatusOK {
+		t.Fatalf("tenant-b should be unaffected, got %d", rec.Code)
 	}
 }
 

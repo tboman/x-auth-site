@@ -38,18 +38,27 @@ Every `/v1/*` endpoint may additionally return `429` when rate limited (see belo
 
 ## Rate limiting (ARCHITECTURE.md §10.5, layer 2)
 
-Every `/v1/*` request is counted against a sliding-window limit keyed by
+Every `/v1/*` request is counted against a limit keyed by
 **tenant + method + endpoint class** (the first two path segments, so
-`GET /v1/transactions` and `GET /v1/transactions/{id}` share a bucket). The
-sliding window provides the burst allowance; over-limit requests get `429`
-with a `Retry-After` header and an `{"error":"rate_limited"}` body.
-`/healthz` is never limited, and requests without an `X-Tenant-Id` header
-bypass the limiter (they are rejected with `400` by tenant enforcement
-immediately after).
+`GET /v1/transactions` and `GET /v1/transactions/{id}` share a bucket).
+Over-limit requests get `429` with a `Retry-After` header and an
+`{"error":"rate_limited"}` body. `/healthz` is never limited, and requests
+without an `X-Tenant-Id` header bypass the limiter (they are rejected with
+`400` by tenant enforcement immediately after).
 
-**Per-replica caveat:** the limiter state is in-memory per process, so the
-effective limit is `RATE_LIMIT × replica count` until the shared Redis
-backing lands in a later phase.
+**Backend selection** (mirrors storage selection):
+
+- **Shared Redis** — when `REDIS_URL` or `REDIS_ADDR` is set, counters live in
+  the shared Redis under `rate:txn:*` keys (ARCHITECTURE.md §6.3, fixed
+  windows), so the §10.5 limits hold **across replicas**. Decisions fail open
+  if Redis becomes unreachable at runtime (abuse prevention must not take the
+  API down with the cache).
+- **In-memory fallback** — when neither is set, the service logs
+  `rate_limit_local` and uses the per-process sliding-window limiter. The
+  per-replica caveat applies **only to this fallback**: the effective limit is
+  `RATE_LIMIT × replica count`.
+- **Fatal** — Redis configured but unreachable at startup exits 1; a
+  configured shared limiter must not silently degrade to per-replica.
 
 ## Orchestration rules
 
@@ -139,7 +148,9 @@ transaction is still persisted with `decision: "error"` so the caller can audit.
 | `RISK_SERVICE_URL` | `http://localhost:8081` | |
 | `AUTHENTICATION_SERVICE_URL` | `http://localhost:8082` | |
 | `AUTHENTICATOR_SERVICE_URL` | `http://localhost:8083` | |
-| `RATE_LIMIT` | `600/1m` | §10.5 layer-2 per-tenant, per-endpoint limit as `N/window` (e.g. `100/30s`). The literal `off` disables limiting. Invalid values are fatal at startup. Enforced per replica until Redis. |
+| `RATE_LIMIT` | `600/1m` | §10.5 layer-2 per-tenant, per-endpoint limit as `N/window` (e.g. `100/30s`). The literal `off` disables limiting. Invalid values are fatal at startup. Enforced across replicas with Redis; per replica on the in-memory fallback. |
+| `REDIS_URL` | _(unset)_ | Full Redis URL (e.g. `redis://:pass@host:6379/0`; `rediss://` enables TLS, §10.3). When set, rate-limit counters live in shared Redis (`rate:txn:*`) and limits hold across replicas. Takes precedence over `REDIS_ADDR`. Set-but-unreachable is fatal at startup. |
+| `REDIS_ADDR` | _(unset)_ | `host:port` shorthand when `REDIS_URL` is unset; combined with optional `REDIS_PASSWORD` and `REDIS_DB`. Neither set -> in-memory per-replica limiter (`rate_limit_local` warning). |
 | `PG_DSN` | _(unset)_ | When set, phase-2 Postgres storage. Unset -> in-memory. |
 | `PG_DSN_TRANSACTION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |

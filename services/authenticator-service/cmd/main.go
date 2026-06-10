@@ -11,11 +11,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/xentranet/x-auth/pkg/config"
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/logx"
 	"github.com/xentranet/x-auth/pkg/pgxdb"
 	"github.com/xentranet/x-auth/pkg/ratex"
+	"github.com/xentranet/x-auth/pkg/redisx"
 	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/authenticator-service/internal"
 )
@@ -63,27 +66,66 @@ func main() {
 	}
 	go runPurgeSweeper(ctx, log, store, interval)
 
-	// §10.5 layer-3 abuse controls. Both are ratex sliding windows keyed
-	// tenant|user — in-memory and PER REPLICA until shared Redis lands; the
-	// per-challenge exponential backoff needs no config (derived from
-	// persisted challenge state). "off" disables a control; an unparseable
-	// value is fatal — never boot with a silently-missing abuse control.
-	var limits internal.Limits
-	if n, window, on, err := rateFromEnv("CHALLENGE_RATE_LIMIT", "10/1m"); err != nil {
+	// §10.5 layer-3 abuse controls, both ratex counters keyed tenant|user.
+	// With shared Redis configured (REDIS_URL/REDIS_ADDR) the counters are
+	// Redis fixed windows shared across replicas (§6.3 `rate:` keys); the
+	// redisx.ErrMissingAddr fallback keeps the per-replica in-memory limiters
+	// so local dev and CI boot without Redis, mirroring the PG_DSN fallback
+	// above. The per-challenge exponential backoff needs no config (derived
+	// from persisted challenge state). "off" disables a control; an
+	// unparseable value is fatal — never boot with a silently-missing abuse
+	// control.
+	chalLimit, chalWindow, chalOn, err := rateFromEnv("CHALLENGE_RATE_LIMIT", "10/1m")
+	if err != nil {
 		log.Error("invalid_challenge_rate_limit", "err", err)
 		os.Exit(1)
-	} else if on {
-		limits.ChallengeCreate = ratex.New(n, window)
-		log.Info("challenge_rate_limit_enabled", "limit", n, "window", window.String())
+	}
+	lockThreshold, lockWindow, lockOn, err := rateFromEnv("LOCKOUT_THRESHOLD", "5/15m")
+	if err != nil {
+		log.Error("invalid_lockout_threshold", "err", err)
+		os.Exit(1)
+	}
+
+	// One shared client for both controls; opened only if some control needs it.
+	var rdb *redis.Client
+	limitBackend := "memory"
+	if chalOn || lockOn {
+		switch client, err := redisx.Open(ctx, redisx.Config{ServiceName: "authenticator-service"}, log); {
+		case err == nil:
+			defer client.Close()
+			rdb = client
+			limitBackend = "redis"
+		case errors.Is(err, redisx.ErrMissingAddr):
+			log.Warn("rate_limit_fallback_memory", "reason", "REDIS_URL/REDIS_ADDR unset")
+		default:
+			log.Error("redis_connect_failed", "err", err)
+			os.Exit(1)
+		}
+	}
+
+	var limits internal.Limits
+	if chalOn {
+		if rdb != nil {
+			limits.ChallengeCreate = ratex.NewRedis(rdb, chalLimit, chalWindow, "rate:authr:challenge", log)
+		} else {
+			limits.ChallengeCreate = ratex.New(chalLimit, chalWindow)
+		}
+		log.Info("challenge_rate_limit_enabled",
+			"limit", chalLimit, "window", chalWindow.String(), "backend", limitBackend)
 	} else {
 		log.Warn("challenge_rate_limit_disabled")
 	}
-	if n, window, on, err := rateFromEnv("LOCKOUT_THRESHOLD", "5/15m"); err != nil {
-		log.Error("invalid_lockout_threshold", "err", err)
-		os.Exit(1)
-	} else if on {
-		limits.Lockout = internal.NewLockout(n, window, store.Now)
-		log.Info("account_lockout_enabled", "threshold", n, "window", window.String())
+	if lockOn {
+		if rdb != nil {
+			// Failure COUNTING is shared across replicas; the lockedUntil map
+			// stays per-replica — see the internal.Lockout doc for why every
+			// replica converges on its own next counted failure.
+			limits.Lockout = internal.NewRedisLockout(lockThreshold, lockWindow, rdb, "rate:authr:lockout", log, store.Now)
+		} else {
+			limits.Lockout = internal.NewLockout(lockThreshold, lockWindow, store.Now)
+		}
+		log.Info("account_lockout_enabled",
+			"threshold", lockThreshold, "window", lockWindow.String(), "backend", limitBackend)
 	} else {
 		log.Warn("account_lockout_disabled")
 	}

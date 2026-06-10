@@ -3,6 +3,7 @@ package internal
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/xentranet/x-auth/pkg/ratex"
 	"github.com/xentranet/x-auth/pkg/tenantx"
@@ -11,18 +12,20 @@ import (
 // RateLimitOff is the RATE_LIMIT value that disables layer-2 rate limiting.
 const RateLimitOff = "off"
 
-// NewRateLimiter turns a RATE_LIMIT env value ("N/window", e.g. "600/1m") into
-// the §10.5 layer-2 limiter. The literal "off" returns a nil limiter, which
-// ratex treats as "always allow". Anything else must parse via ratex.ParseRate.
-func NewRateLimiter(spec string) (*ratex.Limiter, error) {
+// ParseRateLimit interprets a RATE_LIMIT env value ("N/window", e.g. "600/1m")
+// for the §10.5 layer-2 limiter. The literal "off" reports enabled=false (the
+// caller then passes a nil ratex.Allower to Router, which always allows);
+// anything else must parse via ratex.ParseRate. The backend choice (shared
+// Redis vs. per-replica in-memory) is made by the caller — see cmd/main.go.
+func ParseRateLimit(spec string) (limit int, window time.Duration, enabled bool, err error) {
 	if spec == RateLimitOff {
-		return nil, nil
+		return 0, 0, false, nil
 	}
-	limit, window, err := ratex.ParseRate(spec)
+	limit, window, err = ratex.ParseRate(spec)
 	if err != nil {
-		return nil, err
+		return 0, 0, false, err
 	}
-	return ratex.New(limit, window), nil
+	return limit, window, true, nil
 }
 
 // rateLimitKey keys §10.5 layer-2 limits by tenant + method + endpoint class,

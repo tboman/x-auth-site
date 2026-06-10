@@ -7,18 +7,23 @@ package internal
 //	├── Exponential backoff on failed verifies   (backoffRemaining)
 //	└── Account lockout after N failures         (Lockout)
 //
-// The rate limit and the lockout are built on pkg/ratex sliding-window
-// limiters keyed "tenant|user_id". Like ratex itself, all state here is
-// in-memory and PER REPLICA: each process enforces its own window, which is
-// the phase-2.1 stance until shared Redis lands. The backoff control is the
-// exception — it derives entirely from persisted challenge fields (attempts +
-// last_attempt_at), so it holds across replicas and restarts.
+// The rate limit and the lockout count events per "tenant|user_id" key behind
+// the ratex.Allower interface, so the backend is swappable: with shared Redis
+// configured (REDIS_URL/REDIS_ADDR) the counters are ratex.RedisLimiter
+// fixed-window counters shared across replicas (§6.3); without it they fall
+// back to the in-memory per-replica ratex.Limiter, the phase-2.1 stance. The
+// backoff control needs neither — it derives entirely from persisted
+// challenge fields (attempts + last_attempt_at), so it holds across replicas
+// and restarts on both backends.
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/ratex"
@@ -32,8 +37,9 @@ import (
 // the user_id from the request body anyway.
 type Limits struct {
 	// ChallengeCreate limits challenge CREATION per tenant|user key
-	// (CHALLENGE_RATE_LIMIT, default "10/1m"). nil disables.
-	ChallengeCreate *ratex.Limiter
+	// (CHALLENGE_RATE_LIMIT, default "10/1m"). Redis-backed when shared Redis
+	// is configured, in-memory otherwise. nil disables.
+	ChallengeCreate ratex.Allower
 
 	// Lockout tracks FAILED verifications per tenant|user key across
 	// challenges (LOCKOUT_THRESHOLD, default "5/15m"). nil disables.
@@ -43,6 +49,19 @@ type Limits struct {
 // abuseKey is the per-user limiter key shared by the challenge-creation
 // limiter and the lockout tracker.
 func abuseKey(tenantID, userID string) string { return tenantID + "|" + userID }
+
+// allow is the nil-safe Allow call for an optional ratex.Allower field: a nil
+// interface means "control disabled" and always allows. The guard exists
+// because Limits.ChallengeCreate is an INTERFACE now — calling Allow on a nil
+// interface panics, unlike the old nil-receiver-safe *ratex.Limiter. (A typed
+// nil stored in the interface — e.g. (*ratex.Limiter)(nil) — passes the != nil
+// check but stays safe, since both ratex implementations have nil-safe Allow.)
+func allow(a ratex.Allower, key string) (bool, time.Duration) {
+	if a == nil {
+		return true, 0
+	}
+	return a.Allow(key)
+}
 
 // -----------------------------------------------------------------------------
 // Account lockout
@@ -54,44 +73,88 @@ func abuseKey(tenantID, userID string) string { return tenantID + "|" + userID }
 // 423 `account_locked` until the window slides past the oldest counted
 // failure.
 //
-// Counting is delegated to a ratex.Limiter sized threshold-1: the Allow call
+// Counting is delegated to a ratex.Allower sized threshold-1: the Allow call
 // that comes back over-limit IS the threshold-th failure, and its retryAfter
 // (time until the oldest counted failure leaves the window) becomes the lock
 // duration. Locked-out requests are rejected before any adapter work, so they
 // never extend the lock.
 //
-// "Consecutive" is approximated by the sliding window: a successful verify
-// does not reset the counter (ratex cannot remove events), but failures age
-// out of the window naturally. Per-replica, like every ratex-backed control.
+// "Consecutive" is approximated by the window: a successful verify does not
+// reset the counter (ratex cannot remove events), but failures age out of the
+// window naturally.
+//
+// Cross-replica semantics with Redis-backed counting (NewRedisLockout): only
+// the failure COUNTER is shared; the lockedUntil map stays per-replica
+// (process memory). A replica trips its own local lock the next time IT
+// records a failure that the shared counter reports as over-threshold — so
+// once any replica locks a key, every other replica converges on its own next
+// failed verification for that key within the same window, capping total
+// fleet-wide failures at roughly threshold-1 + one per replica per window.
+// Until a replica converges, requests for the key on that replica still pass
+// the Locked check (a correct-credential verify can slip through there).
+// Accepted: §10.5 lockout exists to throttle brute force, and the shared
+// counter already does that; instantaneous fleet-wide locking would need the
+// lock itself in Redis, which phase 2 defers.
 type Lockout struct {
 	window   time.Duration
-	failures *ratex.Limiter // nil when threshold == 1 (every failure locks)
+	failures ratex.Allower // nil when threshold == 1 (every failure locks)
 	now      func() time.Time
 
 	mu          sync.Mutex
 	lockedUntil map[string]time.Time
 }
 
-// NewLockout builds a Lockout tripping after threshold failures per window.
-// now is the clock (nil = wall clock; tests inject a fake). threshold <= 0 or
-// window <= 0 returns nil — a nil *Lockout is a valid, disabled tracker.
+// NewLockout builds a Lockout tripping after threshold failures per window,
+// counting failures in an in-memory (per-replica) ratex.Limiter. now is the
+// clock (nil = wall clock; tests inject a fake). threshold <= 0 or window <= 0
+// returns nil — a nil *Lockout is a valid, disabled tracker.
 func NewLockout(threshold int, window time.Duration, now func() time.Time) *Lockout {
 	if threshold <= 0 || window <= 0 {
 		return nil
 	}
+	var counter ratex.Allower
+	if threshold > 1 {
+		lim := ratex.New(threshold-1, window)
+		if now != nil {
+			lim.Now = now
+		}
+		counter = lim
+	}
+	return newLockout(counter, window, now)
+}
+
+// NewRedisLockout is NewLockout with failure counting shared across replicas
+// through Redis fixed-window counters (prefix e.g. "rate:authr:lockout",
+// §6.3). Counting fails open like every ratex.RedisLimiter decision; the
+// lockedUntil map remains per-replica — see the Lockout doc for why that
+// converges. now drives only the local lock clock; the shared counter ages on
+// Redis TTLs.
+func NewRedisLockout(threshold int, window time.Duration, client redis.Scripter, prefix string, logger *slog.Logger, now func() time.Time) *Lockout {
+	if threshold <= 0 || window <= 0 {
+		return nil
+	}
+	var counter ratex.Allower
+	if threshold > 1 {
+		// Assigned only when non-nil: a typed-nil *RedisLimiter in the
+		// interface would defeat the failures == nil threshold-1 branch below.
+		counter = ratex.NewRedis(client, threshold-1, window, prefix, logger)
+	}
+	return newLockout(counter, window, now)
+}
+
+// newLockout finishes construction for both backends. counter must be either
+// a nil interface (threshold == 1) or a non-nil concrete limiter — callers
+// guard against storing typed nils in the interface.
+func newLockout(counter ratex.Allower, window time.Duration, now func() time.Time) *Lockout {
 	if now == nil {
 		now = time.Now
 	}
-	l := &Lockout{
+	return &Lockout{
 		window:      window,
+		failures:    counter,
 		now:         now,
 		lockedUntil: make(map[string]time.Time),
 	}
-	if threshold > 1 {
-		l.failures = ratex.New(threshold-1, window)
-		l.failures.Now = now
-	}
-	return l
 }
 
 // RecordFailure registers one failed verification for key. When this failure
