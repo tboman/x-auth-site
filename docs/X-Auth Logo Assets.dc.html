@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #E9EDF2; }
+  </style>
+</helmet>
+
+<div style="font-family: Manrope, sans-serif; color: #0E1B2C; background: #E9EDF2; min-height: 100vh; padding: 56px 32px 96px 32px;">
+  <div style="max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px;">
+
+    <header style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.14em; color: #5A6675;">X-AUTH &middot; LOGO ASSETS &middot; SVG</div>
+      <h1 style="font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 40px; letter-spacing: -0.02em; margin: 0;">Production SVGs for x-auth.com</h1>
+      <p style="font-size: 15px; line-height: 1.6; color: #3D4856; max-width: 620px; margin: 0; text-wrap: pretty;">Four files. The lockups embed Space Grotesk Bold as font data, so they render correctly anywhere &mdash; inline, as an <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px;">&lt;img&gt;</span>, or in an email header &mdash; with no font dependency on the page.</p>
+    </header>
+
+    <section style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #5A6675;">x-auth-lockup-color.svg &middot; LIGHT BACKGROUNDS</span>
+        <div style="background: #FFFFFF; border: 1px solid #D8DFE9; border-radius: 12px; height: 180px; display: flex; align-items: center; justify-content: center;">
+          <img src="assets/x-auth-lockup-color.svg" alt="x-auth lockup" style="height: 48px;">
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #5A6675;">x-auth-lockup-white.svg &middot; DARK BACKGROUNDS</span>
+        <div style="background: #0E1B2C; border-radius: 12px; height: 180px; display: flex; align-items: center; justify-content: center;">
+          <img src="assets/x-auth-lockup-white.svg" alt="x-auth lockup white" style="height: 48px;">
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #5A6675;">x-auth-mark-navy.svg &middot; FAVICON, AVATARS, SMALL USE</span>
+        <div style="background: #FFFFFF; border: 1px solid #D8DFE9; border-radius: 12px; height: 180px; display: flex; align-items: center; justify-content: center; gap: 32px;">
+          <img src="assets/x-auth-mark-navy.svg" alt="mark" style="width: 64px; height: 64px;">
+          <img src="assets/x-auth-mark-navy.svg" alt="mark 32" style="width: 32px; height: 32px;">
+          <img src="assets/x-auth-mark-navy.svg" alt="mark 16" style="width: 16px; height: 16px;">
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #5A6675;">x-auth-mark-white.svg &middot; ON INK / NAVY</span>
+        <div style="background: #1B3F7A; border-radius: 12px; height: 180px; display: flex; align-items: center; justify-content: center; gap: 32px;">
+          <img src="assets/x-auth-mark-white.svg" alt="mark white" style="width: 64px; height: 64px;">
+          <img src="assets/x-auth-mark-white.svg" alt="mark white 32" style="width: 32px; height: 32px;">
+        </div>
+      </div>
+    </section>
+
+    <section style="background: #FFFFFF; border: 1px solid #D8DFE9; border-radius: 12px; padding: 24px 28px; display: flex; flex-direction: column; gap: 10px;">
+      <span style="font-weight: 700; font-size: 15px;">Usage on x-auth.com</span>
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.8; color: #3D4856;">&lt;img src="/assets/x-auth-lockup-color.svg" alt="x-auth" height="32"&gt;</span>
+      <span style="font-size: 14px; line-height: 1.6; color: #5A6675;">Header logo renders at 32px tall (height attribute scales it; the file is drawn at 64). Use the white lockup on Ink or Navy surfaces, and the mark alone below 24px or wherever a square slot is required &mdash; favicon, social avatars, app icon.</span>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
