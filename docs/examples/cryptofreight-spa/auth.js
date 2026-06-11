@@ -18,6 +18,7 @@ const OIDC = {
   scope:       'openid profile email',
   tenantId:    'ten_cryptofreight',                            // X-Auth extension (phase-1 tenant sourcing)
   provider:    'google',                                       // social provider for the login leg
+  acrValues:   'urn:xauth:otp:sms',                            // require SMS OTP after Google ('' = skip; mock code is 123456)
 };
 // discovery: {issuer}/.well-known/openid-configuration
 // flow: social authorize → callback (user_id) → authorize → callback (code) → PKCE token exchange
@@ -110,6 +111,9 @@ async function socialLegDone(q) {
   // X-Auth phase-1 extensions: tenant + the user the social leg verified.
   u.searchParams.set('tenant_id', OIDC.tenantId);
   u.searchParams.set('user_id', q.get('user_id'));
+  // Step-up: X-Auth interrupts /authorize with a hosted OTP page when an
+  // acr is requested; the ID token comes back with acr/amr claims to prove it.
+  if (OIDC.acrValues) u.searchParams.set('acr_values', OIDC.acrValues);
   location.replace(u);
 }
 

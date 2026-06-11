@@ -35,26 +35,33 @@ client is already standard OIDC.
 ```bash
 GOOGLE_CLIENT_ID=...                 # real Google login
 GOOGLE_CLIENT_SECRET=...
-OIDC_CLIENTS="cryptofreight-web=https://cryptofreight.org/callback.html,http://localhost:3000/callback.html"
 CORS_ALLOWED_ORIGINS="https://cryptofreight.org,http://localhost:3000"
 AUTH_ISSUER=...                      # the service's public base URL
 PG_DSN=...                           # persistence (in-memory loses users on restart)
 ```
 
-`OIDC_CLIENTS` seeds the `cryptofreight-web` public client (redirect URIs are
-strictly matched at /authorize). `CORS_ALLOWED_ORIGINS` lets the SPA origin
-fetch `/token`, `/userinfo`, and `/revoke`.
+Register the `cryptofreight-web` public client from X-Auth's hosted developer
+console (`<issuer>/dev`) after signing in with Google. Redirect URIs are
+strictly matched at `/authorize`; include
+`https://cryptofreight.org/callback.html` and any local callback you test with.
+For non-interactive deployments, `OIDC_CLIENTS` can still seed the same row:
+`OIDC_CLIENTS="cryptofreight-web=https://cryptofreight.org/callback.html"`.
+`CORS_ALLOWED_ORIGINS` lets the SPA origin fetch `/token`, `/userinfo`, and
+`/revoke`.
 
 ## Local trial
 
 ```bash
 # 1. X-Auth (from the x-auth repo root)
 GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
-OIDC_CLIENTS="cryptofreight-web=http://localhost:3000/callback.html" \
 CORS_ALLOWED_ORIGINS="http://localhost:3000" \
   go run ./services/authentication-service/cmd
 
-# 2. This demo (from this directory)
+# 2. Visit http://localhost:8082/dev, sign in with Google, and register:
+#    client_id: cryptofreight-web
+#    redirect URI: http://localhost:3000/callback.html
+#
+# 3. This demo (from this directory)
 python -m http.server 3000
 # → http://localhost:3000, click "Sign in with Google (via X-Auth)"
 ```
@@ -68,10 +75,12 @@ already registered.
 1. Copy `auth.js` + `callback.html` into the site; edit the config block:
    `issuer` → your deployed authentication-service URL, `redirectUri` →
    `https://cryptofreight.org/callback.html`.
-2. On the X-Auth deployment, set `OIDC_CLIENTS` and `CORS_ALLOWED_ORIGINS`
-   to include the production values (see above), and make sure `AUTH_ISSUER`
-   is the public HTTPS URL (it's baked into token `iss` claims and the
-   Google redirect).
+2. On the X-Auth deployment, sign in at `<issuer>/dev` and register the
+   `cryptofreight-web` client with the production callback URI, or seed it
+   with `OIDC_CLIENTS` for automated environments. Set
+   `CORS_ALLOWED_ORIGINS` to include the production origin, and make sure
+   `AUTH_ISSUER` is the public HTTPS URL (it's baked into token `iss` claims
+   and the Google redirect).
 3. Add `<AUTH_ISSUER>/v1/social/google/callback` to the Google OAuth client's
    authorized redirect URIs.
 

@@ -73,6 +73,7 @@ bin/
 *.test
 *.out
 vendor/
+.cache/
 
 # Terraform (commit .terraform.lock.hcl, never state or provider cache)
 .terraform/

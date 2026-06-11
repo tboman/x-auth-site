@@ -1,0 +1,322 @@
+package internal
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// newOTPRouter wires a router whose authenticator mock can be shaped per test.
+func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := NewMemStorage()
+	r := Router(Deps{
+		Store:         store,
+		Logger:        logger,
+		Authenticator: mock,
+		Issuer:        "http://test.local",
+		Signer:        testSigner,
+	})
+	return r, store
+}
+
+var flowIDRe = regexp.MustCompile(`name="flow" value="([^"]+)"`)
+
+// startOTPAuthorize drives GET /authorize with acr_values and returns the
+// flow id scraped from the served OTP form.
+func startOTPAuthorize(t *testing.T, r http.Handler) string {
+	t.Helper()
+	q := url.Values{
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_acme"},
+		"state":                 {"st-1"},
+		"scope":                 {"openid profile email"},
+		"nonce":                 {"n-1"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
+		"acr_values":            {ACRSMSOTP},
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("authorize with acr: expected 200 OTP form, got %d (%s)", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("authorize with acr: Content-Type = %q", ct)
+	}
+	m := flowIDRe.FindStringSubmatch(w.Body.String())
+	if m == nil {
+		t.Fatalf("authorize with acr: no flow id in form:\n%s", w.Body.String())
+	}
+	return m[1]
+}
+
+func postVerify(t *testing.T, r http.Handler, flowID, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{"flow": {flowID}, "code": {code}}
+	req := httptest.NewRequest(http.MethodPost, "/authorize/verify", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// idTokenClaims decodes the (already signature-verified elsewhere) claims
+// section of a JWT for claim assertions.
+func idTokenClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a JWS: %q", token)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("claims decode: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatalf("claims unmarshal: %v", err)
+	}
+	return claims
+}
+
+func TestOTPFlowHappyPath(t *testing.T) {
+	var challengedUser string
+	mock := &mockAuthenticator{
+		// User already has an enrolled SMS authenticator.
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_1", Method: "sms", Status: "active"}}, nil
+		},
+		CreateChallengeFn: func(_ context.Context, _, userID string, methods []string) (ChallengeInfo, error) {
+			challengedUser = userID
+			if len(methods) != 1 || methods[0] != "sms" {
+				t.Errorf("challenge methods = %v", methods)
+			}
+			return ChallengeInfo{ChallengeID: "chl_1", Method: "sms", Prompt: "SMS OTP sent to +15551234 (stub)"}, nil
+		},
+		VerifyChallengeFn: func(_ context.Context, _, challengeID string, resp map[string]any) (VerifyOutcome, error) {
+			if challengeID != "chl_1" {
+				t.Errorf("verify challenge id = %q", challengeID)
+			}
+			return VerifyOutcome{Verified: resp["code"] == "123456"}, nil
+		},
+	}
+	r, _ := newOTPRouter(t, mock)
+
+	flowID := startOTPAuthorize(t, r)
+	if challengedUser == "" {
+		t.Fatal("no challenge was created")
+	}
+
+	// Correct code → 302 back to the client with a one-shot code.
+	w := postVerify(t, r, flowID, "123456")
+	if w.Code != http.StatusFound {
+		t.Fatalf("verify: expected 302, got %d (%s)", w.Code, w.Body.String())
+	}
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	if loc.Host != "localhost:3000" {
+		t.Fatalf("verify redirect = %q", loc.String())
+	}
+	code := loc.Query().Get("code")
+	if code == "" || loc.Query().Get("state") != "st-1" {
+		t.Fatalf("verify redirect missing code/state: %q", loc.String())
+	}
+
+	// Exchange the code; ID token must carry acr + amr, session is stepped-up.
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"redirect_uri":  {"http://localhost:3000/callback"},
+		"code_verifier": {testPKCEVerifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tw := httptest.NewRecorder()
+	r.ServeHTTP(tw, req)
+	if tw.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (%s)", tw.Code, tw.Body.String())
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
+	}
+	if err := json.Unmarshal(tw.Body.Bytes(), &tok); err != nil {
+		t.Fatalf("token response: %v", err)
+	}
+
+	claims := idTokenClaims(t, tok.IDToken)
+	if claims["acr"] != ACRSMSOTP {
+		t.Errorf("id_token acr = %v, want %q", claims["acr"], ACRSMSOTP)
+	}
+	amr, _ := claims["amr"].([]any)
+	if len(amr) != 2 || amr[0] != "otp" || amr[1] != "sms" {
+		t.Errorf("id_token amr = %v, want [otp sms]", claims["amr"])
+	}
+
+	// The flow id is single-use.
+	if w := postVerify(t, r, flowID, "123456"); w.Code != http.StatusBadRequest {
+		t.Fatalf("flow replay: expected 400, got %d", w.Code)
+	}
+}
+
+func TestOTPFlowSessionSteppedUp(t *testing.T) {
+	r, store := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_1", Method: "sms", Status: "active"}}, nil
+		},
+	})
+
+	flowID := startOTPAuthorize(t, r)
+	w := postVerify(t, r, flowID, "123456") // default mock verifies anything
+	loc, _ := url.Parse(w.Header().Get("Location"))
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {loc.Query().Get("code")},
+		"client_id":     {DefaultClientID},
+		"redirect_uri":  {"http://localhost:3000/callback"},
+		"code_verifier": {testPKCEVerifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tw := httptest.NewRecorder()
+	r.ServeHTTP(tw, req)
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(tw.Body.Bytes(), &tok); err != nil {
+		t.Fatalf("token response: %v (%s)", err, tw.Body.String())
+	}
+	sessionID, _ := idTokenClaims(t, tok.AccessToken)["session_id"].(string)
+	if sessionID == "" {
+		t.Fatal("access token missing session_id claim")
+	}
+	sess, err := store.GetSession("ten_acme", sessionID)
+	if err != nil {
+		t.Fatalf("session not found: %v", err)
+	}
+	if !sess.StepUpCompleted {
+		t.Fatal("session minted after OTP must have step_up_completed=true")
+	}
+}
+
+func TestOTPFlowWrongCodeRetries(t *testing.T) {
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_1", Method: "sms", Status: "active"}}, nil
+		},
+		VerifyChallengeFn: func(_ context.Context, _, _ string, resp map[string]any) (VerifyOutcome, error) {
+			if resp["code"] == "123456" {
+				return VerifyOutcome{Verified: true}, nil
+			}
+			return VerifyOutcome{Verified: false, Reason: "invalid_response"}, nil
+		},
+	})
+
+	flowID := startOTPAuthorize(t, r)
+
+	// Wrong code → form re-rendered (401), flow stays alive.
+	w := postVerify(t, r, flowID, "000000")
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Incorrect code") {
+		t.Fatalf("wrong code: expected re-rendered form, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	// Correct code on the same flow → success.
+	if w := postVerify(t, r, flowID, "123456"); w.Code != http.StatusFound {
+		t.Fatalf("retry with right code: expected 302, got %d", w.Code)
+	}
+}
+
+func TestOTPFlowMaxAttemptsKillsFlow(t *testing.T) {
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_1", Method: "sms", Status: "active"}}, nil
+		},
+		VerifyChallengeFn: func(_ context.Context, _, _ string, _ map[string]any) (VerifyOutcome, error) {
+			return VerifyOutcome{Verified: false, Reason: "max_attempts_exceeded"}, nil
+		},
+	})
+
+	flowID := startOTPAuthorize(t, r)
+	if w := postVerify(t, r, flowID, "000000"); w.Code != http.StatusBadRequest {
+		t.Fatalf("max attempts: expected 400, got %d", w.Code)
+	}
+	// Flow is gone — even a correct code can't resurrect it.
+	if w := postVerify(t, r, flowID, "123456"); w.Code != http.StatusBadRequest {
+		t.Fatalf("dead flow: expected 400, got %d", w.Code)
+	}
+}
+
+func TestOTPFlowAutoEnrollsWhenNoSMS(t *testing.T) {
+	enrolled := false
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return nil, nil // user has no authenticators
+		},
+		EnrollFn: func(_ context.Context, _, _, method string, _ map[string]any) (Authenticator, error) {
+			enrolled = true
+			if method != "sms" {
+				t.Errorf("enroll method = %q", method)
+			}
+			return Authenticator{ID: "atr_new", Method: "sms", Status: "active"}, nil
+		},
+	})
+
+	startOTPAuthorize(t, r)
+	if !enrolled {
+		t.Fatal("expected auto-enrollment of an sms authenticator")
+	}
+}
+
+func TestAuthorizeWithoutACRSkipsOTP(t *testing.T) {
+	challenged := false
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		CreateChallengeFn: func(_ context.Context, _, _ string, _ []string) (ChallengeInfo, error) {
+			challenged = true
+			return ChallengeInfo{}, nil
+		},
+	})
+
+	q := url.Values{
+		"client_id":             {DefaultClientID},
+		"redirect_uri":          {"http://localhost:3000/callback"},
+		"tenant_id":             {"ten_acme"},
+		"code_challenge":        {testPKCEChallenge},
+		"code_challenge_method": {"S256"},
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil))
+	if w.Code != http.StatusFound {
+		t.Fatalf("plain authorize: expected 302, got %d", w.Code)
+	}
+	if challenged {
+		t.Fatal("plain authorize must not create a challenge")
+	}
+}
+
+func TestDiscoveryAdvertisesACR(t *testing.T) {
+	r, _ := newOTPRouter(t, &mockAuthenticator{})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+	var doc struct {
+		ACRValuesSupported []string `json:"acr_values_supported"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("discovery decode: %v", err)
+	}
+	if len(doc.ACRValuesSupported) != 1 || doc.ACRValuesSupported[0] != ACRSMSOTP {
+		t.Fatalf("acr_values_supported = %v", doc.ACRValuesSupported)
+	}
+}

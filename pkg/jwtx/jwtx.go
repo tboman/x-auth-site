@@ -48,6 +48,14 @@ type Claims struct {
 	Scope     string `json:"scope,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	Nonce     string `json:"nonce,omitempty"`
+
+	// Standard OIDC authentication-context claims: ACR is the satisfied
+	// authentication context class reference (e.g. "urn:xauth:otp:sms");
+	// AMR lists the authentication methods used (RFC 8176 values, e.g.
+	// ["otp","sms"]). Stamped on ID tokens minted by flows that ran a
+	// second-factor interlude.
+	ACR string   `json:"acr,omitempty"`
+	AMR []string `json:"amr,omitempty"`
 }
 
 // Validation errors. Verify wraps these so callers can errors.Is on the cause.

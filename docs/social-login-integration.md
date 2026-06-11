@@ -40,6 +40,12 @@ X-Auth `session_id` + `user_id` and validates them server-side.
    is no tenant-registration API yet — the tenant springs into existence on
    first use, and any string is accepted. Pick one and use it consistently.
 
+If you are integrating with X-Auth as a **full OIDC client** rather than using
+the lower-level `session_id` callback shown below, sign in at
+`<XAUTH_URL>/dev` with Google and register your public client there. The hosted
+console can immediately test that client with the normal code+PKCE round trip
+or with `acr_values=urn:xauth:otp:sms` to exercise the SMS-OTP interlude.
+
 ## Step 1 — the login button
 
 Link (or redirect) the browser to X-Auth's social authorize endpoint:

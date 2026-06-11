@@ -68,14 +68,16 @@ func Router(d Deps) http.Handler {
 		panic("authentication-service: verifier from signer JWKS: " + err.Error())
 	}
 	oidc := &OIDCHandlers{
-		Store:     d.Store,
-		Logger:    d.Logger,
-		Issuer:    d.Issuer,
-		Signer:    d.Signer,
-		Verifier:  verifier,
-		JWTIssuer: jwtIssuer,
+		Store:         d.Store,
+		Logger:        d.Logger,
+		Issuer:        d.Issuer,
+		Signer:        d.Signer,
+		Verifier:      verifier,
+		JWTIssuer:     jwtIssuer,
+		Authenticator: d.Authenticator,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
+	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -101,8 +103,11 @@ func Router(d Deps) http.Handler {
 	mux.Handle("GET /v1/auth/jwks", withCORS(oidc.JWKS))
 	mux.Handle("GET /.well-known/jwks.json", withCORS(oidc.JWKS))
 
-	// OIDC / OAuth2 flows — public, no tenant header.
+	// OIDC / OAuth2 flows — public, no tenant header. /authorize/verify is the
+	// OTP-form submission of the second-factor interlude (otp.go) — same-origin
+	// browser POST, no CORS needed.
 	mux.HandleFunc("GET /authorize", oidc.Authorize)
+	mux.HandleFunc("POST /authorize/verify", oidc.AuthorizeVerify)
 	mux.Handle("POST /token", withCORS(oidc.Token))
 	mux.Handle("OPTIONS /token", withCORS(oidc.Token))
 	mux.Handle("POST /revoke", withCORS(oidc.Revoke))
@@ -113,6 +118,17 @@ func Router(d Deps) http.Handler {
 	// Social login stubs — public, no tenant header (tenant_id is a query param).
 	mux.HandleFunc("GET /v1/social/{provider}/authorize", social.Authorize)
 	mux.HandleFunc("GET /v1/social/{provider}/callback", social.Callback)
+
+	// Hosted developer console: Google sign-in -> OIDC client registration ->
+	// built-in code+PKCE round-trip tester with optional ACR selection.
+	mux.HandleFunc("GET /dev", dev.Home)
+	mux.HandleFunc("GET /dev/", dev.Home)
+	mux.HandleFunc("GET /dev/login/google", dev.LoginGoogle)
+	mux.HandleFunc("GET /dev/social/callback", dev.SocialCallback)
+	mux.HandleFunc("POST /dev/logout", dev.Logout)
+	mux.HandleFunc("POST /dev/clients", dev.RegisterClient)
+	mux.HandleFunc("GET /dev/oidc/start", dev.StartOIDC)
+	mux.HandleFunc("GET /dev/oidc/callback", dev.OIDCCallback)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
 	// these routes with tenantx.Middleware without firing it for OIDC traffic.

@@ -505,6 +505,8 @@ func TestPGStorageAuthCodeOneShot(t *testing.T) {
 		Nonce:         "n-0S6_WzA2Mj",
 		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
 		CreatedAt:     now,
+		ACR:           ACRSMSOTP,
+		AMR:           []string{"otp", "sms"},
 	}
 	if err := s.PutAuthCode(ac); err != nil {
 		t.Fatalf("put: %v", err)
@@ -520,6 +522,9 @@ func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	}
 	if !got.CreatedAt.Equal(now) {
 		t.Fatalf("created_at mismatch: got %v want %v", got.CreatedAt, now)
+	}
+	if got.ACR != ACRSMSOTP || len(got.AMR) != 2 || got.AMR[0] != "otp" || got.AMR[1] != "sms" {
+		t.Fatalf("acr/amr roundtrip mismatch: acr=%q amr=%v", got.ACR, got.AMR)
 	}
 
 	// One-shot: replay must fail.

@@ -166,6 +166,12 @@ type AuthCode struct {
 	Nonce         string
 	CodeChallenge string
 	CreatedAt     time.Time
+
+	// ACR/AMR record which authentication context the /authorize flow
+	// satisfied (e.g. the SMS-OTP interlude) so the token mint can stamp the
+	// claims into the ID token and mark the session stepped-up.
+	ACR string
+	AMR []string
 }
 
 // OIDCClient is a registered OAuth/OIDC client. Phase 1 seeds a single dev

@@ -332,8 +332,9 @@ func (s *PGStorage) PutAuthCode(ac AuthCode) error {
 	const q = `
 		INSERT INTO auth_codes (
 			code, client_id, tenant_id, user_id, session_id,
-			redirect_uri, scope, state, nonce, code_challenge, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			redirect_uri, scope, state, nonce, code_challenge, created_at,
+			acr, amr
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (code) DO UPDATE SET
 			client_id      = EXCLUDED.client_id,
 			tenant_id      = EXCLUDED.tenant_id,
@@ -344,12 +345,18 @@ func (s *PGStorage) PutAuthCode(ac AuthCode) error {
 			state          = EXCLUDED.state,
 			nonce          = EXCLUDED.nonce,
 			code_challenge = EXCLUDED.code_challenge,
-			created_at     = EXCLUDED.created_at
+			created_at     = EXCLUDED.created_at,
+			acr            = EXCLUDED.acr,
+			amr            = EXCLUDED.amr
 	`
+	amr := ac.AMR
+	if amr == nil {
+		amr = []string{}
+	}
 	if _, err := s.pool.Exec(bgCtx(), q,
 		ac.Code, ac.ClientID, ac.TenantID, ac.UserID, nullable(ac.SessionID),
 		ac.RedirectURI, nullable(ac.Scope), nullable(ac.State), nullable(ac.Nonce),
-		nullable(ac.CodeChallenge), ac.CreatedAt.UTC(),
+		nullable(ac.CodeChallenge), ac.CreatedAt.UTC(), ac.ACR, amr,
 	); err != nil {
 		return fmt.Errorf("pgstorage put_auth_code: %w", err)
 	}
@@ -364,7 +371,8 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 		DELETE FROM auth_codes
 		 WHERE code = $1
 		RETURNING code, client_id, tenant_id, user_id, session_id,
-		          redirect_uri, scope, state, nonce, code_challenge, created_at
+		          redirect_uri, scope, state, nonce, code_challenge, created_at,
+		          acr, amr
 	`
 	var (
 		ac                                            AuthCode
@@ -373,6 +381,7 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 	err := s.pool.QueryRow(bgCtx(), q, code).Scan(
 		&ac.Code, &ac.ClientID, &ac.TenantID, &ac.UserID, &sessionID,
 		&ac.RedirectURI, &scope, &state, &nonce, &codeChallenge, &ac.CreatedAt,
+		&ac.ACR, &ac.AMR,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AuthCode{}, ErrNotFound

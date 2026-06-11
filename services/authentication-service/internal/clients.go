@@ -54,15 +54,41 @@ func (e *DownstreamError) Unwrap() error { return e.Err }
 type AuthenticatorClient interface {
 	ListAuthenticators(ctx context.Context, tenantID, userID string) ([]Authenticator, error)
 	VerifyFirstFactor(ctx context.Context, tenantID, userID, secret string) error
+
+	// Challenge lifecycle for the /authorize second-factor interlude
+	// (acr_values, e.g. SMS OTP). Thin wrappers over authenticator-service's
+	// /internal/v1/challenges endpoints.
+	EnrollAuthenticator(ctx context.Context, tenantID, userID, method string, metadata map[string]any) (Authenticator, error)
+	CreateChallenge(ctx context.Context, tenantID, userID string, methods []string) (ChallengeInfo, error)
+	VerifyChallenge(ctx context.Context, tenantID, challengeID string, response map[string]any) (VerifyOutcome, error)
 }
 
 // Authenticator is the slimmed view of an authenticator-service row. Fields we
 // don't need are ignored on decode.
 type Authenticator struct {
 	ID       string         `json:"id"`
-	Type     string         `json:"type"`
+	Method   string         `json:"method"` // fido2 | totp | push | sms | magic_link
+	Status   string         `json:"status"` // active | disabled
 	Verified bool           `json:"verified"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// ChallengeInfo is authenticator-service's dispatch response — what the
+// /authorize interlude needs to render a verification prompt.
+type ChallengeInfo struct {
+	ChallengeID string    `json:"challenge_id"`
+	Method      string    `json:"method"`
+	Prompt      string    `json:"prompt"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// VerifyOutcome is the decoded verdict of a challenge verify call. A wrong
+// code is an outcome (Verified=false), not an error — terminal/throttle
+// states (410, 429) surface as a *DownstreamError instead so callers can
+// distinguish "try again" from "start over".
+type VerifyOutcome struct {
+	Verified bool   `json:"verified"`
+	Reason   string `json:"reason,omitempty"` // invalid_response | max_attempts_exceeded
 }
 
 // HTTPAuthenticatorClient is the production implementation — a thin HTTP wrapper
@@ -161,6 +187,55 @@ func (c *HTTPAuthenticatorClient) ListAuthenticators(ctx context.Context, tenant
 		return nil, err
 	}
 	return env.Authenticators, nil
+}
+
+// EnrollAuthenticator calls POST /internal/v1/authenticators — used by the
+// OTP interlude to auto-enroll a stub SMS authenticator for users who have
+// none (mock-stage convenience; real deployments enroll through a proper
+// device-registration journey).
+func (c *HTTPAuthenticatorClient) EnrollAuthenticator(ctx context.Context, tenantID, userID, method string, metadata map[string]any) (Authenticator, error) {
+	var out Authenticator
+	body := map[string]any{"user_id": userID, "method": method}
+	if len(metadata) > 0 {
+		body["metadata"] = metadata
+	}
+	if err := c.do(ctx, http.MethodPost, c.BaseURL+"/internal/v1/authenticators", tenantID, body, &out); err != nil {
+		return Authenticator{}, err
+	}
+	return out, nil
+}
+
+// CreateChallenge calls POST /internal/v1/challenges — authenticator-service
+// selects an enrolled authenticator for one of the requested methods and
+// dispatches it (for SMS, the adapter "sends" the OTP).
+func (c *HTTPAuthenticatorClient) CreateChallenge(ctx context.Context, tenantID, userID string, methods []string) (ChallengeInfo, error) {
+	var out ChallengeInfo
+	body := map[string]any{"user_id": userID, "methods": methods}
+	if err := c.do(ctx, http.MethodPost, c.BaseURL+"/internal/v1/challenges", tenantID, body, &out); err != nil {
+		return ChallengeInfo{}, err
+	}
+	return out, nil
+}
+
+// VerifyChallenge calls POST /internal/v1/challenges/{id}/verify. A 401 from
+// authenticator-service means "wrong response" and is decoded into a
+// VerifyOutcome rather than returned as an error; 410 (challenge terminal),
+// 429 (backoff/lockout), and transport failures come back as errors.
+func (c *HTTPAuthenticatorClient) VerifyChallenge(ctx context.Context, tenantID, challengeID string, response map[string]any) (VerifyOutcome, error) {
+	var out VerifyOutcome
+	url := fmt.Sprintf("%s/internal/v1/challenges/%s/verify", c.BaseURL, challengeID)
+	err := c.do(ctx, http.MethodPost, url, tenantID, map[string]any{"response": response}, &out)
+	if err != nil {
+		var de *DownstreamError
+		if errors.As(err, &de) && de.Status == http.StatusUnauthorized {
+			// Wrong code: the verdict body rides on the 401.
+			if jsonErr := json.Unmarshal([]byte(de.Body), &out); jsonErr == nil {
+				return out, nil
+			}
+		}
+		return VerifyOutcome{}, err
+	}
+	return out, nil
 }
 
 // VerifyFirstFactor is a phase-1 placeholder. authenticator-service does NOT

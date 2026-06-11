@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,16 @@ type OIDCHandlers struct {
 	Signer    *jwtx.Signer
 	Verifier  *jwtx.Verifier
 	JWTIssuer string
+
+	// Authenticator drives the second-factor interlude (acr_values=urn:xauth:otp:sms)
+	// — challenge create/verify against authenticator-service.
+	Authenticator AuthenticatorClient
+
+	// Parked /authorize requests awaiting OTP verification, keyed by one-time
+	// flow id (see otp.go). Same in-process pattern as the social handshake.
+	flowMu   sync.Mutex
+	flows    map[string]pendingAuthorize
+	flowOnce sync.Once
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.
@@ -64,6 +75,7 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
+		"acr_values_supported":                  []string{ACRSMSOTP},
 	})
 }
 
@@ -85,6 +97,7 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
+		"acr_values_supported":                  []string{ACRSMSOTP},
 	})
 }
 
@@ -198,9 +211,24 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	code := uuid.NewString()
-	if err := h.Store.PutAuthCode(AuthCode{
-		Code:          code,
+	// Second-factor interlude (otp.go): when the client asks for the SMS-OTP
+	// authentication context, park the request and challenge the user instead
+	// of minting a code straight away. /authorize/verify finishes the flow.
+	if acrRequested(q.Get("acr_values"), ACRSMSOTP) {
+		h.startOTPFlow(w, r, pendingAuthorize{
+			ClientID:      clientID,
+			TenantID:      tenantID,
+			UserID:        user.ID,
+			RedirectURI:   redirectURI,
+			Scope:         scope,
+			State:         state,
+			Nonce:         nonce,
+			CodeChallenge: codeChallenge,
+		})
+		return
+	}
+
+	h.mintCodeAndRedirect(w, r, AuthCode{
 		ClientID:      clientID,
 		TenantID:      tenantID,
 		UserID:        user.ID,
@@ -209,22 +237,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		Nonce:         nonce,
 		CodeChallenge: codeChallenge,
-		CreatedAt:     time.Now().UTC(),
-	}); err != nil {
-		h.Logger.Error("authorize_store_failed", "err", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue code")
-		return
-	}
-
-	// Append code + state to the redirect URI without clobbering pre-existing params.
-	rq := redir.Query()
-	rq.Set("code", code)
-	if state != "" {
-		rq.Set("state", state)
-	}
-	redir.RawQuery = rq.Encode()
-
-	http.Redirect(w, r, redir.String(), http.StatusFound)
+	})
 }
 
 // Token handles POST /token for both the `authorization_code` and
@@ -308,14 +321,16 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mint a session for the authenticated user.
+	// Mint a session for the authenticated user. A second factor verified at
+	// /authorize (non-empty amr on the code) makes the session stepped-up
+	// from birth.
 	now := time.Now().UTC()
 	sess := Session{
 		ID:              "ses_" + uuid.NewString(),
 		TenantID:        ac.TenantID,
 		UserID:          ac.UserID,
 		RiskLevel:       RiskLow, // TODO(phase-2): pull from risk-service context
-		StepUpCompleted: false,
+		StepUpCompleted: len(ac.AMR) > 0,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		ExpiresAt:       now.Add(time.Duration(SessionTTLSeconds) * time.Second),
@@ -348,7 +363,7 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 	// /authorize through the auth-code record into the id_token to bind the
 	// token to the client's original request (replay protection, §10.1).
 	if scopeContains(ac.Scope, "openid") {
-		idToken, err := h.issueIDToken(sess, ac.ClientID, ac.Nonce)
+		idToken, err := h.issueIDToken(sess, ac.ClientID, ac.Nonce, ac.ACR, ac.AMR)
 		if err != nil {
 			h.Logger.Error("id_token_issue_failed", "err", err, "session_id", sess.ID)
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue id_token")
@@ -530,7 +545,7 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID, familyID st
 // /authorize request and the tenant_id for multi-tenant consumers. ID tokens
 // are proof-of-authentication for the client, not API credentials — they are
 // not persisted and cannot be revoked or presented to /userinfo's deny list.
-func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce string) (string, error) {
+func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce, acr string, amr []string) (string, error) {
 	now := time.Now().UTC()
 	return h.Signer.Sign(jwtx.Claims{
 		Sub:      sess.UserID,
@@ -540,6 +555,8 @@ func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce string) (strin
 		Iat:      now.Unix(),
 		TenantID: sess.TenantID,
 		Nonce:    nonce,
+		ACR:      acr,
+		AMR:      amr,
 	}, nil)
 }
 

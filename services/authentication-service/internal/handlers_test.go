@@ -40,8 +40,11 @@ func pkceChallenge(verifier string) string {
 // method is a function field so individual tests can stub precisely the
 // behavior they need.
 type mockAuthenticator struct {
-	ListFn   func(ctx context.Context, tenantID, userID string) ([]Authenticator, error)
-	VerifyFn func(ctx context.Context, tenantID, userID, secret string) error
+	ListFn            func(ctx context.Context, tenantID, userID string) ([]Authenticator, error)
+	VerifyFn          func(ctx context.Context, tenantID, userID, secret string) error
+	EnrollFn          func(ctx context.Context, tenantID, userID, method string, metadata map[string]any) (Authenticator, error)
+	CreateChallengeFn func(ctx context.Context, tenantID, userID string, methods []string) (ChallengeInfo, error)
+	VerifyChallengeFn func(ctx context.Context, tenantID, challengeID string, response map[string]any) (VerifyOutcome, error)
 }
 
 func (m *mockAuthenticator) ListAuthenticators(ctx context.Context, t, u string) ([]Authenticator, error) {
@@ -55,6 +58,24 @@ func (m *mockAuthenticator) VerifyFirstFactor(ctx context.Context, t, u, s strin
 		return nil
 	}
 	return m.VerifyFn(ctx, t, u, s)
+}
+func (m *mockAuthenticator) EnrollAuthenticator(ctx context.Context, t, u, method string, md map[string]any) (Authenticator, error) {
+	if m.EnrollFn == nil {
+		return Authenticator{ID: "atr_mock", Method: method, Status: "active"}, nil
+	}
+	return m.EnrollFn(ctx, t, u, method, md)
+}
+func (m *mockAuthenticator) CreateChallenge(ctx context.Context, t, u string, methods []string) (ChallengeInfo, error) {
+	if m.CreateChallengeFn == nil {
+		return ChallengeInfo{ChallengeID: "chl_mock", Method: "sms", Prompt: "SMS OTP sent (mock)"}, nil
+	}
+	return m.CreateChallengeFn(ctx, t, u, methods)
+}
+func (m *mockAuthenticator) VerifyChallenge(ctx context.Context, t, c string, resp map[string]any) (VerifyOutcome, error) {
+	if m.VerifyChallengeFn == nil {
+		return VerifyOutcome{Verified: true}, nil
+	}
+	return m.VerifyChallengeFn(ctx, t, c, resp)
 }
 
 // testSigner is a single RS256 signer shared by every test router — generating

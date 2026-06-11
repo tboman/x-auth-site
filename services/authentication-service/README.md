@@ -59,11 +59,36 @@ Schema changes live in `migrations/000002_token_families_pkce.up.sql`. See
 authorization-code handshake with PKCE against Google; unconfigured providers
 keep the stub. See "Social login" below.
 
+**Phase 2.4 — SMS-OTP second factor on /authorize (done, mock adapter).**
+Clients request it with standard OIDC `acr_values=urn:xauth:otp:sms`:
+`/authorize` parks the request, dispatches an SMS challenge through
+authenticator-service, and serves a hosted OTP page; `POST /authorize/verify`
+proxies the code (attempts/backoff/lockout enforced by authenticator-service)
+and on success mints the authorization code with `acr`/`amr` recorded. The
+token mint stamps `acr` + `amr: ["otp","sms"]` into the ID token and marks the
+session `step_up_completed`. The SMS adapter is the authenticator-service stub
+— accepted code is `123456`; swapping in Twilio touches only that adapter.
+Discovery advertises `acr_values_supported`. Schema: migration `000003`
+(`auth_codes.acr` / `.amr`). Users with no SMS authenticator get one
+auto-enrolled (mock-stage convenience). Parked flows are in-process (10-min
+TTL) — same single-replica constraint as the social handshake.
+
+**Phase 2.5 — hosted developer console (done, stage/dev surface).** `GET /dev`
+lets a Google-authenticated user register a public OIDC client and immediately
+run a full OIDC authorization-code + PKCE round trip. The built-in tester can
+launch the registered client with no ACR or with `acr_values=urn:xauth:otp:sms`
+so developers can see the `acr`/`amr` claims stamped into the ID token. The
+console uses the normal Google social login, stores an HttpOnly cookie backed
+by an X-Auth session in tenant `ten_developer`, and registers clients in the
+same `oidc_clients` store used by `/authorize`.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - Strict client authentication (public dev client still allowed without a secret)
 - Real first-factor verification (today `POST /v1/sessions` trusts the internal caller)
 - Real OAuth2 handshakes for github / microsoft (google is done)
+- First-class OIDC client ownership / dynamic client registration API (the
+  `/dev` console is a stage/dev bridge)
 - Service-to-service signed tokens from transaction-service
 - Soft-delete users with GDPR-safe pseudonymisation
 - Distributed revocation (drop the access-token deny list — see below)
@@ -144,7 +169,8 @@ All authorization-code flows **require PKCE** (RFC 7636), S256 only:
 | `GET` | `/healthz` | Liveness probe, returns `{"status":"ok"}` |
 | `GET` | `/.well-known/oauth-authorization-server` | RFC 8414 metadata |
 | `GET` | `/.well-known/openid-configuration` | OIDC discovery |
-| `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code`. **Requires PKCE** (`code_challenge` + `code_challenge_method=S256`) |
+| `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code`. **Requires PKCE** (`code_challenge` + `code_challenge_method=S256`). With `acr_values=urn:xauth:otp:sms`, interrupts with a hosted SMS-OTP page first |
+| `POST` | `/authorize/verify` | OTP-form submission for the second-factor interlude; on success redirects with `code` |
 | `POST` | `/token` | Exchange `code` (+ `code_verifier`) or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`) |
 | `POST` | `/revoke` | RFC 7009 token revocation |
 | `GET` | `/userinfo` | Returns `{sub, email, name}` for the bearer (hybrid JWT + deny-list check) |
@@ -179,6 +205,25 @@ when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` are set; `github` and
 Google console setup: create an OAuth client (type *Web application*) and add
 `<AUTH_ISSUER>/v1/social/google/callback` as an authorized redirect URI —
 e.g. `http://localhost:8082/v1/social/google/callback` for local dev.
+
+### Hosted developer console
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/dev` | Browser UI. Signed-out users see "Sign in with Google"; signed-in users can register/test OIDC clients |
+| `GET` | `/dev/login/google` | Starts Google social login for the console tenant (`ten_developer`) |
+| `GET` | `/dev/social/callback` | Consumes the social-login result, validates state, and sets an HttpOnly console session cookie |
+| `POST` | `/dev/clients` | Register a public OIDC client `{client_id, redirect_uris}` from the form |
+| `GET` | `/dev/oidc/start?client_id=...` | Launch the built-in relying-party test flow for a registered client |
+| `GET` | `/dev/oidc/start?client_id=...&acr=sms` | Same, but requests `acr_values=urn:xauth:otp:sms` and hits the hosted OTP interlude |
+| `GET` | `/dev/oidc/callback` | Exchanges the code at `/token` with PKCE and renders token claims |
+| `POST` | `/dev/logout` | Invalidates the console session and clears the cookie |
+
+The console is intentionally small: clients are public PKCE clients, duplicate
+`client_id`s are rejected, and the in-page registered-client list is
+process-local even though the actual OIDC client row is persisted by storage.
+For a real tenant admin product, add owner columns / a first-class registration
+API instead of relying on this stage/dev bridge.
 
 ### Tenant-scoped admin (`X-Tenant-Id` required)
 
