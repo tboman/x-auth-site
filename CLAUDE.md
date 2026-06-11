@@ -23,7 +23,7 @@ Hosted on **Firebase Hosting** (project: `xauth-2026`). The `public/` directory 
 firebase deploy --only hosting
 ```
 
-**CI/CD**: GitHub Actions auto-deploys on push to `main` (live) and on pull requests (preview channel). The workflows reference `npm ci && npm run build` — there is currently no `package.json`, so those steps will fail if triggered. If a build step becomes necessary, a `package.json` must be added.
+**CI/CD**: GitHub Actions auto-deploys on push to `main` (live) and on pull requests (preview channel). There is no build step — the workflows deploy `public/` as-is. If a build step becomes necessary, add a `package.json` and restore an `npm ci && npm run build` step to the hosting workflows.
 
 ### Backend services (Cloud Run)
 
