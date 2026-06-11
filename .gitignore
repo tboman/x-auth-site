@@ -74,5 +74,11 @@ bin/
 *.out
 vendor/
 
+# Terraform (commit .terraform.lock.hcl, never state or provider cache)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
 # Claude Code local session state
 .claude/

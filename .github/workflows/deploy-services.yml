@@ -1,0 +1,106 @@
+# Builds, migrates, and deploys the 8 Go services to Cloud Run.
+#
+# Infrastructure (Cloud Run services, migration jobs, Cloud SQL, Redis,
+# secrets) is managed by Terraform in deploy/terraform — this workflow only
+# moves images. Authentication uses Workload Identity Federation; see
+# deploy/terraform/README.md for the one-time setup of the two secrets:
+#   GCP_WIF_PROVIDER  projects/<num>/locations/global/workloadIdentityPools/...
+#   GCP_DEPLOY_SA     deploy-github@xauth-2026.iam.gserviceaccount.com
+
+name: Deploy services
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/docker/**"
+      - ".github/workflows/deploy-services.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-services
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: xauth-2026
+  REGION: europe-north1
+  REPO: europe-north1-docker.pkg.dev/xauth-2026/x-auth
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push images
+        run: |
+          set -euo pipefail
+          for svc in transaction risk authentication authenticator persona pool broker grant; do
+            echo "::group::build ${svc}-service"
+            docker build -t "${REPO}/${svc}-service:${GITHUB_SHA}" \
+              -f "services/${svc}-service/Dockerfile" .
+            docker push "${REPO}/${svc}-service:${GITHUB_SHA}"
+            echo "::endgroup::"
+          done
+          echo "::group::build migrate"
+          docker build -t "${REPO}/migrate:${GITHUB_SHA}" \
+            -f deploy/docker/Dockerfile.migrate .
+          docker push "${REPO}/migrate:${GITHUB_SHA}"
+          echo "::endgroup::"
+
+      - name: Run database migrations
+        run: |
+          set -euo pipefail
+          declare -A short=(
+            [transaction]=txn [risk]=risk [authentication]=auth [authenticator]=authr
+            [persona]=persona [pool]=pool [broker]=broker [grant]=grant
+          )
+          for svc in transaction risk authentication authenticator persona pool broker grant; do
+            job="migrate-${short[$svc]}"
+            echo "::group::${job}"
+            gcloud run jobs update "${job}" \
+              --image "${REPO}/migrate:${GITHUB_SHA}" \
+              --region "${REGION}" --quiet
+            gcloud run jobs execute "${job}" \
+              --region "${REGION}" --wait --quiet
+            echo "::endgroup::"
+          done
+
+      - name: Deploy services
+        run: |
+          set -euo pipefail
+          for svc in transaction risk authentication authenticator persona pool broker grant; do
+            echo "::group::deploy ${svc}-service"
+            gcloud run services update "${svc}-service" \
+              --image "${REPO}/${svc}-service:${GITHUB_SHA}" \
+              --region "${REGION}" --quiet
+            echo "::endgroup::"
+          done
+
+      - name: Smoke-check public services
+        run: |
+          set -euo pipefail
+          PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
+          for svc in transaction-service authentication-service broker-service; do
+            url="https://${svc}-${PROJECT_NUMBER}.${REGION}.run.app/healthz"
+            echo "checking ${url}"
+            curl -sf --retry 5 --retry-delay 3 --retry-all-errors "${url}" >/dev/null
+          done

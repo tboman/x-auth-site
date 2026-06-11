@@ -1,0 +1,14 @@
+# Migrations image: golang-migrate + every service's migrations directory.
+# The migrate-<svc> Cloud Run jobs (deploy/terraform/cloudrun.tf) run
+#   migrate -path /migrations/$SERVICE -database "$PG_DSN" up
+# Build context is the repo root.
+FROM migrate/migrate:v4.17.1
+
+COPY services/transaction-service/migrations    /migrations/transaction-service
+COPY services/risk-service/migrations           /migrations/risk-service
+COPY services/authentication-service/migrations /migrations/authentication-service
+COPY services/authenticator-service/migrations  /migrations/authenticator-service
+COPY services/persona-service/migrations        /migrations/persona-service
+COPY services/pool-service/migrations           /migrations/pool-service
+COPY services/broker-service/migrations         /migrations/broker-service
+COPY services/grant-service/migrations          /migrations/grant-service
