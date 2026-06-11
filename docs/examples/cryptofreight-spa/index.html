@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CryptoFreight — X-Auth login demo</title>
+  <style>
+    body { background:#0b0e14; color:#d7dae0; font-family:system-ui,sans-serif;
+           display:grid; place-items:center; min-height:100vh; margin:0 }
+    .card { text-align:center }
+    button { background:#00e096; color:#000; font-weight:700; border:0;
+             padding:.8rem 1.6rem; border-radius:6px; cursor:pointer; font-size:1rem }
+    pre { text-align:left; background:#11151d; padding:1rem; border-radius:8px }
+    .muted { color:#7c7c8a }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>CryptoFreight</h1>
+    <div id="anon" hidden>
+      <p class="muted">You are not signed in.</p>
+      <button id="login">Sign in with Google (via X-Auth)</button>
+    </div>
+    <div id="authed" hidden>
+      <p>Signed in ✓</p>
+      <pre id="who"></pre>
+      <button id="logout">Sign out</button>
+    </div>
+  </div>
+  <script type="module">
+    import { login, logout, getUser, isLoggedIn } from './auth.js';
+    document.getElementById('login').onclick = login;
+    document.getElementById('logout').onclick = () => logout().then(() => location.reload());
+    if (isLoggedIn()) {
+      document.getElementById('authed').hidden = false;
+      document.getElementById('who').textContent = JSON.stringify(getUser(), null, 2);
+    } else {
+      document.getElementById('anon').hidden = false;
+    }
+  </script>
+</body>
+</html>

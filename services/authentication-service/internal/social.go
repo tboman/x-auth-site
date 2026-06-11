@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,51 +16,128 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 )
 
-// SocialHandlers implements the phase-1 social-login stubs for google, github,
-// and microsoft. No real OAuth2 handshake happens — /authorize immediately
-// redirects back to our own /callback with a mock `code`, and /callback
-// "exchanges" that code for a canned profile.
+// SocialHandlers serves /v1/social/{provider}/authorize and /callback in one
+// of two modes, decided per provider:
 //
-// Purpose: give frontend and SDK developers a working provider button to click
-// in local / staging environments without configuring real client IDs.
-// TODO(phase-2): replace stubs with real per-provider OAuth2 code + PKCE.
+//   - **Real** (provider present in Providers): full OAuth2 authorization-code
+//     handshake with PKCE (S256) against the provider — /authorize redirects
+//     to the provider's consent page, /callback exchanges the returned code
+//     and resolves the user's profile from the userinfo endpoint. Wired for
+//     google via GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
+//   - **Stub** (provider not configured): the phase-1 mock — /authorize
+//     immediately redirects back to our own /callback with a mock code, and
+//     /callback "exchanges" it for a canned profile. Keeps local dev and CI
+//     working with zero provider configuration.
+//
+// Both modes converge in completeLogin: upsert the user by (tenant, email),
+// mint a low-risk session, and redirect to the caller's redirect_uri.
+//
+// In-flight state (stub codes, real state nonces + PKCE verifiers) lives in
+// process memory: entries expire after pendingTTL, and a callback must land
+// on the instance that served /authorize. Run a single replica (or add sticky
+// sessions / a shared store) before scaling out the real flow.
 type SocialHandlers struct {
 	Store  Storage
 	Logger *slog.Logger
 	Issuer string
 
-	// mu guards pendingCodes. Codes live only long enough for the browser to
-	// follow the redirect from /authorize to /callback — ~seconds.
-	mu            sync.Mutex
-	pendingCodes  map[string]socialPending
-	pendingOnceGC sync.Once
+	// Providers maps provider name → real OAuth2 wiring. Absent providers
+	// (or an empty ClientID) fall back to the stub. See SocialProvidersFromEnv.
+	Providers map[string]SocialProviderConfig
+
+	// HTTP overrides the outbound client for token/userinfo calls (tests).
+	// Nil means a default client with a 10s timeout.
+	HTTP *http.Client
+
+	// mu guards pending. Stub entries are keyed by the mock code; real entries
+	// are keyed by the state nonce we hand the provider.
+	mu          sync.Mutex
+	pending     map[string]socialPending
+	pendingOnce sync.Once
 }
+
+// pendingTTL bounds how long an in-flight login may sit at the provider's
+// consent screen before we refuse the callback.
+const pendingTTL = 10 * time.Minute
 
 type socialPending struct {
-	Provider    string
-	TenantID    string
-	RedirectURI string
-	State       string
-	CreatedAt   time.Time
+	Provider     string
+	TenantID     string
+	RedirectURI  string
+	State        string // the caller's state, echoed back on the final redirect
+	CodeVerifier string // PKCE verifier (real mode only)
+	CreatedAt    time.Time
 }
 
-// ensureMap lazily initialises the pendingCodes map. Router wiring constructs
+// ensureMap lazily initialises the pending map. Router wiring constructs
 // SocialHandlers as &SocialHandlers{...} so the map is nil until first use.
 func (h *SocialHandlers) ensureMap() {
-	h.pendingOnceGC.Do(func() {
-		h.pendingCodes = make(map[string]socialPending)
+	h.pendingOnce.Do(func() {
+		h.pending = make(map[string]socialPending)
 	})
+}
+
+// providerConfig returns the real-mode config for provider, if configured.
+func (h *SocialHandlers) providerConfig(provider string) (SocialProviderConfig, bool) {
+	cfg, ok := h.Providers[provider]
+	return cfg, ok && cfg.ClientID != ""
+}
+
+// callbackURL is our redirect_uri registered with the provider.
+func (h *SocialHandlers) callbackURL(provider string) string {
+	return strings.TrimRight(h.Issuer, "/") + "/v1/social/" + provider + "/callback"
+}
+
+// storePending records an in-flight login and opportunistically sweeps
+// expired entries (abandoned consent screens would otherwise accumulate).
+func (h *SocialHandlers) storePending(key string, p socialPending) {
+	h.ensureMap()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-pendingTTL)
+	for k, v := range h.pending {
+		if v.CreatedAt.Before(cutoff) {
+			delete(h.pending, k)
+		}
+	}
+	h.pending[key] = p
+}
+
+// takePending consumes an in-flight login. Each key is single-use; expired
+// entries are treated as absent.
+func (h *SocialHandlers) takePending(key string) (socialPending, bool) {
+	h.ensureMap()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	p, ok := h.pending[key]
+	if !ok {
+		return socialPending{}, false
+	}
+	delete(h.pending, key)
+	if time.Since(p.CreatedAt) > pendingTTL {
+		return socialPending{}, false
+	}
+	return p, true
+}
+
+// randToken returns n crypto-random bytes as unpadded base64url — used for
+// state nonces and PKCE verifiers.
+func randToken(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing means the platform's entropy source is broken —
+		// nothing sensible to do but crash loudly rather than mint guessable
+		// state values.
+		panic("social: crypto/rand failed: " + err.Error())
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // Authorize handles GET /v1/social/{provider}/authorize.
 //
-// Phase-1 behaviour: validate the provider, mint a mock code, store it keyed to
-// the state, and 302 to our own /v1/social/{provider}/callback. Real providers
-// would redirect to their own authorization endpoint. The 100ms "feel" from
-// the spec is simulated via a short sleep so tests that assert ordering pass.
+// Real mode redirects to the provider's authorization endpoint with PKCE;
+// stub mode mints a mock code and 302s straight to our own /callback.
 func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
-	h.ensureMap()
-
 	provider := r.PathValue("provider")
 	if !ValidSocialProvider(provider) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "unsupported provider")
@@ -81,23 +161,26 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cfg, ok := h.providerConfig(provider); ok {
+		h.authorizeReal(w, r, cfg, provider, tenantID, redirectURI, state)
+		return
+	}
+
+	// ── Stub mode ──
 	code := uuid.NewString()
-	h.mu.Lock()
-	h.pendingCodes[code] = socialPending{
+	h.storePending(code, socialPending{
 		Provider:    provider,
 		TenantID:    tenantID,
 		RedirectURI: redirectURI,
 		State:       state,
 		CreatedAt:   time.Now().UTC(),
-	}
-	h.mu.Unlock()
+	})
 
 	// Simulate the user-agent round-trip delay seen in real provider flows.
-	// TODO(phase-2): drop this sleep — real providers won't need it.
 	time.Sleep(100 * time.Millisecond)
 
 	// Redirect back to our own callback with the mock code + state.
-	cb, _ := url.Parse(strings.TrimRight(h.Issuer, "/") + "/v1/social/" + provider + "/callback")
+	cb, _ := url.Parse(h.callbackURL(provider))
 	cbq := cb.Query()
 	cbq.Set("code", code)
 	if state != "" {
@@ -107,33 +190,63 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, cb.String(), http.StatusFound)
 }
 
-// Callback handles GET /v1/social/{provider}/callback.
-//
-// Phase-1 behaviour: exchange the mock code for a canned profile, upsert a
-// user keyed by (tenant_id, email), mint a session with risk_level=low, and
-// redirect to the original redirect_uri with `?session_id=...&state=...`. No
-// access token is issued here — the caller is expected to follow up with a
-// POST /v1/sessions or the OIDC token flow if it needs bearer tokens.
-func (h *SocialHandlers) Callback(w http.ResponseWriter, r *http.Request) {
-	h.ensureMap()
+// authorizeReal sends the browser to the provider's consent page. The state
+// nonce is ours (single-use, unguessable) — the caller's state rides along in
+// the pending entry and is echoed on the final redirect, never forwarded to
+// the provider.
+func (h *SocialHandlers) authorizeReal(w http.ResponseWriter, r *http.Request, cfg SocialProviderConfig, provider, tenantID, redirectURI, callerState string) {
+	nonce := randToken(32)
+	verifier := randToken(48) // 64 chars — within RFC 7636's 43..128 bounds
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 
+	h.storePending(nonce, socialPending{
+		Provider:     provider,
+		TenantID:     tenantID,
+		RedirectURI:  redirectURI,
+		State:        callerState,
+		CodeVerifier: verifier,
+		CreatedAt:    time.Now().UTC(),
+	})
+
+	authz, err := url.Parse(cfg.AuthURL)
+	if err != nil {
+		h.Logger.Error("social_auth_url_invalid", "provider", provider, "err", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "provider misconfigured")
+		return
+	}
+	aq := authz.Query()
+	aq.Set("client_id", cfg.ClientID)
+	aq.Set("redirect_uri", h.callbackURL(provider))
+	aq.Set("response_type", "code")
+	aq.Set("scope", "openid email profile")
+	aq.Set("state", nonce)
+	aq.Set("code_challenge", challenge)
+	aq.Set("code_challenge_method", "S256")
+	authz.RawQuery = aq.Encode()
+	http.Redirect(w, r, authz.String(), http.StatusFound)
+}
+
+// Callback handles GET /v1/social/{provider}/callback.
+func (h *SocialHandlers) Callback(w http.ResponseWriter, r *http.Request) {
 	provider := r.PathValue("provider")
 	if !ValidSocialProvider(provider) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "unsupported provider")
 		return
 	}
+
+	if cfg, ok := h.providerConfig(provider); ok {
+		h.callbackReal(w, r, cfg, provider)
+		return
+	}
+
+	// ── Stub mode: "exchange" the mock code for a canned profile ──
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
 		return
 	}
-
-	h.mu.Lock()
-	pending, ok := h.pendingCodes[code]
-	if ok {
-		delete(h.pendingCodes, code)
-	}
-	h.mu.Unlock()
+	pending, ok := h.takePending(code)
 	if !ok {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "code is invalid or already used")
 		return
@@ -143,8 +256,68 @@ func (h *SocialHandlers) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile := cannedProfile(provider)
+	h.completeLogin(w, r, pending, cannedProfile(provider))
+}
 
+// callbackReal finishes the provider handshake: validate state, exchange the
+// code (PKCE), fetch the profile, and hand off to completeLogin.
+func (h *SocialHandlers) callbackReal(w http.ResponseWriter, r *http.Request, cfg SocialProviderConfig, provider string) {
+	q := r.URL.Query()
+	state := q.Get("state")
+	if state == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "state is required")
+		return
+	}
+	pending, ok := h.takePending(state)
+	if !ok {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "state is invalid, expired, or already used")
+		return
+	}
+	if pending.Provider != provider {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "provider mismatch")
+		return
+	}
+
+	// Provider-reported errors (user clicked "cancel", consent denied, …) go
+	// back to the caller's redirect_uri per the usual OAuth error contract.
+	if errCode := q.Get("error"); errCode != "" {
+		redir, err := url.Parse(pending.RedirectURI)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_redirect_uri", "stored redirect_uri is invalid")
+			return
+		}
+		rq := redir.Query()
+		rq.Set("error", errCode)
+		if pending.State != "" {
+			rq.Set("state", pending.State)
+		}
+		redir.RawQuery = rq.Encode()
+		http.Redirect(w, r, redir.String(), http.StatusFound)
+		return
+	}
+
+	code := q.Get("code")
+	if code == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
+		return
+	}
+
+	profile, err := h.fetchProfile(r.Context(), cfg, provider, code, pending.CodeVerifier)
+	if err != nil {
+		h.Logger.Error("social_provider_exchange_failed", "provider", provider, "err", err)
+		httpx.WriteError(w, http.StatusBadGateway, "provider_error", "could not complete sign-in with the provider")
+		return
+	}
+
+	h.completeLogin(w, r, pending, profile)
+}
+
+// completeLogin is the provider-agnostic tail of both modes: upsert a user
+// keyed by (tenant_id, email), mint a session with risk_level=low, and
+// redirect to the original redirect_uri with `?session_id=...&state=...`. No
+// access token is issued here — the caller is expected to follow up with a
+// POST /v1/sessions or the OIDC token flow if it needs bearer tokens.
+func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, pending socialPending, profile SocialProfile) {
 	// Upsert by (tenant, email). A repeat login for the same email returns the
 	// existing user — we don't want every /callback to create a new row.
 	user, err := h.Store.GetUserByEmail(pending.TenantID, profile.Email)
@@ -200,11 +373,8 @@ func (h *SocialHandlers) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redir.String(), http.StatusFound)
 }
 
-// cannedProfile returns the canned SocialProfile we use for every provider in
-// phase 1. Real providers return per-provider JSON shapes; phase 1 normalises.
-// TODO(phase-2): delete — real callbacks will exchange the code for a real
-// OAuth2 access token, hit the provider's userinfo endpoint, and normalise
-// the response into SocialProfile.
+// cannedProfile returns the canned SocialProfile used by stub mode. Real mode
+// normalises the provider's userinfo response instead (fetchProfile).
 func cannedProfile(provider string) SocialProfile {
 	name := provider
 	if len(name) > 0 {

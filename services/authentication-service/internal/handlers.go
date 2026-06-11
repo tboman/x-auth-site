@@ -23,6 +23,15 @@ type Deps struct {
 	// match the discovery document).
 	Signer    *jwtx.Signer
 	JWTIssuer string
+
+	// SocialProviders enables the real OAuth2 handshake per provider (see
+	// SocialHandlers). Nil/empty means every provider runs the phase-1 stub.
+	SocialProviders map[string]SocialProviderConfig
+
+	// CORSOrigins lists web origins allowed to call the public OIDC surface
+	// (/token, /userinfo, /revoke, discovery, JWKS) from a browser. Empty
+	// means no CORS headers are emitted (server-to-server callers only).
+	CORSOrigins []string
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -66,7 +75,7 @@ func Router(d Deps) http.Handler {
 		Verifier:  verifier,
 		JWTIssuer: jwtIssuer,
 	}
-	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -77,20 +86,29 @@ func Router(d Deps) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// The public OIDC surface is CORS-enabled for configured SPA origins;
+	// fetch-able routes additionally answer OPTIONS preflights (the /userinfo
+	// Authorization header triggers one). /authorize is top-level navigation
+	// and needs no CORS.
+	withCORS := func(h http.HandlerFunc) http.Handler { return corsHandler(d.CORSOrigins, h) }
+
 	// OIDC discovery — static JSON.
-	mux.HandleFunc("GET /.well-known/oauth-authorization-server", oidc.OAuthMetadata)
-	mux.HandleFunc("GET /.well-known/openid-configuration", oidc.OIDCMetadata)
+	mux.Handle("GET /.well-known/oauth-authorization-server", withCORS(oidc.OAuthMetadata))
+	mux.Handle("GET /.well-known/openid-configuration", withCORS(oidc.OIDCMetadata))
 
 	// JWKS — canonical route per ARCHITECTURE.md §4.3, plus the conventional
 	// well-known alias the discovery documents advertise as jwks_uri.
-	mux.HandleFunc("GET /v1/auth/jwks", oidc.JWKS)
-	mux.HandleFunc("GET /.well-known/jwks.json", oidc.JWKS)
+	mux.Handle("GET /v1/auth/jwks", withCORS(oidc.JWKS))
+	mux.Handle("GET /.well-known/jwks.json", withCORS(oidc.JWKS))
 
 	// OIDC / OAuth2 flows — public, no tenant header.
 	mux.HandleFunc("GET /authorize", oidc.Authorize)
-	mux.HandleFunc("POST /token", oidc.Token)
-	mux.HandleFunc("POST /revoke", oidc.Revoke)
-	mux.HandleFunc("GET /userinfo", oidc.UserInfo)
+	mux.Handle("POST /token", withCORS(oidc.Token))
+	mux.Handle("OPTIONS /token", withCORS(oidc.Token))
+	mux.Handle("POST /revoke", withCORS(oidc.Revoke))
+	mux.Handle("OPTIONS /revoke", withCORS(oidc.Revoke))
+	mux.Handle("GET /userinfo", withCORS(oidc.UserInfo))
+	mux.Handle("OPTIONS /userinfo", withCORS(oidc.UserInfo))
 
 	// Social login stubs — public, no tenant header (tenant_id is a query param).
 	mux.HandleFunc("GET /v1/social/{provider}/authorize", social.Authorize)

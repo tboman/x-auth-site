@@ -1,0 +1,205 @@
+// auth.js — X-Auth OIDC client for cryptofreight.org (no dependencies).
+//
+// Flow: social login (Google via X-Auth) → OIDC authorize → callback →
+// PKCE token exchange → JWT access/ID tokens in sessionStorage.
+//
+// X-Auth phase-1/2 notes baked into this client:
+//  - `issuer` must be the authentication-service base URL (where the
+//    discovery document lives), not the marketing site.
+//  - `tenantId` rides as a query param on /authorize and the social leg.
+//  - X-Auth's /authorize has no login UI yet — identity comes from the
+//    social leg, whose callback hands us a user_id that we forward.
+//  - PKCE S256 is mandatory on the code flow; this client always sends it.
+
+const OIDC = {
+  issuer:      'http://localhost:8082',                       // prod: your deployed auth-service URL
+  clientId:    'cryptofreight-web',                            // seeded via OIDC_CLIENTS on the X-Auth side
+  redirectUri: window.location.origin + '/callback.html',
+  scope:       'openid profile email',
+  tenantId:    'ten_cryptofreight',                            // X-Auth extension (phase-1 tenant sourcing)
+  provider:    'google',                                       // social provider for the login leg
+};
+// discovery: {issuer}/.well-known/openid-configuration
+// flow: social authorize → callback (user_id) → authorize → callback (code) → PKCE token exchange
+
+const SS = sessionStorage;
+
+// ---- tiny utils ----------------------------------------------------------
+
+function b64url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function randomToken(len = 32) {
+  return b64url(crypto.getRandomValues(new Uint8Array(len)));
+}
+
+async function s256(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return b64url(digest);
+}
+
+async function discovery() {
+  const cached = SS.getItem('xauth_discovery');
+  if (cached) return JSON.parse(cached);
+  const res = await fetch(`${OIDC.issuer}/.well-known/openid-configuration`);
+  if (!res.ok) throw new Error(`discovery failed: ${res.status}`);
+  const doc = await res.json();
+  SS.setItem('xauth_discovery', JSON.stringify(doc));
+  return doc;
+}
+
+// ---- public API ----------------------------------------------------------
+
+// login() — kick off the whole chain. Leg 1: social login through X-Auth.
+export function login() {
+  const state = randomToken(24);
+  SS.setItem('xauth_social_state', state);
+  const u = new URL(`${OIDC.issuer}/v1/social/${OIDC.provider}/authorize`);
+  u.searchParams.set('tenant_id', OIDC.tenantId);
+  u.searchParams.set('redirect_uri', OIDC.redirectUri);
+  u.searchParams.set('state', state);
+  location.assign(u);
+}
+
+// handleCallback() — called by callback.html. Dispatches on which leg of the
+// chain just landed.
+export async function handleCallback() {
+  const q = new URLSearchParams(location.search);
+
+  if (q.get('error')) {
+    throw new Error(`login failed: ${q.get('error')}`);
+  }
+  if (q.get('session_id') && q.get('user_id')) {
+    return socialLegDone(q); // leg 1 done → start leg 2 (OIDC code flow)
+  }
+  if (q.get('code')) {
+    return codeLegDone(q);   // leg 2 done → exchange code for tokens
+  }
+  throw new Error('callback reached without session_id or code');
+}
+
+// Leg 1 landed: X-Auth authenticated the user with Google and minted a
+// session. Forward the user into the OIDC authorize so the tokens carry the
+// real subject. (When X-Auth grows a real login UI on /authorize, this leg
+// collapses away and login() starts at the authorization_endpoint directly.)
+async function socialLegDone(q) {
+  if (q.get('state') !== SS.getItem('xauth_social_state')) {
+    throw new Error('state mismatch on social callback');
+  }
+  SS.removeItem('xauth_social_state');
+
+  const verifier = randomToken(48);
+  const state = randomToken(24);
+  SS.setItem('xauth_pkce_verifier', verifier);
+  SS.setItem('xauth_oidc_state', state);
+  const nonce = randomToken(16);
+  SS.setItem('xauth_nonce', nonce);
+
+  const doc = await discovery();
+  const u = new URL(doc.authorization_endpoint);
+  u.searchParams.set('client_id', OIDC.clientId);
+  u.searchParams.set('redirect_uri', OIDC.redirectUri);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('scope', OIDC.scope);
+  u.searchParams.set('state', state);
+  u.searchParams.set('nonce', nonce);
+  u.searchParams.set('code_challenge', await s256(verifier));
+  u.searchParams.set('code_challenge_method', 'S256');
+  // X-Auth phase-1 extensions: tenant + the user the social leg verified.
+  u.searchParams.set('tenant_id', OIDC.tenantId);
+  u.searchParams.set('user_id', q.get('user_id'));
+  location.replace(u);
+}
+
+// Leg 2 landed: exchange the one-shot code (+ PKCE verifier) for tokens.
+async function codeLegDone(q) {
+  if (q.get('state') !== SS.getItem('xauth_oidc_state')) {
+    throw new Error('state mismatch on OIDC callback');
+  }
+  SS.removeItem('xauth_oidc_state');
+
+  const doc = await discovery();
+  const res = await fetch(doc.token_endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type:    'authorization_code',
+      code:          q.get('code'),
+      client_id:     OIDC.clientId,
+      redirect_uri:  OIDC.redirectUri,
+      code_verifier: SS.getItem('xauth_pkce_verifier'),
+    }),
+  });
+  SS.removeItem('xauth_pkce_verifier');
+  if (!res.ok) throw new Error(`token exchange failed: ${res.status} ${await res.text()}`);
+  const tokens = await res.json(); // {access_token, id_token?, refresh_token, expires_in, ...}
+  tokens.expires_at = Date.now() + (tokens.expires_in ?? 3600) * 1000;
+  SS.setItem('xauth_tokens', JSON.stringify(tokens));
+
+  const user = await fetch(doc.userinfo_endpoint, {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+  }).then(r => { if (!r.ok) throw new Error(`userinfo failed: ${r.status}`); return r.json(); });
+  SS.setItem('xauth_user', JSON.stringify(user)); // {sub, email, name}
+
+  location.replace('/'); // clean URL — never leave the code in history
+}
+
+export function getUser() {
+  const u = SS.getItem('xauth_user');
+  return u ? JSON.parse(u) : null;
+}
+
+export function getAccessToken() {
+  const t = SS.getItem('xauth_tokens');
+  if (!t) return null;
+  const tokens = JSON.parse(t);
+  return Date.now() < tokens.expires_at ? tokens.access_token : null;
+}
+
+export function isLoggedIn() {
+  return getAccessToken() !== null;
+}
+
+// refreshTokens() — rotate the refresh token for a fresh access token.
+// X-Auth rotates on every use; replaying an old refresh token revokes the
+// whole token family, so never retry a refresh with the same token.
+export async function refreshTokens() {
+  const stored = SS.getItem('xauth_tokens');
+  if (!stored) throw new Error('not logged in');
+  const doc = await discovery();
+  const res = await fetch(doc.token_endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type:    'refresh_token',
+      refresh_token: JSON.parse(stored).refresh_token,
+      client_id:     OIDC.clientId,
+    }),
+  });
+  if (!res.ok) { logoutLocal(); throw new Error(`refresh failed: ${res.status}`); }
+  const tokens = await res.json();
+  tokens.expires_at = Date.now() + (tokens.expires_in ?? 3600) * 1000;
+  SS.setItem('xauth_tokens', JSON.stringify(tokens));
+  return tokens;
+}
+
+export async function logout() {
+  const stored = SS.getItem('xauth_tokens');
+  if (stored) {
+    const doc = await discovery();
+    // RFC 7009 — revoke is best-effort and always 200s.
+    await fetch(doc.revocation_endpoint ?? `${OIDC.issuer}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: JSON.parse(stored).access_token }),
+    }).catch(() => {});
+  }
+  logoutLocal();
+}
+
+function logoutLocal() {
+  SS.removeItem('xauth_tokens');
+  SS.removeItem('xauth_user');
+}

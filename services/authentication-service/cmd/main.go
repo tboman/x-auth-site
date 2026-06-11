@@ -1,7 +1,8 @@
 // authentication-service is the public OIDC provider for X-Auth for Apps.
 // It owns users, sessions, tokens, and OIDC endpoints (discovery, authorize,
-// token, userinfo, revoke), plus phase-1 social-login stubs for google,
-// github, and microsoft.
+// token, userinfo, revoke), plus social login for google (real OAuth2 + PKCE
+// when GOOGLE_CLIENT_ID/SECRET are set, stub otherwise) and phase-1 stubs
+// for github and microsoft.
 //
 // See ARCHITECTURE.md §4.3 for the source-of-truth contract and
 // services/authentication-service/README.md for the full endpoint list.
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -99,6 +101,15 @@ func main() {
 		}
 	}()
 
+	// Extra OIDC clients from the environment (OIDC_CLIENTS) — lets relying
+	// apps register without dynamic client registration. Fatal on a malformed
+	// value: silently dropping a client would surface as baffling
+	// invalid_client errors at /authorize.
+	if err := internal.SeedClientsFromEnv(store, logger); err != nil {
+		logger.Error("oidc_clients_seed_failed", "err", err)
+		os.Exit(1)
+	}
+
 	// Outbound (m)TLS to authenticator-service comes from the same TLS env
 	// vars (tlsx.Transport inside the constructor). A partial TLS
 	// configuration is fatal — never silently fall back to plaintext.
@@ -115,6 +126,13 @@ func main() {
 		Issuer:        issuer,
 		Signer:        signer,
 		JWTIssuer:     jwtIssuer,
+		// Real social login per provider when its OAuth client credentials are
+		// present in the environment (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET);
+		// unconfigured providers keep the phase-1 stub.
+		SocialProviders: internal.SocialProvidersFromEnv(logger),
+		// Browser origins allowed to fetch the public OIDC endpoints
+		// (comma-separated; empty disables CORS).
+		CORSOrigins: splitNonEmpty(config.Env("CORS_ALLOWED_ORIGINS", "")),
 	})
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
@@ -131,4 +149,15 @@ func main() {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// splitNonEmpty splits a comma-separated env value, dropping empty segments.
+func splitNonEmpty(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

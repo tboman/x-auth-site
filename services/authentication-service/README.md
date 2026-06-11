@@ -54,11 +54,16 @@ survives refreshes regardless of what the client presents at refresh time.
 Schema changes live in `migrations/000002_token_families_pkce.up.sql`. See
 "Refresh-token rotation & families" and "PKCE" below.
 
+**Phase 2.3 — real Google social login (done).** When `GOOGLE_CLIENT_ID` +
+`GOOGLE_CLIENT_SECRET` are set, `/v1/social/google/*` runs the real OAuth2
+authorization-code handshake with PKCE against Google; unconfigured providers
+keep the stub. See "Social login" below.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - Strict client authentication (public dev client still allowed without a secret)
 - Real first-factor verification (today `POST /v1/sessions` trusts the internal caller)
-- Real social-provider OAuth2 handshakes
+- Real OAuth2 handshakes for github / microsoft (google is done)
 - Service-to-service signed tokens from transaction-service
 - Soft-delete users with GDPR-safe pseudonymisation
 - Distributed revocation (drop the access-token deny list — see below)
@@ -146,14 +151,34 @@ All authorization-code flows **require PKCE** (RFC 7636), S256 only:
 | `GET` | `/v1/auth/jwks` | RFC 7517 JSON Web Key Set (canonical route, §4.3) |
 | `GET` | `/.well-known/jwks.json` | JWKS alias advertised as `jwks_uri` in discovery |
 
-### Social login stubs (public)
+### Social login (public)
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/social/{provider}/authorize` | Redirect to our own `/callback` with mock `code` after ~100 ms |
-| `GET` | `/v1/social/{provider}/callback` | Upsert a user, mint a session, redirect to caller's `redirect_uri` |
+| `GET` | `/v1/social/{provider}/authorize` | Real mode: 302 to the provider's consent page (PKCE S256). Stub mode: redirect to our own `/callback` with a mock `code` after ~100 ms |
+| `GET` | `/v1/social/{provider}/callback` | Real mode: exchange the code, fetch the profile from userinfo. Both modes: upsert a user, mint a session, redirect to caller's `redirect_uri` |
 
 Providers: `google`, `github`, `microsoft`. Any other value returns 400.
+
+**Real vs stub is decided per provider.** `google` runs the real handshake
+when `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` are set; `github` and
+`microsoft` are always stubs today. Real-mode details:
+
+- Our `state` is a single-use crypto-random nonce; the caller's `state` is
+  held server-side and echoed only on the final redirect to `redirect_uri`.
+- PKCE S256 on the provider leg; the verifier never leaves the process.
+- The profile comes from the provider's `userinfo` endpoint; an unverified
+  email is rejected (the user upsert is keyed by `(tenant_id, email)`).
+- Consent denial (`?error=access_denied`) redirects back to the caller's
+  `redirect_uri` with `error` + `state`; provider/back-channel failures are a
+  structured 502 `provider_error`.
+- In-flight state (nonce + verifier) lives in process memory with a 10-minute
+  TTL — the callback must hit the instance that served `/authorize`. **Run a
+  single replica** (or add a shared store) before scaling the real flow out.
+
+Google console setup: create an OAuth client (type *Web application*) and add
+`<AUTH_ISSUER>/v1/social/google/callback` as an authorized redirect URI —
+e.g. `http://localhost:8082/v1/social/google/callback` for local dev.
 
 ### Tenant-scoped admin (`X-Tenant-Id` required)
 
@@ -206,8 +231,9 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 - **`POST /v1/sessions` trust model**: authentication-service does **not**
   re-verify credentials — it trusts the internal caller (transaction-service).
   TODO(phase-2): require a signed service-to-service token.
-- **Social login**: mock code-for-profile, 100 ms simulated delay, canned
-  `{stub-<provider>@example.com, "<Provider> Stub User"}` profile.
+- **Social login (stub mode)**: mock code-for-profile, 100 ms simulated delay,
+  canned `{stub-<provider>@example.com, "<Provider> Stub User"}` profile.
+  Applies to providers without real OAuth credentials configured.
 
 ## Session lifecycle judgment calls
 
@@ -240,6 +266,10 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 | `PG_DSN_AUTHENTICATION_SERVICE` | _(unset)_ | Per-service override of `PG_DSN`. |
 | `PG_MAX_CONNS` | `10` | Pool ceiling. |
 | `PURGE_INTERVAL` | `5m` | Go duration (e.g. `30s`, `10m`) between background sweeps that purge expired tokens, stale auth codes, and long-expired sessions. Each sweep logs `purge_expired` with the count. |
+| `GOOGLE_CLIENT_ID` | _(unset)_ | OAuth client ID for real Google social login. Both this and the secret must be set, else google falls back to the stub (a partial pair logs `social_provider_partial_config`). |
+| `GOOGLE_CLIENT_SECRET` | _(unset)_ | OAuth client secret paired with `GOOGLE_CLIENT_ID`. |
+| `OIDC_CLIENTS` | _(unset)_ | Extra public OIDC clients to seed at boot: `id=uri[,uri...][;id=...]` (e.g. `cryptofreight-web=https://cryptofreight.org/callback.html`). Upserted on every boot; malformed values are fatal. Bridges the gap until dynamic client registration. |
+| `CORS_ALLOWED_ORIGINS` | _(unset)_ | Comma-separated browser origins (or `*`) allowed to fetch the public OIDC surface (`/token`, `/userinfo`, `/revoke`, discovery, JWKS). Unset -> no CORS headers (server-side callers only). Never applies to the tenant admin API. |
 | `AUTHN_PG_DSN` | _(unset)_ | DSN used by the `TestPGStorage*` integration tests. Unset -> tests skip. |
 | `TLS_CERT_FILE` | _(unset)_ | PEM certificate this service presents — as the server, and as the client certificate on outbound calls to authenticator-service. Unset (with `TLS_KEY_FILE` also unset) -> plaintext local dev with a `tls_disabled` warning. Setting only one of the pair is fatal. |
 | `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
