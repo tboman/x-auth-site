@@ -130,6 +130,56 @@ func TestInternalAliasSharedSecret(t *testing.T) {
 	}
 }
 
+// TestV1InternalOnlyGate pins the V1_INTERNAL_ONLY=true deployment mode: the
+// plain /v1 prefix carries the same InternalAuth gate as /internal/v1 (for
+// public-ingress deployments with no VPC trust boundary), /healthz stays open
+// for probes, and a correct X-Internal-Auth header restores full access.
+func TestV1InternalOnlyGate(t *testing.T) {
+	const secret = "test-internal-secret"
+	t.Setenv(httpx.EnvInternalAuthSecret, secret)
+	t.Setenv("V1_INTERNAL_ONLY", "true")
+	srv, _, _ := newTestServer(t)
+
+	// /healthz needs no auth — infra probes don't carry the secret.
+	hResp, err := srv.Client().Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	hResp.Body.Close()
+	if hResp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz must stay open, got %d", hResp.StatusCode)
+	}
+
+	// /v1 without the header → structured 401, before the tenant gate.
+	resp := do(t, srv, http.MethodGet, "/v1/authenticators?user_id=u1", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 on /v1 without internal auth, got %d", resp.StatusCode)
+	}
+	var errBody struct {
+		Error string `json:"error"`
+	}
+	decode(t, resp, &errBody)
+	if errBody.Error != "internal_auth_required" {
+		t.Fatalf("want error=internal_auth_required, got %q", errBody.Error)
+	}
+
+	// With the header, /v1 behaves exactly as in open mode.
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/authenticators?user_id=u1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Tenant-Id", testTenant)
+	req.Header.Set(httpx.InternalAuthHeader, secret)
+	okResp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	okResp.Body.Close()
+	if okResp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 on /v1 with correct secret, got %d", okResp.StatusCode)
+	}
+}
+
 // TestInternalListAuthenticatorsClientContract exercises the exact request
 // shape authentication-service's HTTPAuthenticatorClient.ListAuthenticators
 // sends — GET /internal/v1/authenticators?user_id={id}&tenant_id={id} with

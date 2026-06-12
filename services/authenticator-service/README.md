@@ -58,7 +58,10 @@ handlers, same storage — behind the shared `httpx.InternalAuth` gate. A reques
 is accepted when it arrives over mTLS with a verified client certificate, or
 when `INTERNAL_AUTH_SECRET` is set and the `X-Internal-Auth` header matches it.
 With neither configured the gate is open (local dev). The plain `/v1/*` prefix
-stays mounted, ungated, for back-compat.
+stays mounted, ungated, for back-compat — unless `V1_INTERNAL_ONLY=true`, which
+puts the same gate on `/v1/*` for deployments where the network is not itself a
+trust boundary (e.g. public Cloud Run ingress with no VPC). `/healthz` is never
+gated.
 
 Known callers:
 
@@ -141,6 +144,7 @@ adapter` comment at the swap point.
 | `TLS_KEY_FILE` | _(unset)_ | PEM private key for `TLS_CERT_FILE`. |
 | `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set (with the pair above) client certificates are required and verified — mTLS. A verified peer cert satisfies the `/internal/v1/*` gate. |
 | `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for `/internal/v1/*` when mTLS is not in play: callers send it in `X-Internal-Auth`. Unset and no mTLS -> internal routes are open (dev). |
+| `V1_INTERNAL_ONLY` | `false` | `true` puts the same InternalAuth gate on the plain `/v1/*` prefix — for public-ingress deployments with no VPC trust boundary. `/healthz` stays open. |
 
 ## Run locally
 

@@ -3,6 +3,8 @@ package internal
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
@@ -14,7 +16,11 @@ import (
 //
 // The /v1 tree is mounted twice (ARCHITECTURE.md §10.3):
 //
-//   - /v1/* — the original phase-1 prefix, kept open for back-compat.
+//   - /v1/* — the original phase-1 prefix, kept open for back-compat. When
+//     V1_INTERNAL_ONLY=true it carries the same InternalAuth gate as the
+//     /internal alias — for deployments where the network is not itself the
+//     trust boundary (e.g. public Cloud Run ingress with no VPC), this
+//     service has no browser-facing routes so nothing legitimate is lost.
 //   - /internal/v1/* — the same handlers aliased for service-to-service
 //     callers (transaction-service challenges, authentication-service
 //     authenticator listing), gated by httpx.InternalAuth: a verified mTLS
@@ -45,7 +51,11 @@ func Router(log *slog.Logger, store Storage, registry *Registry, limits Limits) 
 	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	top.Handle("/v1/", tenantx.Middleware(tenanted))
+	v1 := http.Handler(tenantx.Middleware(tenanted))
+	if strings.EqualFold(os.Getenv("V1_INTERNAL_ONLY"), "true") {
+		v1 = httpx.InternalAuth(log)(v1)
+	}
+	top.Handle("/v1/", v1)
 
 	// /internal/v1/* aliases the ENTIRE /v1 route tree onto the same handlers:
 	// StripPrefix removes "/internal" so the tenanted mux patterns match
