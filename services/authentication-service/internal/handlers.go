@@ -3,6 +3,8 @@ package internal
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
@@ -32,6 +34,10 @@ type Deps struct {
 	// (/token, /userinfo, /revoke, discovery, JWKS) from a browser. Empty
 	// means no CORS headers are emitted (server-to-server callers only).
 	CORSOrigins []string
+
+	// AdminEmails is the Google-account allowlist for the hosted admin console
+	// (/admin). Empty means the console denies all sign-ins (deny by default).
+	AdminEmails []string
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -78,6 +84,7 @@ func Router(d Deps) http.Handler {
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails)
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -130,6 +137,13 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /dev/oidc/start", dev.StartOIDC)
 	mux.HandleFunc("GET /dev/oidc/callback", dev.OIDCCallback)
 
+	// Hosted admin console: Google sign-in (email allowlist) -> tenant listing.
+	mux.HandleFunc("GET /admin", admin.Home)
+	mux.HandleFunc("GET /admin/", admin.Home)
+	mux.HandleFunc("GET /admin/login/google", admin.LoginGoogle)
+	mux.HandleFunc("GET /admin/social/callback", admin.SocialCallback)
+	mux.HandleFunc("POST /admin/logout", admin.Logout)
+
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
 	// these routes with tenantx.Middleware without firing it for OIDC traffic.
 	v1 := http.NewServeMux()
@@ -148,10 +162,23 @@ func Router(d Deps) http.Handler {
 	// Social routes collide with the /v1/ prefix, so they are registered on the
 	// root mux *before* this point. tenantx.Middleware only applies to the
 	// tenant-scoped subtree.
-	mux.Handle("/v1/users", tenantx.Middleware(v1))
-	mux.Handle("/v1/users/", tenantx.Middleware(v1))
-	mux.Handle("/v1/sessions", tenantx.Middleware(v1))
-	mux.Handle("/v1/sessions/", tenantx.Middleware(v1))
+	//
+	// These user/session admin endpoints have no browser-facing caller — the
+	// social login, /dev, and /admin consoles all mutate users/sessions through
+	// the in-process Store, and transaction-service uses the /internal/v1
+	// alias below. On a deployment where the network is not itself a trust
+	// boundary (public Cloud Run ingress, no VPC), V1_INTERNAL_ONLY=true puts
+	// the same InternalAuth gate on this public /v1 tree, so an anonymous caller
+	// can no longer fabricate users or sessions. Default stays open for
+	// back-compat and local dev.
+	v1Public := http.Handler(tenantx.Middleware(v1))
+	if strings.EqualFold(os.Getenv("V1_INTERNAL_ONLY"), "true") {
+		v1Public = httpx.InternalAuth(d.Logger)(v1Public)
+	}
+	mux.Handle("/v1/users", v1Public)
+	mux.Handle("/v1/users/", v1Public)
+	mux.Handle("/v1/sessions", v1Public)
+	mux.Handle("/v1/sessions/", v1Public)
 
 	// Internal alias: /internal/v1/sessions... → InternalAuth → strip
 	// "/internal" → the same tenant-scoped v1 mux. One registration, zero

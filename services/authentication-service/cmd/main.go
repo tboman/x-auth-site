@@ -133,6 +133,9 @@ func main() {
 		// Browser origins allowed to fetch the public OIDC endpoints
 		// (comma-separated; empty disables CORS).
 		CORSOrigins: splitNonEmpty(config.Env("CORS_ALLOWED_ORIGINS", "")),
+		// Google-account allowlist for the /admin console (comma-separated;
+		// empty denies all admin sign-ins).
+		AdminEmails: splitNonEmpty(config.Env("ADMIN_EMAILS", "")),
 	})
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the

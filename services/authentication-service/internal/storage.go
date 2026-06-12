@@ -55,6 +55,12 @@ type Storage interface {
 	PutClient(c OIDCClient) error
 	GetClient(clientID string) (OIDCClient, error)
 
+	// ListTenants derives the set of tenants from existing records. There is no
+	// tenant registry in phase 1 — tenants spring into existence on first use —
+	// so this aggregates distinct tenant_ids across users and sessions with
+	// per-tenant counts, newest activity first. Used by the admin console.
+	ListTenants() ([]TenantSummary, error)
+
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -348,6 +354,46 @@ func (s *MemStorage) GetClient(clientID string) (OIDCClient, error) {
 		return OIDCClient{}, ErrNotFound
 	}
 	return c, nil
+}
+
+// ---- Tenants (derived) ----
+
+// ListTenants aggregates distinct tenant_ids across users and sessions with
+// per-tenant counts and the most recent activity stamp, newest activity first.
+func (s *MemStorage) ListTenants() ([]TenantSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	byID := make(map[string]*TenantSummary)
+	touch := func(tenantID string, ts time.Time) *TenantSummary {
+		sum, ok := byID[tenantID]
+		if !ok {
+			sum = &TenantSummary{TenantID: tenantID}
+			byID[tenantID] = sum
+		}
+		if ts.After(sum.LastActivity) {
+			sum.LastActivity = ts
+		}
+		return sum
+	}
+	for _, u := range s.users {
+		touch(u.TenantID, u.CreatedAt).Users++
+	}
+	for _, sess := range s.sessions {
+		touch(sess.TenantID, sess.UpdatedAt).Sessions++
+	}
+
+	out := make([]TenantSummary, 0, len(byID))
+	for _, sum := range byID {
+		out = append(out, *sum)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastActivity.Equal(out[j].LastActivity) {
+			return out[i].TenantID < out[j].TenantID
+		}
+		return out[i].LastActivity.After(out[j].LastActivity)
+	})
+	return out, nil
 }
 
 // ---- Maintenance ----

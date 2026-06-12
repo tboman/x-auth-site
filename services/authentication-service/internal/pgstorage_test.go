@@ -67,6 +67,41 @@ func seedPGUser(t *testing.T, s *PGStorage, tenantID, email string) User {
 	return u
 }
 
+func TestPGStorageListTenants(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	seedPGUser(t, s, "ten_x", "u1@x.test")
+	seedPGUser(t, s, "ten_x", "u2@x.test")
+	seedPGUser(t, s, "ten_y", "u3@y.test")
+	// ten_x also has a session, updated later than any user — drives ordering.
+	if _, err := s.CreateSession(Session{
+		ID: "ses_" + uuid.NewString(), TenantID: "ten_x", UserID: "u1",
+		RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now.Add(10 * time.Second),
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	tenants, err := s.ListTenants()
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	if len(tenants) != 2 {
+		t.Fatalf("want 2 tenants, got %d: %+v", len(tenants), tenants)
+	}
+	if tenants[0].TenantID != "ten_x" {
+		t.Errorf("want ten_x first (newest activity), got %q", tenants[0].TenantID)
+	}
+	byID := map[string]TenantSummary{tenants[0].TenantID: tenants[0], tenants[1].TenantID: tenants[1]}
+	if byID["ten_x"].Users != 2 || byID["ten_x"].Sessions != 1 {
+		t.Errorf("ten_x counts wrong: %+v", byID["ten_x"])
+	}
+	if byID["ten_y"].Users != 1 || byID["ten_y"].Sessions != 0 {
+		t.Errorf("ten_y counts wrong: %+v", byID["ten_y"])
+	}
+}
+
 func TestPGStorageUserRoundTrip(t *testing.T) {
 	s := newPGStorage(t)
 	u := seedPGUser(t, s, "tenant-a", "alice@acme.test")

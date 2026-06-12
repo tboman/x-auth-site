@@ -440,6 +440,50 @@ func (s *PGStorage) GetClient(clientID string) (OIDCClient, error) {
 	return c, nil
 }
 
+// ---- Tenants (derived) ----
+
+// ListTenants aggregates distinct tenant_ids across users and sessions with
+// per-tenant counts and the most recent activity stamp. A full-UNION group-by
+// keeps users-only and sessions-only tenants both visible; ordered by newest
+// activity first. Phase 1 has no tenant registry, so this is the only tenant
+// enumeration available.
+func (s *PGStorage) ListTenants() ([]TenantSummary, error) {
+	const q = `
+		SELECT tenant_id,
+		       SUM(users)        AS users,
+		       SUM(sessions)     AS sessions,
+		       MAX(last_activity) AS last_activity
+		  FROM (
+		        SELECT tenant_id, COUNT(*) AS users, 0 AS sessions, MAX(created_at) AS last_activity
+		          FROM users     GROUP BY tenant_id
+		        UNION ALL
+		        SELECT tenant_id, 0 AS users, COUNT(*) AS sessions, MAX(updated_at) AS last_activity
+		          FROM sessions  GROUP BY tenant_id
+		       ) t
+		 GROUP BY tenant_id
+		 ORDER BY last_activity DESC, tenant_id ASC
+	`
+	rows, err := s.pool.Query(bgCtx(), q)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_tenants: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]TenantSummary, 0)
+	for rows.Next() {
+		var t TenantSummary
+		if err := rows.Scan(&t.TenantID, &t.Users, &t.Sessions, &t.LastActivity); err != nil {
+			return nil, fmt.Errorf("pgstorage list_tenants scan: %w", err)
+		}
+		t.LastActivity = t.LastActivity.UTC()
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_tenants rows: %w", err)
+	}
+	return out, nil
+}
+
 // ---- Maintenance ----
 
 // PurgeExpired runs the Postgres equivalent of MemStorage.PurgeExpired — see

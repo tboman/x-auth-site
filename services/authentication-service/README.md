@@ -94,6 +94,29 @@ software key — no UV claim until the real webauthn adapter lands; the
 as a client-preference-ordered list per OIDC Core §3.1.2.1 — the first
 supported value wins.
 
+**Phase 2.7 — hosted admin console (done, read-only stub).** `GET /admin`
+lists the platform's tenants behind a Google sign-in restricted to an email
+allowlist (`ADMIN_EMAILS`, comma-separated; empty = deny all). Login reuses the
+real Google social leg in a dedicated `ten_admin` tenant; the allowlist is
+enforced at the callback (a non-allowlisted sign-in is refused with 403 and its
+freshly minted session invalidated) AND re-checked on every request (removing an
+email revokes access immediately, even mid-session). The tenant listing is
+*derived* — phase 1 has no tenant registry, so `Storage.ListTenants()`
+aggregates distinct `tenant_id`s across users and sessions with per-tenant
+counts and last-activity, newest first.
+
+> **Hardening — public `/v1` admin tree lockdown (`V1_INTERNAL_ONLY`).**
+> `POST /v1/users` and `POST /v1/sessions` have no browser-facing caller (the
+> consoles and social login mutate users/sessions through the in-process Store;
+> transaction-service uses the `/internal/v1` alias). Left open, they would let
+> anyone reachable fabricate a `ten_admin` user with an allowlisted email and a
+> session for it, then forge the admin cookie — defeating the gate. Setting
+> `V1_INTERNAL_ONLY=true` puts the `httpx.InternalAuth` gate on the public
+> `/v1/users` + `/v1/sessions` tree (verified mTLS peer or `INTERNAL_AUTH_SECRET`
+> in `X-Internal-Auth`), closing that path. The deployed `auth.x-auth.com`
+> service runs with this set. `/healthz`, the OIDC surface, social login, and
+> the `/dev` + `/admin` consoles are unaffected.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - Strict client authentication (public dev client still allowed without a secret)
@@ -333,6 +356,8 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 | `TLS_CLIENT_CA_FILE` | _(unset)_ | CA bundle; when set the server **requires and verifies** client certificates (mTLS). Verified peers pass `httpx.InternalAuth` without the shared secret. |
 | `TLS_CA_FILE` | _(unset)_ | CA bundle used to verify authenticator-service's certificate on outbound calls (`tlsx.Transport`). |
 | `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for the `/internal/v1/` tree when mTLS is not in play. Inbound: requests must carry `X-Internal-Auth: <secret>` (constant-time compare) or arrive over verified mTLS, else structured 401. Outbound: the same value is stamped on calls to authenticator-service. Unset -> internal routes are open (local dev). |
+| `V1_INTERNAL_ONLY` | `false` | `true` puts the `httpx.InternalAuth` gate on the public `/v1/users` + `/v1/sessions` tree too (not just `/internal/v1`), for public-ingress deployments with no VPC trust boundary. `/healthz`, OIDC, social, `/dev`, `/admin` stay open. |
+| `ADMIN_EMAILS` | _(unset)_ | Comma-separated Google-account allowlist for the `/admin` console. Empty denies all admin sign-ins. |
 
 ## Run locally
 

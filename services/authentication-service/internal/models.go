@@ -106,6 +106,16 @@ type UpgradeSessionRequest struct {
 	StepUpCompleted bool   `json:"step_up_completed"`
 }
 
+// TenantSummary is one row of the admin console's tenant listing. There is no
+// tenant registry in phase 1, so these fields are derived by aggregating the
+// records that reference each tenant_id.
+type TenantSummary struct {
+	TenantID     string    `json:"tenant_id"`
+	Users        int       `json:"users"`
+	Sessions     int       `json:"sessions"`
+	LastActivity time.Time `json:"last_activity"`
+}
+
 // TokenType discriminates between access and refresh token records.
 const (
 	TokenTypeAccess  = "access"
