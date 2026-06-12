@@ -48,12 +48,14 @@ type OIDCHandlers struct {
 	Verifier  *jwtx.Verifier
 	JWTIssuer string
 
-	// Authenticator drives the second-factor interlude (acr_values=urn:xauth:otp:sms)
-	// — challenge create/verify against authenticator-service.
+	// Authenticator drives the second-factor interludes (acr_values, e.g.
+	// urn:xauth:otp:sms, urn:xauth:fido2) — challenge create/verify against
+	// authenticator-service.
 	Authenticator AuthenticatorClient
 
-	// Parked /authorize requests awaiting OTP verification, keyed by one-time
-	// flow id (see otp.go). Same in-process pattern as the social handshake.
+	// Parked /authorize requests awaiting step-up verification, keyed by
+	// one-time flow id (see otp.go). Same in-process pattern as the social
+	// handshake.
 	flowMu   sync.Mutex
 	flows    map[string]pendingAuthorize
 	flowOnce sync.Once
@@ -75,7 +77,7 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
-		"acr_values_supported":                  []string{ACRSMSOTP},
+		"acr_values_supported":                  supportedACRValues(),
 	})
 }
 
@@ -97,7 +99,7 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
-		"acr_values_supported":                  []string{ACRSMSOTP},
+		"acr_values_supported":                  supportedACRValues(),
 	})
 }
 
@@ -211,11 +213,12 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Second-factor interlude (otp.go): when the client asks for the SMS-OTP
-	// authentication context, park the request and challenge the user instead
-	// of minting a code straight away. /authorize/verify finishes the flow.
-	if acrRequested(q.Get("acr_values"), ACRSMSOTP) {
-		h.startOTPFlow(w, r, pendingAuthorize{
+	// Second-factor interlude (otp.go): when the client asks for a supported
+	// authentication context (SMS OTP, FIDO2), park the request and challenge
+	// the user instead of minting a code straight away; acr_values order is
+	// client preference. /authorize/verify finishes the flow.
+	if spec, ok := matchStepUp(q.Get("acr_values")); ok {
+		h.startStepUpFlow(w, r, spec, pendingAuthorize{
 			ClientID:      clientID,
 			TenantID:      tenantID,
 			UserID:        user.ID,

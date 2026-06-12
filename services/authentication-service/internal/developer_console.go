@@ -109,7 +109,8 @@ func (h *DeveloperConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) 
 			b.WriteString(`<tr><td><code>` + html.EscapeString(c.ClientID) + `</code></td><td>`)
 			b.WriteString(`<div class="muted">Redirect URI: <code>` + html.EscapeString(ruri) + `</code></div>`)
 			b.WriteString(`<div class="actions"><a class="btn secondary" href="/dev/oidc/start?client_id=` + url.QueryEscape(c.ClientID) + `">OIDC round trip</a>`)
-			b.WriteString(`<a class="btn warn" href="/dev/oidc/start?client_id=` + url.QueryEscape(c.ClientID) + `&acr=sms">OIDC + SMS OTP</a></div>`)
+			b.WriteString(`<a class="btn warn" href="/dev/oidc/start?client_id=` + url.QueryEscape(c.ClientID) + `&acr=sms">OIDC + SMS OTP</a>`)
+			b.WriteString(`<a class="btn warn" href="/dev/oidc/start?client_id=` + url.QueryEscape(c.ClientID) + `&acr=fido2">OIDC + FIDO2</a></div>`)
 			b.WriteString(`</td></tr>`)
 		}
 		b.WriteString(`</table>`)
@@ -272,8 +273,11 @@ func (h *DeveloperConsoleHandlers) StartOIDC(w http.ResponseWriter, r *http.Requ
 	state := randToken(32)
 	verifier := randToken(48)
 	acr := ""
-	if r.URL.Query().Get("acr") == "sms" {
+	switch r.URL.Query().Get("acr") {
+	case "sms":
 		acr = ACRSMSOTP
+	case "fido2":
+		acr = ACRFIDO2
 	}
 	redirectURI := client.RedirectURIs[0]
 	h.storeOIDCFlow(state, devOIDCFlow{

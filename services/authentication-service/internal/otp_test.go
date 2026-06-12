@@ -31,9 +31,10 @@ func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage)
 
 var flowIDRe = regexp.MustCompile(`name="flow" value="([^"]+)"`)
 
-// startOTPAuthorize drives GET /authorize with acr_values and returns the
-// flow id scraped from the served OTP form.
-func startOTPAuthorize(t *testing.T, r http.Handler) string {
+// startStepUpAuthorize drives GET /authorize with the given acr_values and
+// returns the flow id scraped from the served verification page plus the
+// full page body for content assertions.
+func startStepUpAuthorize(t *testing.T, r http.Handler, acrValues string) (string, string) {
 	t.Helper()
 	q := url.Values{
 		"client_id":             {DefaultClientID},
@@ -44,12 +45,12 @@ func startOTPAuthorize(t *testing.T, r http.Handler) string {
 		"nonce":                 {"n-1"},
 		"code_challenge":        {testPKCEChallenge},
 		"code_challenge_method": {"S256"},
-		"acr_values":            {ACRSMSOTP},
+		"acr_values":            {acrValues},
 	}
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil))
 	if w.Code != http.StatusOK {
-		t.Fatalf("authorize with acr: expected 200 OTP form, got %d (%s)", w.Code, w.Body.String())
+		t.Fatalf("authorize with acr: expected 200 verification page, got %d (%s)", w.Code, w.Body.String())
 	}
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Fatalf("authorize with acr: Content-Type = %q", ct)
@@ -58,7 +59,15 @@ func startOTPAuthorize(t *testing.T, r http.Handler) string {
 	if m == nil {
 		t.Fatalf("authorize with acr: no flow id in form:\n%s", w.Body.String())
 	}
-	return m[1]
+	return m[1], w.Body.String()
+}
+
+// startOTPAuthorize keeps the original SMS-flavoured helper shape for the
+// pre-existing OTP tests.
+func startOTPAuthorize(t *testing.T, r http.Handler) string {
+	t.Helper()
+	flowID, _ := startStepUpAuthorize(t, r, ACRSMSOTP)
+	return flowID
 }
 
 func postVerify(t *testing.T, r http.Handler, flowID, code string) *httptest.ResponseRecorder {
@@ -316,7 +325,172 @@ func TestDiscoveryAdvertisesACR(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
 		t.Fatalf("discovery decode: %v", err)
 	}
-	if len(doc.ACRValuesSupported) != 1 || doc.ACRValuesSupported[0] != ACRSMSOTP {
-		t.Fatalf("acr_values_supported = %v", doc.ACRValuesSupported)
+	if len(doc.ACRValuesSupported) != 2 ||
+		doc.ACRValuesSupported[0] != ACRSMSOTP || doc.ACRValuesSupported[1] != ACRFIDO2 {
+		t.Fatalf("acr_values_supported = %v, want [%s %s]", doc.ACRValuesSupported, ACRSMSOTP, ACRFIDO2)
+	}
+}
+
+// --- FIDO2 stub interlude -------------------------------------------------
+
+func TestFIDO2FlowHappyPath(t *testing.T) {
+	mock := &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_f", Method: "fido2", Status: "active"}}, nil
+		},
+		CreateChallengeFn: func(_ context.Context, _, _ string, methods []string) (ChallengeInfo, error) {
+			if len(methods) != 1 || methods[0] != "fido2" {
+				t.Errorf("challenge methods = %v, want [fido2]", methods)
+			}
+			return ChallengeInfo{ChallengeID: "chl_f", Method: "fido2", Prompt: "WebAuthn ceremony initiated (stub)"}, nil
+		},
+		VerifyChallengeFn: func(_ context.Context, _, challengeID string, resp map[string]any) (VerifyOutcome, error) {
+			if challengeID != "chl_f" {
+				t.Errorf("verify challenge id = %q", challengeID)
+			}
+			// The adapter contract: the assertion rides under "signature",
+			// not "code".
+			if _, hasCode := resp["code"]; hasCode {
+				t.Errorf("fido2 verify must not send a \"code\" field: %v", resp)
+			}
+			return VerifyOutcome{Verified: resp["signature"] == "stub_valid_signature"}, nil
+		},
+	}
+	r, store := newOTPRouter(t, mock)
+
+	flowID, page := startStepUpAuthorize(t, r, ACRFIDO2)
+	if !strings.Contains(page, "stub_valid_signature") || !strings.Contains(page, "Touch your authenticator") {
+		t.Fatalf("fido2 page missing stub ceremony elements:\n%s", page)
+	}
+
+	w := postVerify(t, r, flowID, "stub_valid_signature")
+	if w.Code != http.StatusFound {
+		t.Fatalf("verify: expected 302, got %d (%s)", w.Code, w.Body.String())
+	}
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	code := loc.Query().Get("code")
+	if code == "" {
+		t.Fatalf("verify redirect missing code: %q", loc.String())
+	}
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {DefaultClientID},
+		"redirect_uri":  {"http://localhost:3000/callback"},
+		"code_verifier": {testPKCEVerifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tw := httptest.NewRecorder()
+	r.ServeHTTP(tw, req)
+	if tw.Code != http.StatusOK {
+		t.Fatalf("token: expected 200, got %d (%s)", tw.Code, tw.Body.String())
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
+	}
+	if err := json.Unmarshal(tw.Body.Bytes(), &tok); err != nil {
+		t.Fatalf("token response: %v", err)
+	}
+
+	claims := idTokenClaims(t, tok.IDToken)
+	if claims["acr"] != ACRFIDO2 {
+		t.Errorf("id_token acr = %v, want %q", claims["acr"], ACRFIDO2)
+	}
+	amr, _ := claims["amr"].([]any)
+	if len(amr) != 2 || amr[0] != "user" || amr[1] != "swk" {
+		t.Errorf("id_token amr = %v, want [user swk]", claims["amr"])
+	}
+
+	// Session minted from a fido2 step-up is stepped-up from birth.
+	sessionID, _ := idTokenClaims(t, tok.AccessToken)["session_id"].(string)
+	sess, err := store.GetSession("ten_acme", sessionID)
+	if err != nil {
+		t.Fatalf("session not found: %v", err)
+	}
+	if !sess.StepUpCompleted {
+		t.Fatal("session minted after fido2 step-up must have step_up_completed=true")
+	}
+}
+
+func TestFIDO2WrongAssertionRetries(t *testing.T) {
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr_f", Method: "fido2", Status: "active"}}, nil
+		},
+		VerifyChallengeFn: func(_ context.Context, _, _ string, resp map[string]any) (VerifyOutcome, error) {
+			if resp["signature"] == "stub_valid_signature" {
+				return VerifyOutcome{Verified: true}, nil
+			}
+			return VerifyOutcome{Verified: false, Reason: "invalid_response"}, nil
+		},
+	})
+
+	flowID, _ := startStepUpAuthorize(t, r, ACRFIDO2)
+
+	w := postVerify(t, r, flowID, "garbage-assertion")
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Assertion rejected") {
+		t.Fatalf("wrong assertion: expected re-rendered page, got %d (%s)", w.Code, w.Body.String())
+	}
+	if w := postVerify(t, r, flowID, "stub_valid_signature"); w.Code != http.StatusFound {
+		t.Fatalf("retry with valid assertion: expected 302, got %d", w.Code)
+	}
+}
+
+func TestFIDO2AutoEnrollsWhenNoCredential(t *testing.T) {
+	enrolled := false
+	r, _ := newOTPRouter(t, &mockAuthenticator{
+		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return nil, nil
+		},
+		EnrollFn: func(_ context.Context, _, _, method string, md map[string]any) (Authenticator, error) {
+			enrolled = true
+			if method != "fido2" {
+				t.Errorf("enroll method = %q, want fido2", method)
+			}
+			if md["credential_id"] == nil {
+				t.Errorf("enroll metadata missing credential_id: %v", md)
+			}
+			return Authenticator{ID: "atr_new", Method: "fido2", Status: "active"}, nil
+		},
+	})
+
+	startStepUpAuthorize(t, r, ACRFIDO2)
+	if !enrolled {
+		t.Fatal("expected auto-enrollment of a fido2 authenticator")
+	}
+}
+
+// TestACRPreferenceOrder pins OIDC Core §3.1.2.1 semantics: acr_values is
+// ordered by client preference, so the first supported value wins regardless
+// of this server's internal spec order.
+func TestACRPreferenceOrder(t *testing.T) {
+	for _, tc := range []struct {
+		acrValues  string
+		wantMethod string
+	}{
+		{ACRFIDO2 + " " + ACRSMSOTP, "fido2"},
+		{ACRSMSOTP + " " + ACRFIDO2, "sms"},
+		{"urn:unknown:acr " + ACRFIDO2, "fido2"},
+	} {
+		var gotMethods []string
+		r, _ := newOTPRouter(t, &mockAuthenticator{
+			ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+				return []Authenticator{
+					{ID: "a1", Method: "sms", Status: "active"},
+					{ID: "a2", Method: "fido2", Status: "active"},
+				}, nil
+			},
+			CreateChallengeFn: func(_ context.Context, _, _ string, methods []string) (ChallengeInfo, error) {
+				gotMethods = methods
+				return ChallengeInfo{ChallengeID: "chl_x", Method: methods[0], Prompt: "p"}, nil
+			},
+		})
+		startStepUpAuthorize(t, r, tc.acrValues)
+		if len(gotMethods) != 1 || gotMethods[0] != tc.wantMethod {
+			t.Errorf("acr_values=%q: challenged methods = %v, want [%s]", tc.acrValues, gotMethods, tc.wantMethod)
+		}
 	}
 }

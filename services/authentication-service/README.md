@@ -76,11 +76,23 @@ TTL) — same single-replica constraint as the social handshake.
 **Phase 2.5 — hosted developer console (done, stage/dev surface).** `GET /dev`
 lets a Google-authenticated user register a public OIDC client and immediately
 run a full OIDC authorization-code + PKCE round trip. The built-in tester can
-launch the registered client with no ACR or with `acr_values=urn:xauth:otp:sms`
-so developers can see the `acr`/`amr` claims stamped into the ID token. The
-console uses the normal Google social login, stores an HttpOnly cookie backed
-by an X-Auth session in tenant `ten_developer`, and registers clients in the
-same `oidc_clients` store used by `/authorize`.
+launch the registered client with no ACR, with `acr_values=urn:xauth:otp:sms`,
+or with `acr_values=urn:xauth:fido2` so developers can see the `acr`/`amr`
+claims stamped into the ID token. The console uses the normal Google social
+login, stores an HttpOnly cookie backed by an X-Auth session in tenant
+`ten_developer`, and registers clients in the same `oidc_clients` store used
+by `/authorize`.
+
+**Phase 2.6 — FIDO2 stub second factor (same interlude, second acr).**
+`acr_values=urn:xauth:fido2` runs the identical parked-flow ceremony against
+authenticator-service's stub WebAuthn adapter: the hosted page simulates the
+assertion with a "Touch your authenticator (stub)" button (the accepted
+response is the adapter's `stub_valid_signature`) and success mints the code
+with `acr=urn:xauth:fido2`, `amr: ["user","swk"]` (RFC 8176: presence +
+software key — no UV claim until the real webauthn adapter lands; the
+`:uv`/`:uv:hw` assurance tiers are deferred with it). `acr_values` is treated
+as a client-preference-ordered list per OIDC Core §3.1.2.1 — the first
+supported value wins.
 
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 

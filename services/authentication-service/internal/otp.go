@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,37 +13,112 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 )
 
-// SMS-OTP interlude for /authorize (ARCHITECTURE.md §4.4 challenge flow).
+// Step-up interludes for /authorize (ARCHITECTURE.md §4.4 challenge flow).
 //
 // A client opts in with the standard OIDC `acr_values` parameter:
 //
 //	GET /authorize?...&acr_values=urn:xauth:otp:sms
+//	GET /authorize?...&acr_values=urn:xauth:fido2
 //
-// Instead of minting a code immediately, /authorize creates an SMS challenge
-// on authenticator-service (stub adapter today — the accepted code is the
-// adapter's hard-coded 123456), parks the authorize request under a one-time
-// flow id, and serves a minimal OTP form. POST /authorize/verify proxies the
-// submitted code to authenticator-service (which enforces attempts, backoff,
-// and lockout) and, on success, mints the authorization code with `acr` +
-// `amr` recorded — the token mint stamps them into the ID token and marks the
-// session step_up_completed.
+// Instead of minting a code immediately, /authorize creates a challenge on
+// authenticator-service (stub adapters today — SMS accepts the hard-coded
+// 123456; FIDO2 accepts the stub assertion signature), parks the authorize
+// request under a one-time flow id, and serves a minimal hosted verification
+// page. POST /authorize/verify proxies the response to authenticator-service
+// (which enforces attempts, backoff, and lockout) and, on success, mints the
+// authorization code with `acr` + `amr` recorded — the token mint stamps them
+// into the ID token and marks the session step_up_completed.
 //
 // Parked flows live in process memory with a TTL, like the social-login
 // handshake state: single replica, or a shared store before scaling out.
 
-// ACRSMSOTP is the authentication context class reference for the SMS-OTP
-// interlude — the value clients put in acr_values and relying apps check in
-// the ID token's acr claim.
-const ACRSMSOTP = "urn:xauth:otp:sms"
+// Authentication context class references clients put in acr_values and
+// relying apps check in the ID token's acr claim.
+const (
+	// ACRSMSOTP — SMS one-time code interlude.
+	ACRSMSOTP = "urn:xauth:otp:sms"
+	// ACRFIDO2 — FIDO2/WebAuthn assertion interlude. The stub ceremony proves
+	// possession of a software key without user verification, so the amr is
+	// ["user","swk"]; UV-required and device-bound tiers (urn:xauth:fido2:uv,
+	// :uv:hw) arrive with the real webauthn adapter.
+	ACRFIDO2 = "urn:xauth:fido2"
+)
 
-// amrSMSOTP is the RFC 8176 method list stamped into the amr claim when the
-// interlude succeeds.
-var amrSMSOTP = []string{"otp", "sms"}
+// stepUpSpec ties one advertised acr value to the authenticator-service
+// method that satisfies it and the RFC 8176 amr values stamped on success.
+type stepUpSpec struct {
+	ACR    string
+	Method string   // authenticator-service method name
+	AMR    []string // RFC 8176 values for the ID token's amr claim
+	// AutoEnrollMetadata seeds the stub authenticator created for users with
+	// nothing enrolled (mock-stage convenience; real deployments enroll
+	// through a proper registration journey).
+	AutoEnrollMetadata map[string]any
+	// ResponseField names the key authenticator-service's adapter expects the
+	// submitted form value under ("code" for OTP digits, "signature" for the
+	// stub WebAuthn assertion).
+	ResponseField string
+	// RetryError is the message shown on the re-rendered page after a wrong
+	// response that has not gone terminal.
+	RetryError string
+}
+
+var stepUpSpecs = []stepUpSpec{
+	{
+		ACR:                ACRSMSOTP,
+		Method:             "sms",
+		AMR:                []string{"otp", "sms"},
+		AutoEnrollMetadata: map[string]any{"phone_number": "+15551234", "enrolled_by": "authorize-otp-stub"},
+		ResponseField:      "code",
+		RetryError:         "Incorrect code — try again.",
+	},
+	{
+		ACR:                ACRFIDO2,
+		Method:             "fido2",
+		AMR:                []string{"user", "swk"},
+		AutoEnrollMetadata: map[string]any{"credential_id": "stub-credential", "enrolled_by": "authorize-fido2-stub"},
+		ResponseField:      "signature",
+		RetryError:         "Assertion rejected — try again.",
+	},
+}
+
+// matchStepUp returns the first requested acr value this server supports.
+// acr_values is space-delimited and ordered by client preference (OIDC Core
+// §3.1.2.1), so iteration order follows the request, not stepUpSpecs.
+func matchStepUp(acrValues string) (stepUpSpec, bool) {
+	for _, want := range strings.Fields(acrValues) {
+		for _, spec := range stepUpSpecs {
+			if spec.ACR == want {
+				return spec, true
+			}
+		}
+	}
+	return stepUpSpec{}, false
+}
+
+// specForMethod resolves a parked flow's method back to its spec.
+func specForMethod(method string) (stepUpSpec, bool) {
+	for _, spec := range stepUpSpecs {
+		if spec.Method == method {
+			return spec, true
+		}
+	}
+	return stepUpSpec{}, false
+}
+
+// supportedACRValues feeds discovery's acr_values_supported.
+func supportedACRValues() []string {
+	out := make([]string, len(stepUpSpecs))
+	for i, spec := range stepUpSpecs {
+		out[i] = spec.ACR
+	}
+	return out
+}
 
 const otpFlowTTL = 10 * time.Minute
 
 // pendingAuthorize parks a validated /authorize request while the user
-// completes the OTP challenge.
+// completes the step-up challenge.
 type pendingAuthorize struct {
 	ClientID      string
 	TenantID      string
@@ -54,6 +130,7 @@ type pendingAuthorize struct {
 	CodeChallenge string
 	ChallengeID   string
 	Prompt        string
+	Method        string // authenticator-service method; resolves the stepUpSpec on verify
 	CreatedAt     time.Time
 }
 
@@ -90,62 +167,58 @@ func (h *OIDCHandlers) dropFlow(id string) {
 	delete(h.flows, id)
 }
 
-// acrRequested reports whether the space-delimited acr_values parameter asks
-// for the given context class.
-func acrRequested(acrValues, want string) bool {
-	return scopeContains(acrValues, want)
-}
-
-// startOTPFlow runs the interlude setup: make sure the user has an SMS
-// authenticator (auto-enrolling a stub one if not), dispatch a challenge, park
-// the authorize request, and serve the OTP form.
-func (h *OIDCHandlers) startOTPFlow(w http.ResponseWriter, r *http.Request, p pendingAuthorize) {
+// startStepUpFlow runs the interlude setup for the matched spec: make sure
+// the user has a usable authenticator for the method (auto-enrolling a stub
+// one if not), dispatch a challenge, park the authorize request, and serve
+// the hosted verification page.
+func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, spec stepUpSpec, p pendingAuthorize) {
 	ctx := r.Context()
 
-	// Ensure an enrolled, usable SMS authenticator. Mock-stage convenience:
+	// Ensure an enrolled, usable authenticator. Mock-stage convenience:
 	// auto-enroll a stub one so any user can exercise the flow; a real
 	// deployment replaces this with a proper enrollment journey.
 	auths, err := h.Authenticator.ListAuthenticators(ctx, p.TenantID, p.UserID)
 	if err != nil {
-		h.Logger.Error("otp_list_authenticators_failed", "err", err, "user_id", p.UserID)
+		h.Logger.Error("stepup_list_authenticators_failed", "err", err, "user_id", p.UserID, "method", spec.Method)
 		httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not reach authenticator service")
 		return
 	}
-	hasSMS := false
+	enrolled := false
 	for _, a := range auths {
-		if a.Method == "sms" && a.Status != "disabled" {
-			hasSMS = true
+		if a.Method == spec.Method && a.Status != "disabled" {
+			enrolled = true
 			break
 		}
 	}
-	if !hasSMS {
-		if _, err := h.Authenticator.EnrollAuthenticator(ctx, p.TenantID, p.UserID, "sms",
-			map[string]any{"phone_number": "+15551234", "enrolled_by": "authorize-otp-stub"}); err != nil {
-			h.Logger.Error("otp_auto_enroll_failed", "err", err, "user_id", p.UserID)
-			httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not enroll sms authenticator")
+	if !enrolled {
+		if _, err := h.Authenticator.EnrollAuthenticator(ctx, p.TenantID, p.UserID, spec.Method, spec.AutoEnrollMetadata); err != nil {
+			h.Logger.Error("stepup_auto_enroll_failed", "err", err, "user_id", p.UserID, "method", spec.Method)
+			httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not enroll "+spec.Method+" authenticator")
 			return
 		}
 	}
 
-	chal, err := h.Authenticator.CreateChallenge(ctx, p.TenantID, p.UserID, []string{"sms"})
+	chal, err := h.Authenticator.CreateChallenge(ctx, p.TenantID, p.UserID, []string{spec.Method})
 	if err != nil {
-		h.Logger.Error("otp_challenge_create_failed", "err", err, "user_id", p.UserID)
-		httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not create sms challenge")
+		h.Logger.Error("stepup_challenge_create_failed", "err", err, "user_id", p.UserID, "method", spec.Method)
+		httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not create "+spec.Method+" challenge")
 		return
 	}
 
 	p.ChallengeID = chal.ChallengeID
 	p.Prompt = chal.Prompt
+	p.Method = spec.Method
 	p.CreatedAt = time.Now().UTC()
 	flowID := uuid.NewString()
 	h.storeFlow(flowID, p)
 
-	h.Logger.Info("otp_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
-		"user_id", p.UserID, "tenant_id", p.TenantID)
-	h.renderOTPForm(w, http.StatusOK, otpFormData{FlowID: flowID, Prompt: chal.Prompt})
+	h.Logger.Info("stepup_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
+		"user_id", p.UserID, "tenant_id", p.TenantID, "method", spec.Method)
+	h.renderOTPForm(w, http.StatusOK, otpFormData{FlowID: flowID, Prompt: chal.Prompt, Method: spec.Method})
 }
 
-// AuthorizeVerify handles POST /authorize/verify — the OTP form submission.
+// AuthorizeVerify handles POST /authorize/verify — the hosted verification
+// page's submission for any step-up method.
 func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "could not parse form body")
@@ -162,9 +235,17 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "flow is invalid or expired — restart the login")
 		return
 	}
+	spec, ok := specForMethod(flow.Method)
+	if !ok {
+		// Unreachable unless a flow was parked by a spec that no longer
+		// exists (binary downgrade mid-flow). Treat as an expired flow.
+		h.dropFlow(flowID)
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "flow is invalid or expired — restart the login")
+		return
+	}
 
 	outcome, err := h.Authenticator.VerifyChallenge(r.Context(), flow.TenantID, flow.ChallengeID,
-		map[string]any{"code": code})
+		map[string]any{spec.ResponseField: code})
 	if err != nil {
 		var de *DownstreamError
 		switch {
@@ -175,7 +256,7 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 				"the verification challenge has expired or failed — restart the login")
 		case errors.As(err, &de) && de.Status == http.StatusTooManyRequests:
 			h.renderOTPForm(w, http.StatusTooManyRequests, otpFormData{
-				FlowID: flowID, Prompt: flow.Prompt,
+				FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method,
 				Error: "Too many attempts — wait a moment and try again.",
 			})
 		default:
@@ -193,15 +274,15 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.renderOTPForm(w, http.StatusUnauthorized, otpFormData{
-			FlowID: flowID, Prompt: flow.Prompt,
-			Error: "Incorrect code — try again.",
+			FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method,
+			Error: spec.RetryError,
 		})
 		return
 	}
 
 	h.dropFlow(flowID)
-	h.Logger.Info("otp_flow_completed", "flow_id", flowID, "challenge_id", flow.ChallengeID,
-		"user_id", flow.UserID, "tenant_id", flow.TenantID)
+	h.Logger.Info("stepup_flow_completed", "flow_id", flowID, "challenge_id", flow.ChallengeID,
+		"user_id", flow.UserID, "tenant_id", flow.TenantID, "method", flow.Method)
 	h.mintCodeAndRedirect(w, r, AuthCode{
 		ClientID:      flow.ClientID,
 		TenantID:      flow.TenantID,
@@ -211,16 +292,19 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		State:         flow.State,
 		Nonce:         flow.Nonce,
 		CodeChallenge: flow.CodeChallenge,
-		ACR:           ACRSMSOTP,
-		AMR:           amrSMSOTP,
+		ACR:           spec.ACR,
+		AMR:           spec.AMR,
 	})
 }
 
-// otpFormData feeds the verification page template.
+// otpFormData feeds the verification page template. Method selects the
+// ceremony block: "fido2" renders the stub-assertion button, anything else
+// renders the code input.
 type otpFormData struct {
 	FlowID string
 	Prompt string
 	Error  string
+	Method string
 }
 
 // otpFormTmpl is the minimal hosted verification page. Brand-consistent with
@@ -248,14 +332,21 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>Enter verification code</h1>
+  {{if eq .Method "fido2"}}<h1>Confirm with your passkey</h1>{{else}}<h1>Enter verification code</h1>{{end}}
   <p>{{.Prompt}}</p>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <form method="POST" action="/authorize/verify">
     <input type="hidden" name="flow" value="{{.FlowID}}">
+    {{if eq .Method "fido2"}}
+    <!-- Stub ceremony: the real WebAuthn adapter replaces this with a
+         navigator.credentials.get() call and posts the signed assertion. -->
+    <input type="hidden" name="code" value="stub_valid_signature">
+    <button type="submit">Touch your authenticator (stub)</button>
+    {{else}}
     <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
            maxlength="6" autofocus required>
     <button type="submit">Verify</button>
+    {{end}}
   </form>
 </div>
 </body>
