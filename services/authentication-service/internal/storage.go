@@ -84,6 +84,10 @@ type Storage interface {
 	// not implemented yet, so created anchors carry a nil VerifiedAt.
 	CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, error)
 	ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error)
+	// GetIdentityAnchorByValue resolves one anchor by (tenant, type, value) —
+	// the lookup phone login uses to tell a known number from a new one. Returns
+	// ErrNotFound on a miss.
+	GetIdentityAnchorByValue(tenantID, anchorType, value string) (IdentityAnchor, error)
 
 	// ProvisionTenant atomically creates a complete self-service workspace —
 	// the tenant registry row, its owner user, the owner's initial session, and
@@ -153,9 +157,13 @@ func (s *MemStorage) seedDefaultClient() {
 func (s *MemStorage) CreateUser(u User) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, existing := range s.users {
-		if existing.TenantID == u.TenantID && existing.Email == u.Email {
-			return User{}, ErrConflict
+	// Uniqueness is on a PRESENT email only (migration 000008's partial index):
+	// any number of phone-only users may have an empty/NULL email.
+	if u.Email != "" {
+		for _, existing := range s.users {
+			if existing.TenantID == u.TenantID && existing.Email == u.Email {
+				return User{}, ErrConflict
+			}
 		}
 	}
 	s.users[u.ID] = u
@@ -175,6 +183,9 @@ func (s *MemStorage) GetUser(tenantID, id string) (User, error) {
 
 // GetUserByEmail is used by the social-login stub to upsert-by-email.
 func (s *MemStorage) GetUserByEmail(tenantID, email string) (User, error) {
+	if email == "" {
+		return User{}, ErrNotFound
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, u := range s.users {
@@ -552,6 +563,20 @@ func (s *MemStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, err
 	}
 	s.anchors[a.ID] = a
 	return a, nil
+}
+
+// GetIdentityAnchorByValue resolves one anchor by (tenant, type, value). The
+// triple is unique (mirrors the PG uq_identity_anchor constraint), so at most
+// one matches. Returns ErrNotFound on a miss.
+func (s *MemStorage) GetIdentityAnchorByValue(tenantID, anchorType, value string) (IdentityAnchor, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.anchors {
+		if a.TenantID == tenantID && a.Type == anchorType && a.Value == value {
+			return a, nil
+		}
+	}
+	return IdentityAnchor{}, ErrNotFound
 }
 
 // ListIdentityAnchors returns every anchor in tenantID, newest first (CreatedAt

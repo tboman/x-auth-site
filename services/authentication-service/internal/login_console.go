@@ -107,14 +107,15 @@ func (h *LoginHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		gv.Set("state", state)
 	}
 	googleHref := "/v1/social/" + loginGoogleProvider + "/authorize?" + gv.Encode()
+	// Phone sign-in carries the same params to the hosted phone flow.
+	phoneHref := "/login/phone?" + gv.Encode()
 
 	h.page(w, http.StatusOK, "Sign in", `<h1>`+html.EscapeString(heading)+`</h1>
 <p class="muted">Choose how you'd like to continue.</p>
 <div class="panel">
 <a class="btn" href="`+html.EscapeString(googleHref)+`">Continue with Google</a>
 <div class="sep">or</div>
-<button class="btn secondary" type="button" disabled aria-disabled="true">Continue with phone<span class="soon">coming soon</span></button>
-<p class="muted" style="margin:12px 0 0;font-size:.8rem">Phone sign-in is on the way.</p>
+<a class="btn secondary" href="`+html.EscapeString(phoneHref)+`">Continue with phone</a>
 </div>`)
 }
 

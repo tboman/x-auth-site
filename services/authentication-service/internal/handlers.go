@@ -92,6 +92,7 @@ func Router(d Deps) http.Handler {
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	phone := NewPhoneLoginHandlers(d.Store, d.Logger, d.Issuer)
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
@@ -137,9 +138,29 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /v1/social/{provider}/callback", social.Callback)
 
 	// Hosted end-user login chooser — public, top-level navigation. A tenant's
-	// app sends users here to pick a sign-in method (Google today; phone soon).
-	// The Google button forwards to the social leg above.
+	// app sends users here to pick a sign-in method (Google or phone). The Google
+	// button forwards to the social leg above; the phone button to /login/phone.
 	mux.HandleFunc("GET /login", login.Login)
+
+	// Phone login (primary factor): enter number → SMS OTP → known number logs
+	// in, new number creates an account + offers to link Google. POST /login/phone
+	// "sends" a code, so it is per-IP rate-limited (PHONE_OTP_RATE, default 10/1h).
+	phoneOTPLimit, phoneOTPWindow := 10, time.Hour
+	if v := os.Getenv("PHONE_OTP_RATE"); v != "" {
+		if n, win, err := ratex.ParseRate(v); err == nil {
+			phoneOTPLimit, phoneOTPWindow = n, win
+		} else {
+			d.Logger.Warn("phone_otp_rate_invalid", "value", v, "err", err)
+		}
+	}
+	phoneSubmit := ratex.Middleware(ratex.New(phoneOTPLimit, phoneOTPWindow),
+		func(r *http.Request) string { return clientIP(r) })(http.HandlerFunc(phone.Submit))
+	mux.HandleFunc("GET /login/phone", phone.Start)
+	mux.Handle("POST /login/phone", phoneSubmit)
+	mux.HandleFunc("POST /login/phone/verify", phone.Verify)
+	mux.HandleFunc("POST /login/phone/link", phone.LinkStart)
+	mux.HandleFunc("POST /login/phone/skip", phone.Skip)
+	mux.HandleFunc("GET /login/phone/link/callback", phone.LinkCallback)
 
 	// Hosted developer console: Google sign-in -> OIDC client registration ->
 	// built-in code+PKCE round-trip tester with optional ACR selection.

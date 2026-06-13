@@ -57,9 +57,10 @@ func TestLoginChooserRendersMethods(t *testing.T) {
 			t.Errorf("chooser missing %q:\n%s", want, body)
 		}
 	}
-	// Phone is present but disabled (stub).
-	if !strings.Contains(body, "coming soon") || !strings.Contains(body, "disabled") {
-		t.Errorf("chooser must show a disabled phone option:\n%s", body)
+	// Phone is now a live option linking to the hosted phone flow with the same
+	// params passed through.
+	if !strings.Contains(body, "/login/phone?") || !strings.Contains(body, "Continue with phone") {
+		t.Errorf("chooser must offer phone sign-in:\n%s", body)
 	}
 }
 

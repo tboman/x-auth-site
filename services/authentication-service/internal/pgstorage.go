@@ -55,7 +55,10 @@ func execInsertUser(ctx context.Context, ex rowExecutor, u User) error {
 	const q = `
 		INSERT INTO users (id, tenant_id, email, name, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err := ex.Exec(ctx, q, u.ID, u.TenantID, u.Email, nullable(u.Name),
+	// email is nullable (migration 000008): a phone-only account has no email
+	// until a social login is linked. Empty → NULL so the partial unique index
+	// (WHERE email IS NOT NULL) lets multiple emailless users coexist.
+	_, err := ex.Exec(ctx, q, u.ID, u.TenantID, nullable(u.Email), nullable(u.Name),
 		u.CreatedAt.UTC(), u.UpdatedAt.UTC())
 	return err
 }
@@ -129,8 +132,12 @@ func (s *PGStorage) GetUser(tenantID, id string) (User, error) {
 	return u, err
 }
 
-// GetUserByEmail is used by the social-login stub to upsert-by-email.
+// GetUserByEmail is used by the social-login stub to upsert-by-email. An empty
+// email never matches a (possibly emailless) phone-only account.
 func (s *PGStorage) GetUserByEmail(tenantID, email string) (User, error) {
+	if email == "" {
+		return User{}, ErrNotFound
+	}
 	const q = `
 		SELECT id, tenant_id, email, name, created_at, updated_at
 		  FROM users
@@ -204,7 +211,7 @@ func (s *PGStorage) UpdateUser(u User) (User, error) {
 	`
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(bgCtx(), q,
-		u.ID, u.TenantID, u.Email, nullable(u.Name),
+		u.ID, u.TenantID, nullable(u.Email), nullable(u.Name),
 	).Scan(&createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -666,6 +673,23 @@ func (s *PGStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, erro
 	return a, nil
 }
 
+// GetIdentityAnchorByValue resolves a single anchor by its (tenant, type,
+// value) — the lookup phone login uses to find whether a number is already
+// known. Returns ErrNotFound on a miss. The uq_identity_anchor constraint makes
+// the triple unique, so at most one row matches.
+func (s *PGStorage) GetIdentityAnchorByValue(tenantID, anchorType, value string) (IdentityAnchor, error) {
+	const q = `
+		SELECT id, user_id, tenant_id, anchor_type, anchor_value, verified_at, created_at
+		  FROM identity_anchors
+		 WHERE tenant_id = $1 AND anchor_type = $2 AND anchor_value = $3
+	`
+	a, err := scanAnchor(s.pool.QueryRow(bgCtx(), q, tenantID, anchorType, value))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IdentityAnchor{}, ErrNotFound
+	}
+	return a, err
+}
+
 // ListIdentityAnchors returns every anchor in tenantID, newest first.
 func (s *PGStorage) ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error) {
 	const q = `
@@ -744,14 +768,15 @@ type rowScanner interface {
 
 func scanUser(r rowScanner) (User, error) {
 	var (
-		u    User
-		name *string
+		u           User
+		email, name *string
 	)
 	if err := r.Scan(
-		&u.ID, &u.TenantID, &u.Email, &name, &u.CreatedAt, &u.UpdatedAt,
+		&u.ID, &u.TenantID, &email, &name, &u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
 		return User{}, err
 	}
+	u.Email = derefString(email)
 	u.Name = derefString(name)
 	u.CreatedAt = u.CreatedAt.UTC()
 	u.UpdatedAt = u.UpdatedAt.UTC()
