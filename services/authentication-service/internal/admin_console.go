@@ -44,6 +44,10 @@ type AdminConsoleHandlers struct {
 	// the client-management page so the operator can see the global origins
 	// that apply regardless of per-client web origins.
 	EnvOrigins []string
+
+	// StepUps surfaces live in-progress step-up attempts in the per-tenant
+	// session view. Optional (nil renders an empty list).
+	StepUps *StepUpTracker
 }
 
 // NewAdminConsoleHandlers builds the handler set, normalising the allowlist to
@@ -240,13 +244,60 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Session management: active sessions + live in-progress step-ups, with a
+	// staff revoke action.
+	now := time.Now().UTC()
+	sessions, err := h.Store.ListSessions(tenantID, 0)
+	if err != nil {
+		h.Logger.Error("admin_tenant_sessions_failed", "err", err, "tenant_id", tenantID)
+		sessions = nil
+	}
+	emailByUser := emailIndex(users)
+	revoke := func(sess Session) string {
+		if sess.InvalidatedAt != nil || now.After(sess.ExpiresAt) {
+			return ""
+		}
+		return `<form method="post" action="/admin/sessions/revoke" onsubmit="return confirm('Revoke this session?')">` +
+			`<input type="hidden" name="session_id" value="` + html.EscapeString(sess.ID) + `">` +
+			`<input type="hidden" name="tenant_id" value="` + html.EscapeString(tenantID) + `">` +
+			`<button class="danger" type="submit">Revoke</button></form>`
+	}
+
 	h.page(w, http.StatusOK, "Tenant identities", `<h1>`+html.EscapeString(name)+`</h1>
 <p class="muted">Tenant <code>`+html.EscapeString(tenantID)+`</code> — `+itoa(len(users))+` identit`+plural(len(users), "y", "ies")+`.</p>
 <div class="actions"><a class="btn secondary" href="/admin">← All tenants</a></div>
 <h2 style="margin-top:24px">Identities</h2>
 <p class="muted">Every identity is anchored by its Google-verified email. Phone and passkey are additional
 anchor types: the store is ready for them, and they will appear here once the validation flows are built.</p>`+
-		identityTable(users, anchors))
+		identityTable(users, anchors)+
+		sessionsPanel(sessions, emailByUser, now, revoke)+
+		stepUpsPanel(h.StepUps.ListByTenant(tenantID), emailByUser, now))
+}
+
+// RevokeSession handles POST /admin/sessions/revoke — staff invalidates any
+// tenant's session (sets invalidated_at).
+func (h *AdminConsoleHandlers) RevokeSession(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.currentAdmin(w, r); !ok {
+		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.loginError(w, "Could not parse the form.")
+		return
+	}
+	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
+	sessionID := strings.TrimSpace(r.PostForm.Get("session_id"))
+	if tenantID == "" || sessionID == "" {
+		h.loginError(w, "tenant_id and session_id are required.")
+		return
+	}
+	if err := revokeSession(h.Store, tenantID, sessionID); err != nil && err != ErrNotFound {
+		h.Logger.Error("admin_revoke_session_failed", "err", err, "tenant_id", tenantID, "session_id", sessionID)
+		h.loginErrorStatus(w, http.StatusBadGateway, "Could not revoke the session.")
+		return
+	}
+	h.Logger.Info("admin_session_revoked", "tenant_id", tenantID, "session_id", sessionID)
+	http.Redirect(w, r, "/admin/tenants/"+url.PathEscape(tenantID), http.StatusFound)
 }
 
 // plural picks the singular or plural suffix for n.

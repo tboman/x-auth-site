@@ -80,6 +80,9 @@ func Router(d Deps) http.Handler {
 	if err != nil {
 		panic("authentication-service: verifier from signer JWKS: " + err.Error())
 	}
+	// Shared live-step-up registry: the OIDC step-up interlude records attempts
+	// here and the consoles read them for the session-management views.
+	stepUps := NewStepUpTracker(otpFlowTTL)
 	oidc := &OIDCHandlers{
 		Store:         d.Store,
 		Logger:        d.Logger,
@@ -89,13 +92,15 @@ func Router(d Deps) http.Handler {
 		JWTIssuer:     jwtIssuer,
 		Authenticator: d.Authenticator,
 		DevAutologin:  d.DevAutologin,
+		StepUps:       stepUps,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	phone := NewPhoneLoginHandlers(d.Store, d.Logger, d.Issuer)
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
-	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
+	admin.StepUps = stepUps
+	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -193,9 +198,11 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/logout", admin.Logout)
 	mux.HandleFunc("POST /admin/clients", admin.RegisterClient)
 	mux.HandleFunc("POST /admin/clients/delete", admin.DeleteClient)
-	// Master-admin drill-down: identities for one tenant. Staff-only (the
-	// handler re-checks currentAdmin); a more specific pattern than GET /admin/.
+	// Master-admin drill-down: identities + sessions for one tenant. Staff-only
+	// (the handler re-checks currentAdmin); a more specific pattern than
+	// GET /admin/. Revoke invalidates any tenant's session.
 	mux.HandleFunc("GET /admin/tenants/{id}", admin.TenantDetail)
+	mux.HandleFunc("POST /admin/sessions/revoke", admin.RevokeSession)
 
 	// Self-service signup funnel + tenant-owner dashboard endpoints. The
 	// provisioning action (/admin/signup/start) is rate-limited per IP since it
@@ -217,6 +224,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /admin/owner/callback", signup.OwnerCallback)
 	mux.HandleFunc("POST /admin/owner/logout", signup.OwnerLogout)
 	mux.HandleFunc("POST /admin/owner/regenerate-secret", signup.RegenerateSecret)
+	mux.HandleFunc("POST /admin/owner/sessions/revoke", signup.RevokeSession)
 	mux.HandleFunc("POST /admin/owner/client", signup.UpdateClient)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 

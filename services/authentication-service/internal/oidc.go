@@ -64,6 +64,10 @@ type OIDCHandlers struct {
 	flowMu   sync.Mutex
 	flows    map[string]pendingAuthorize
 	flowOnce sync.Once
+
+	// StepUps mirrors the live subset of parked flows so the session-management
+	// consoles can show who is mid step-up. Optional (nil is a no-op).
+	StepUps *StepUpTracker
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.

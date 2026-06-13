@@ -49,6 +49,10 @@ type SignupConsoleHandlers struct {
 	Store  Storage
 	Logger *slog.Logger
 	Issuer string
+
+	// StepUps surfaces live in-progress step-up attempts in the owner's session
+	// view. Optional (nil renders an empty list).
+	StepUps *StepUpTracker
 }
 
 const (
@@ -481,6 +485,22 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 email; phone and passkey anchors will appear here once those sign-in methods are available.</p>` +
 		identityTable(users, anchors)
 
+	// Session management: the owner's own workspace sessions + live step-ups,
+	// with a revoke action.
+	now := time.Now().UTC()
+	sessions, _ := h.Store.ListSessions(owner.Tenant.ID, 0)
+	emailByUser := emailIndex(users)
+	revoke := func(sess Session) string {
+		if sess.InvalidatedAt != nil || now.After(sess.ExpiresAt) {
+			return ""
+		}
+		return `<form method="post" action="/admin/owner/sessions/revoke" onsubmit="return confirm('Revoke this session?')">` +
+			`<input type="hidden" name="session_id" value="` + html.EscapeString(sess.ID) + `">` +
+			`<button class="danger" type="submit">Revoke</button></form>`
+	}
+	sessionsSection := sessionsPanel(sessions, emailByUser, now, revoke) +
+		stepUpsPanel(h.StepUps.ListByTenant(owner.Tenant.ID), emailByUser, now)
+
 	h.page(w, http.StatusOK, "Your X-Auth workspace", `<h1>`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
 <p class="muted">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> (workspace owner).</p>
 <form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
@@ -490,7 +510,35 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 <tr><td>Tenant ID</td><td><code>`+html.EscapeString(owner.Tenant.ID)+`</code></td></tr>
 <tr><td>Owner</td><td>`+html.EscapeString(owner.Tenant.OwnerEmail)+`</td></tr>
 <tr><td>Users</td><td>`+itoa(len(users))+`</td></tr>
-</table></div>`+usersSection+client)
+</table></div>`+usersSection+sessionsSection+client)
+}
+
+// RevokeSession handles POST /admin/owner/sessions/revoke — the owner
+// invalidates a session belonging to their own workspace.
+func (h *SignupConsoleHandlers) RevokeSession(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin")
+		return
+	}
+	sessionID := strings.TrimSpace(r.PostForm.Get("session_id"))
+	if sessionID == "" {
+		h.errorPage(w, http.StatusBadRequest, "session_id is required.", "/admin")
+		return
+	}
+	// Scoped to the owner's tenant — revokeSession's GetSession is tenant-scoped,
+	// so an owner can only ever invalidate their own workspace's sessions.
+	if err := revokeSession(h.Store, owner.Tenant.ID, sessionID); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_revoke_session_failed", "err", err, "tenant_id", owner.Tenant.ID, "session_id", sessionID)
+		h.errorPage(w, http.StatusBadGateway, "Could not revoke the session.", "/admin")
+		return
+	}
+	h.Logger.Info("owner_session_revoked", "tenant_id", owner.Tenant.ID, "session_id", sessionID)
+	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
 // RegenerateSecret issues a fresh client secret for the owner's client and

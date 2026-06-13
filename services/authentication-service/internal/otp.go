@@ -163,8 +163,10 @@ func (h *OIDCHandlers) peekFlow(id string) (pendingAuthorize, bool) {
 
 func (h *OIDCHandlers) dropFlow(id string) {
 	h.flowMu.Lock()
-	defer h.flowMu.Unlock()
 	delete(h.flows, id)
+	h.flowMu.Unlock()
+	// Also clear the live-step-up mirror so the consoles stop showing it.
+	h.StepUps.Done(id)
 }
 
 // startStepUpFlow runs the interlude setup for the matched spec: make sure
@@ -211,6 +213,9 @@ func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, s
 	p.CreatedAt = time.Now().UTC()
 	flowID := uuid.NewString()
 	h.storeFlow(flowID, p)
+	h.StepUps.Start(StepUpAttempt{
+		FlowID: flowID, TenantID: p.TenantID, UserID: p.UserID, Method: spec.Method, StartedAt: p.CreatedAt,
+	})
 
 	h.Logger.Info("stepup_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
 		"user_id", p.UserID, "tenant_id", p.TenantID, "method", spec.Method)

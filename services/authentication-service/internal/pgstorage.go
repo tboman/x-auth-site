@@ -266,6 +266,39 @@ func (s *PGStorage) GetSession(tenantID, id string) (Session, error) {
 	return sess, err
 }
 
+// ListSessions returns the tenant's sessions, newest first, capped at limit.
+func (s *PGStorage) ListSessions(tenantID string, limit int) ([]Session, error) {
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	const q = `
+		SELECT id, tenant_id, user_id, risk_level, step_up_completed,
+		       created_at, updated_at, expires_at, invalidated_at
+		  FROM sessions
+		 WHERE tenant_id = $1
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $2
+	`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Session, 0)
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_sessions rows: %w", err)
+	}
+	return out, nil
+}
+
 // UpdateSession replaces the mutable columns. CreatedAt is preserved from the
 // existing row and UpdatedAt is bumped server-side (same contract as
 // MemStorage.UpdateSession). Returns ErrNotFound if no row matches both id and

@@ -454,6 +454,35 @@ func TestPGStorageSessionLifecycle(t *testing.T) {
 	}
 }
 
+// TestPGStorageListSessions covers tenant-scoped, newest-first, capped listing.
+func TestPGStorageListSessions(t *testing.T) {
+	s := newPGStorage(t)
+	base := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	mk := func(id, tenant string, ts time.Time) {
+		t.Helper()
+		if _, err := s.CreateSession(Session{
+			ID: id, TenantID: tenant, UserID: "u", RiskLevel: RiskLow,
+			CreatedAt: ts, UpdatedAt: ts, ExpiresAt: ts.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	mk("ses_a1", "tenant-a", base)
+	mk("ses_a2", "tenant-a", base.Add(time.Second))
+	mk("ses_b1", "tenant-b", base)
+
+	got, err := s.ListSessions("tenant-a", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "ses_a2" || got[1].ID != "ses_a1" {
+		t.Fatalf("tenant-a sessions wrong/order: %+v", got)
+	}
+	if capped, _ := s.ListSessions("tenant-a", 1); len(capped) != 1 || capped[0].ID != "ses_a2" {
+		t.Fatalf("cap not applied: %+v", capped)
+	}
+}
+
 func TestPGStorageTokens(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

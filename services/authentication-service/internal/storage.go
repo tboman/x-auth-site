@@ -36,6 +36,9 @@ type Storage interface {
 	CreateSession(s Session) (Session, error)
 	GetSession(tenantID, id string) (Session, error)
 	UpdateSession(s Session) (Session, error)
+	// ListSessions returns a tenant's sessions, newest first, capped at limit
+	// (<=0 means a sensible default cap). Powers the session-management views.
+	ListSessions(tenantID string, limit int) ([]Session, error)
 
 	// Tokens (keyed by SHA-256 hash of the plaintext)
 	PutToken(t Token) error
@@ -283,6 +286,35 @@ func (s *MemStorage) GetSession(tenantID, id string) (Session, error) {
 		return Session{}, ErrNotFound
 	}
 	return sess, nil
+}
+
+// DefaultSessionListCap bounds an unspecified ListSessions request.
+const DefaultSessionListCap = 100
+
+// ListSessions returns the tenant's sessions, newest first (CreatedAt desc, id
+// desc tie-break), capped at limit.
+func (s *MemStorage) ListSessions(tenantID string, limit int) ([]Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	out := make([]Session, 0)
+	for _, sess := range s.sessions {
+		if sess.TenantID == tenantID {
+			out = append(out, sess)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // UpdateSession replaces the row identified by (s.TenantID, s.ID), preserving
