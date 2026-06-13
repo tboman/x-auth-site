@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newSocialRouter wires a Router whose google provider runs the real OAuth2
@@ -17,6 +18,14 @@ func newSocialRouter(t *testing.T, cfg SocialProviderConfig) (http.Handler, Stor
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
+	// The social leg now rejects unregistered redirect URIs (open-redirect
+	// hardening), so register the redirect the test flows use for ten_acme.
+	if err := store.PutClient(OIDCClient{
+		ClientID: "cli_acme", TenantID: "ten_acme",
+		RedirectURIs: []string{"http://app.acme.test/cb"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
 	r := Router(Deps{
 		Store:           store,
 		Logger:          logger,

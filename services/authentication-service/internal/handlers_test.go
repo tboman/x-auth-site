@@ -1335,6 +1335,14 @@ func TestAuthorizeRejectsUnregisteredRedirect(t *testing.T) {
 
 func TestSocialLoginStub(t *testing.T) {
 	r, store := newTestRouter(t)
+	// The social leg requires the redirect to be registered for the tenant
+	// (open-redirect hardening).
+	if err := store.PutClient(OIDCClient{
+		ClientID: "cli_a", TenantID: "ten_a",
+		RedirectURIs: []string{"http://app.example.com/cb"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
 
 	// /v1/social/google/authorize
 	authURL := "/v1/social/google/authorize?" + url.Values{

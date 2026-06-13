@@ -20,6 +20,13 @@ func TestLoginChooserRendersMethods(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
+	// The redirect must be registered for the tenant (open-redirect hardening).
+	if err := store.PutClient(OIDCClient{
+		ClientID: "cli_acme", TenantID: "ten_acme",
+		RedirectURIs: []string{"https://app.acme.com/callback.html"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
 
 	q := url.Values{
 		"tenant_id":    {"ten_acme"},
@@ -74,10 +81,17 @@ func TestLoginChooserValidatesParams(t *testing.T) {
 	}
 }
 
-// TestLoginChooserUnregisteredTenant falls back to the generic heading (no
-// registry row) but still renders the Google link.
-func TestLoginChooserUnregisteredTenant(t *testing.T) {
-	r, _ := newAdminRouter(t)
+// TestLoginChooserNoRegistryRow falls back to the generic heading when the
+// tenant has no registry row, yet still renders the Google link (its redirect
+// is registered via a tenant-bound client).
+func TestLoginChooserNoRegistryRow(t *testing.T) {
+	r, store := newAdminRouter(t)
+	if err := store.PutClient(OIDCClient{
+		ClientID: "cli_derived", TenantID: "ten_derived",
+		RedirectURIs: []string{"https://x.test/cb"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/login?tenant_id=ten_derived&redirect_uri=https://x.test/cb", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -86,10 +100,58 @@ func TestLoginChooserUnregisteredTenant(t *testing.T) {
 	}
 	body := w.Body.String()
 	if strings.Contains(body, "Sign in to ") {
-		t.Errorf("unregistered tenant should use generic heading:\n%s", body)
+		t.Errorf("tenant with no registry row should use generic heading:\n%s", body)
 	}
 	if !strings.Contains(body, "/v1/social/google/authorize?") {
-		t.Errorf("Google link missing for unregistered tenant:\n%s", body)
+		t.Errorf("Google link missing:\n%s", body)
+	}
+}
+
+// TestRedirectHardening pins the open-redirect fix on BOTH entry points: an
+// unregistered redirect is rejected, a tenant-registered one is accepted, and a
+// same-origin (issuer) console callback is always allowed.
+func TestRedirectHardening(t *testing.T) {
+	r, store := newAdminRouter(t)
+	if err := store.PutClient(OIDCClient{
+		ClientID: "cli_acme", TenantID: "ten_acme",
+		RedirectURIs: []string{"https://app.acme.com/callback.html"}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+
+	code := func(target string) int {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+	esc := func(u string) string { return url.QueryEscape(u) }
+
+	// Arbitrary attacker host → rejected at BOTH /login and the social leg.
+	if c := code("/login?tenant_id=ten_acme&redirect_uri=" + esc("https://evil.com/cb")); c != http.StatusBadRequest {
+		t.Errorf("/login open redirect: want 400, got %d", c)
+	}
+	if c := code("/v1/social/google/authorize?tenant_id=ten_acme&redirect_uri=" + esc("https://evil.com/cb")); c != http.StatusBadRequest {
+		t.Errorf("social leg open redirect: want 400, got %d", c)
+	}
+
+	// The tenant's own registered redirect → allowed.
+	if c := code("/login?tenant_id=ten_acme&redirect_uri=" + esc("https://app.acme.com/callback.html")); c != http.StatusOK {
+		t.Errorf("/login registered redirect: want 200, got %d", c)
+	}
+	if c := code("/v1/social/google/authorize?tenant_id=ten_acme&redirect_uri=" + esc("https://app.acme.com/callback.html")); c != http.StatusFound {
+		t.Errorf("social leg registered redirect: want 302, got %d", c)
+	}
+
+	// A registered redirect belonging to ANOTHER tenant is NOT accepted here.
+	if c := code("/login?tenant_id=ten_other&redirect_uri=" + esc("https://app.acme.com/callback.html")); c != http.StatusBadRequest {
+		t.Errorf("cross-tenant redirect: want 400, got %d", c)
+	}
+
+	// Same-origin issuer callback (hosted console) → always allowed. Issuer is
+	// http://test.local in the test router.
+	if c := code("/v1/social/google/authorize?tenant_id=ten_signup&redirect_uri=" + esc("http://test.local/admin/signup/callback")); c != http.StatusFound {
+		t.Errorf("same-origin console callback: want 302, got %d", c)
 	}
 }
 

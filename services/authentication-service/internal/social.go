@@ -156,8 +156,17 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "redirect_uri is required")
 		return
 	}
-	if _, err := url.Parse(redirectURI); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must be a valid URL")
+	if u, err := url.Parse(redirectURI); err != nil || !u.IsAbs() {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uri must be an absolute URL")
+		return
+	}
+	// The final hop of this leg hands a freshly minted session_id + user_id to
+	// redirect_uri, so an arbitrary redirect_uri would leak a logged-in session
+	// to any host. Allow only same-origin (hosted console/login callbacks) or a
+	// redirect URI registered for this tenant's client.
+	if !redirectAllowedForTenant(h.Store, h.Issuer, tenantID, redirectURI) {
+		h.Logger.Warn("social_redirect_rejected", "tenant_id", tenantID, "redirect_uri", redirectURI)
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect_uri is not registered for this tenant")
 		return
 	}
 
@@ -188,6 +197,57 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	cb.RawQuery = cbq.Encode()
 	http.Redirect(w, r, cb.String(), http.StatusFound)
+}
+
+// redirectAllowedForTenant guards the social-login leg (and the /login chooser
+// that feeds it) from being an open redirect. The leg's final hop carries a
+// freshly minted session_id + user_id back to redirect_uri, so an arbitrary
+// redirect_uri would hand a logged-in session to any host. A redirect_uri is
+// allowed only when it is either:
+//
+//   - same-origin as the issuer — the hosted console/login callbacks
+//     (/admin/…, /dev/…, /admin/signup/…), which can't leak to a third party
+//     because they point back at X-Auth itself; or
+//   - an exact match of a redirect URI registered for an OIDC client bound to
+//     this tenant, or for an unbound (legacy/env) client.
+//
+// Registration is the trust boundary. A self-service client's redirect URIs are
+// bound to the tenant that registered them, so an attacker's host only ever
+// matches under their OWN tenant_id (where the session would be their own
+// anyway). Unbound clients can only be created by an admin/env, never via
+// self-service, so an attacker cannot slip their host onto the list either.
+func redirectAllowedForTenant(store Storage, issuer, tenantID, redirectURI string) bool {
+	if sameOrigin(issuer, redirectURI) {
+		return true
+	}
+	clients, err := store.ListClients()
+	if err != nil {
+		return false
+	}
+	for _, c := range clients {
+		// Unbound clients (TenantID == "") are admin/env-registered and trusted
+		// across tenants; a bound client only counts for its own tenant.
+		if c.TenantID != "" && c.TenantID != tenantID {
+			continue
+		}
+		if redirectURIAllowed(redirectURI, c.RedirectURIs) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameOrigin reports whether candidate shares scheme + host with base.
+func sameOrigin(base, candidate string) bool {
+	b, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil || b.Host == "" {
+		return false
+	}
+	c, err := url.Parse(candidate)
+	if err != nil || c.Host == "" {
+		return false
+	}
+	return b.Scheme == c.Scheme && b.Host == c.Host
 }
 
 // authorizeReal sends the browser to the provider's consent page. The state

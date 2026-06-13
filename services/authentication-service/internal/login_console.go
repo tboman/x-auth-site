@@ -84,6 +84,12 @@ func (h *LoginHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		h.errorPage(w, "redirect_uri must be an absolute URL.")
 		return
 	}
+	// Same allow-list the social leg enforces — fail fast here rather than render
+	// a Google button that would be rejected at /v1/social/google/authorize.
+	if !redirectAllowedForTenant(h.Store, h.Issuer, tenantID, redirectURI) {
+		h.errorPage(w, "This redirect URL isn't registered for this workspace. Add it on your X-Auth dashboard, then try again.")
+		return
+	}
 
 	// Best-effort workspace name for the heading. Derived/console tenants (no
 	// registry row) just get the generic title.
