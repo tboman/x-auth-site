@@ -45,6 +45,43 @@ func TestTenantRegistryMem(t *testing.T) {
 	}
 }
 
+// TestProvisionTenantMemAtomic asserts the all-or-nothing contract: a provision
+// rejected for a slug/owner conflict must leave none of the four rows behind.
+func TestProvisionTenantMemAtomic(t *testing.T) {
+	store := NewMemStorage()
+	now := time.Now().UTC()
+	mk := func(suffix, slug, email string) (Tenant, User, Session, OIDCClient) {
+		tid := "ten_" + slug
+		owner := User{ID: "usr_" + suffix, TenantID: tid, Email: email, CreatedAt: now, UpdatedAt: now}
+		sess := Session{ID: "ses_" + suffix, TenantID: tid, UserID: owner.ID, RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		client := OIDCClient{ClientID: "cli_" + suffix, ClientSecretHash: "h", TenantID: tid, CreatedAt: now}
+		return Tenant{ID: tid, CompanyName: slug, Slug: slug, OwnerEmail: email, CreatedAt: now}, owner, sess, client
+	}
+
+	ten1, o1, s1, c1 := mk("1", "acme", "o@acme.test")
+	if err := store.ProvisionTenant(ten1, o1, s1, c1); err != nil {
+		t.Fatalf("first provision: %v", err)
+	}
+
+	// Reuses the owner email (UNIQUE) → conflict; the beta rows must NOT persist.
+	ten2, o2, s2, c2 := mk("2", "beta", "o@acme.test")
+	if err := store.ProvisionTenant(ten2, o2, s2, c2); err != ErrConflict {
+		t.Fatalf("conflicting provision: want ErrConflict, got %v", err)
+	}
+	if _, err := store.GetTenant("ten_beta"); err != ErrNotFound {
+		t.Fatalf("tenant must not persist, got %v", err)
+	}
+	if _, err := store.GetUser("ten_beta", o2.ID); err != ErrNotFound {
+		t.Fatalf("owner must not persist, got %v", err)
+	}
+	if _, err := store.GetSession("ten_beta", s2.ID); err != ErrNotFound {
+		t.Fatalf("session must not persist, got %v", err)
+	}
+	if _, err := store.GetClient(c2.ClientID); err != ErrNotFound {
+		t.Fatalf("client must not persist, got %v", err)
+	}
+}
+
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
 		"Acme Inc":              "acme-inc",

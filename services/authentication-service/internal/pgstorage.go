@@ -34,19 +34,78 @@ func NewPGStorage(pool *pgxpool.Pool) *PGStorage {
 // defaults until the interface grows ctx support.
 func bgCtx() context.Context { return context.Background() }
 
+// rowExecutor is the subset of *pgxpool.Pool and pgx.Tx that the insert helpers
+// need. Sharing it lets the single-row writers (CreateUser, …) and the
+// transactional ProvisionTenant reuse one INSERT definition per table, so the
+// column lists — and the redirect_uris/web_origins nil-guard — can't drift
+// between the two call paths.
+type rowExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func execInsertTenant(ctx context.Context, ex rowExecutor, t Tenant) error {
+	const q = `
+		INSERT INTO tenants (id, company_name, slug, owner_email, created_at)
+		VALUES ($1, $2, $3, $4, $5)`
+	_, err := ex.Exec(ctx, q, t.ID, t.CompanyName, t.Slug, t.OwnerEmail, t.CreatedAt.UTC())
+	return err
+}
+
+func execInsertUser(ctx context.Context, ex rowExecutor, u User) error {
+	const q = `
+		INSERT INTO users (id, tenant_id, email, name, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`
+	_, err := ex.Exec(ctx, q, u.ID, u.TenantID, u.Email, nullable(u.Name),
+		u.CreatedAt.UTC(), u.UpdatedAt.UTC())
+	return err
+}
+
+func execInsertSession(ctx context.Context, ex rowExecutor, sess Session) error {
+	const q = `
+		INSERT INTO sessions (
+			id, tenant_id, user_id, risk_level, step_up_completed,
+			created_at, updated_at, expires_at, invalidated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err := ex.Exec(ctx, q,
+		sess.ID, sess.TenantID, sess.UserID, sess.RiskLevel, sess.StepUpCompleted,
+		sess.CreatedAt.UTC(), sess.UpdatedAt.UTC(), sess.ExpiresAt.UTC(),
+		nullableTime(sess.InvalidatedAt))
+	return err
+}
+
+func execInsertClient(ctx context.Context, ex rowExecutor, c OIDCClient) error {
+	const q = `
+		INSERT INTO oidc_clients (client_id, client_secret_hash, tenant_id, redirect_uris, web_origins, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (client_id) DO UPDATE SET
+			client_secret_hash = EXCLUDED.client_secret_hash,
+			tenant_id          = EXCLUDED.tenant_id,
+			redirect_uris      = EXCLUDED.redirect_uris,
+			web_origins        = EXCLUDED.web_origins,
+			created_at         = EXCLUDED.created_at`
+	// Both array columns are TEXT[] NOT NULL: a nil slice encodes as SQL NULL
+	// (the column DEFAULT only applies when the column is omitted, not when NULL
+	// is passed explicitly), so coerce nil → empty array. A client registered
+	// without a redirect URI (optional at self-service signup) hits this.
+	redirects := c.RedirectURIs
+	if redirects == nil {
+		redirects = []string{}
+	}
+	origins := c.WebOrigins
+	if origins == nil {
+		origins = []string{}
+	}
+	_, err := ex.Exec(ctx, q,
+		c.ClientID, c.ClientSecretHash, c.TenantID, redirects, origins, c.CreatedAt.UTC())
+	return err
+}
+
 // ---- Users ----
 
 // CreateUser inserts a new user row. Returns ErrConflict if (tenant_id, email)
 // is already taken.
 func (s *PGStorage) CreateUser(u User) (User, error) {
-	const q = `
-		INSERT INTO users (id, tenant_id, email, name, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`
-	_, err := s.pool.Exec(bgCtx(), q,
-		u.ID, u.TenantID, u.Email, nullable(u.Name),
-		u.CreatedAt.UTC(), u.UpdatedAt.UTC(),
-	)
+	err := execInsertUser(bgCtx(), s.pool, u)
 	if isUniqueViolation(err) {
 		return User{}, ErrConflict
 	}
@@ -179,17 +238,7 @@ func (s *PGStorage) DeleteUser(tenantID, id string) error {
 
 // CreateSession inserts a new session row. Caller fills id, tenant id, timestamps.
 func (s *PGStorage) CreateSession(sess Session) (Session, error) {
-	const q = `
-		INSERT INTO sessions (
-			id, tenant_id, user_id, risk_level, step_up_completed,
-			created_at, updated_at, expires_at, invalidated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`
-	if _, err := s.pool.Exec(bgCtx(), q,
-		sess.ID, sess.TenantID, sess.UserID, sess.RiskLevel, sess.StepUpCompleted,
-		sess.CreatedAt.UTC(), sess.UpdatedAt.UTC(), sess.ExpiresAt.UTC(),
-		nullableTime(sess.InvalidatedAt),
-	); err != nil {
+	if err := execInsertSession(bgCtx(), s.pool, sess); err != nil {
 		return Session{}, fmt.Errorf("pgstorage create_session: %w", err)
 	}
 	return sess, nil
@@ -403,31 +452,7 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 // PutClient upserts an OIDC client row. Full-record replace matches
 // MemStorage's map write.
 func (s *PGStorage) PutClient(c OIDCClient) error {
-	const q = `
-		INSERT INTO oidc_clients (client_id, client_secret_hash, tenant_id, redirect_uris, web_origins, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (client_id) DO UPDATE SET
-			client_secret_hash = EXCLUDED.client_secret_hash,
-			tenant_id          = EXCLUDED.tenant_id,
-			redirect_uris      = EXCLUDED.redirect_uris,
-			web_origins        = EXCLUDED.web_origins,
-			created_at         = EXCLUDED.created_at
-	`
-	// Both array columns are TEXT[] NOT NULL: a nil slice encodes as SQL NULL
-	// (the column DEFAULT only applies when the column is omitted, not when NULL
-	// is passed explicitly), so coerce nil → empty array. A client registered
-	// without a redirect URI (optional at self-service signup) hits this.
-	redirects := c.RedirectURIs
-	if redirects == nil {
-		redirects = []string{}
-	}
-	origins := c.WebOrigins
-	if origins == nil {
-		origins = []string{}
-	}
-	if _, err := s.pool.Exec(bgCtx(), q,
-		c.ClientID, c.ClientSecretHash, c.TenantID, redirects, origins, c.CreatedAt.UTC(),
-	); err != nil {
+	if err := execInsertClient(bgCtx(), s.pool, c); err != nil {
 		return fmt.Errorf("pgstorage put_client: %w", err)
 	}
 	return nil
@@ -544,13 +569,7 @@ func (s *PGStorage) ListTenants() ([]TenantSummary, error) {
 // constraints (migration 000006) back the ErrConflict contract: a 23505 on
 // either becomes ErrConflict, exactly like the MemStorage in-memory check.
 func (s *PGStorage) CreateTenant(t Tenant) (Tenant, error) {
-	const q = `
-		INSERT INTO tenants (id, company_name, slug, owner_email, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`
-	_, err := s.pool.Exec(bgCtx(), q,
-		t.ID, t.CompanyName, t.Slug, t.OwnerEmail, t.CreatedAt.UTC(),
-	)
+	err := execInsertTenant(bgCtx(), s.pool, t)
 	if isUniqueViolation(err) {
 		return Tenant{}, ErrConflict
 	}
@@ -558,6 +577,41 @@ func (s *PGStorage) CreateTenant(t Tenant) (Tenant, error) {
 		return Tenant{}, fmt.Errorf("pgstorage create_tenant: %w", err)
 	}
 	return t, nil
+}
+
+// ProvisionTenant writes the four signup rows in one transaction. Any error
+// rolls the whole unit back (via the deferred Rollback, a no-op after Commit),
+// so a failure at the client step can't leave an orphaned tenant + owner — the
+// exact gap that the non-transactional sequence left when redirect_uris was nil.
+func (s *PGStorage) ProvisionTenant(t Tenant, owner User, sess Session, client OIDCClient) error {
+	ctx := bgCtx()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pgstorage provision begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	steps := []struct {
+		name string
+		run  func() error
+	}{
+		{"tenant", func() error { return execInsertTenant(ctx, tx, t) }},
+		{"user", func() error { return execInsertUser(ctx, tx, owner) }},
+		{"session", func() error { return execInsertSession(ctx, tx, sess) }},
+		{"client", func() error { return execInsertClient(ctx, tx, client) }},
+	}
+	for _, step := range steps {
+		if err := step.run(); err != nil {
+			if isUniqueViolation(err) {
+				return ErrConflict
+			}
+			return fmt.Errorf("pgstorage provision %s: %w", step.name, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("pgstorage provision commit: %w", err)
+	}
+	return nil
 }
 
 // GetTenant returns the registry row for id, or ErrNotFound.

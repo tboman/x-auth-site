@@ -209,50 +209,44 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 
 	now := time.Now().UTC()
 	tenantID := "ten_" + slug
-	if _, err := h.Store.CreateTenant(Tenant{
-		ID: tenantID, CompanyName: intent.Company, Slug: slug, OwnerEmail: email, CreatedAt: now,
-	}); err != nil {
-		if errors.Is(err, ErrConflict) {
-			h.errorPage(w, http.StatusConflict,
-				`The name "`+intent.Company+`" is already taken. Please choose another.`, "/admin/signup")
-			return
-		}
-		h.Logger.Error("signup_create_tenant_failed", "err", err, "tenant_id", tenantID)
-		h.errorPage(w, http.StatusBadGateway, "Could not create your workspace. Try again.", "/admin/signup")
-		return
-	}
 
-	// Owner user + session in the new tenant.
-	owner, err := h.Store.CreateUser(User{
+	// Build the whole workspace up front, then commit it in one atomic unit:
+	// tenant registry row, owner user, owner session, and the confidential OIDC
+	// client. Provisioning these separately could orphan a tenant (and burn the
+	// owner's email, which is UNIQUE) if a later step failed — see the
+	// redirect_uris regression that motivated ProvisionTenant.
+	owner := User{
 		ID: "usr_" + uuid.NewString(), TenantID: tenantID, Email: email, CreatedAt: now, UpdatedAt: now,
-	})
-	if err != nil {
-		h.Logger.Error("signup_create_owner_failed", "err", err, "tenant_id", tenantID)
-		h.errorPage(w, http.StatusBadGateway, "Could not create your owner account.", "/admin/signup")
-		return
 	}
-	sess, ok := h.mintOwnerSession(tenantID, email)
-	if !ok {
-		h.errorPage(w, http.StatusBadGateway, "Could not start your session.", "/admin/signup")
-		return
+	sess := Session{
+		ID: "ses_" + uuid.NewString(), TenantID: tenantID, UserID: owner.ID, RiskLevel: RiskLow,
+		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Duration(SessionTTLSeconds) * time.Second),
 	}
-	_ = owner
-
 	// Confidential OIDC client: random id + random secret. Only the SHA-256
 	// hash is stored; the plaintext is shown to the owner exactly once below.
 	clientID := "cli_" + randToken(8)
 	secret := randToken(32)
 	redirects, origins := redirectAndOrigin(intent.Redirect)
-	if err := h.Store.PutClient(OIDCClient{
+	client := OIDCClient{
 		ClientID:         clientID,
 		ClientSecretHash: HashToken(secret),
 		TenantID:         tenantID,
 		RedirectURIs:     redirects,
 		WebOrigins:       origins,
 		CreatedAt:        now,
-	}); err != nil {
-		h.Logger.Error("signup_create_client_failed", "err", err, "tenant_id", tenantID)
-		h.errorPage(w, http.StatusBadGateway, "Could not create your OIDC client.", "/admin/signup")
+	}
+	tenant := Tenant{
+		ID: tenantID, CompanyName: intent.Company, Slug: slug, OwnerEmail: email, CreatedAt: now,
+	}
+
+	if err := h.Store.ProvisionTenant(tenant, owner, sess, client); err != nil {
+		if errors.Is(err, ErrConflict) {
+			h.errorPage(w, http.StatusConflict,
+				`The name "`+intent.Company+`" is already taken. Please choose another.`, "/admin/signup")
+			return
+		}
+		h.Logger.Error("signup_provision_failed", "err", err, "tenant_id", tenantID)
+		h.errorPage(w, http.StatusBadGateway, "Could not create your workspace. Try again.", "/admin/signup")
 		return
 	}
 

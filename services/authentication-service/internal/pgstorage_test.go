@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -652,5 +652,59 @@ func TestPGStorageClients(t *testing.T) {
 
 	if _, err := s.GetClient("cli_unknown"); err != ErrNotFound {
 		t.Fatalf("unknown client should be ErrNotFound, got %v", err)
+	}
+}
+
+// TestPGStorageProvisionTenant exercises the transactional signup path against
+// real Postgres: the happy path with a client that has NO redirect URIs (the
+// exact nil-slice shape that violated redirect_uris NOT NULL before the fix),
+// and a mid-transaction failure that must roll the whole unit back.
+func TestPGStorageProvisionTenant(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// Happy path. RedirectURIs/WebOrigins left nil — a signup without a redirect.
+	ten := Tenant{ID: "ten_acme", CompanyName: "Acme", Slug: "acme", OwnerEmail: "o@acme.test", CreatedAt: now}
+	owner := User{ID: "usr_o1", TenantID: "ten_acme", Email: "o@acme.test", CreatedAt: now, UpdatedAt: now}
+	sess := Session{ID: "ses_o1", TenantID: "ten_acme", UserID: "usr_o1", RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	client := OIDCClient{ClientID: "cli_o1", ClientSecretHash: "h", TenantID: "ten_acme", CreatedAt: now}
+	if err := s.ProvisionTenant(ten, owner, sess, client); err != nil {
+		t.Fatalf("provision with nil redirect_uris: %v", err)
+	}
+	for _, check := range []func() error{
+		func() error { _, e := s.GetTenant("ten_acme"); return e },
+		func() error { _, e := s.GetUser("ten_acme", "usr_o1"); return e },
+		func() error { _, e := s.GetSession("ten_acme", "ses_o1"); return e },
+		func() error { _, e := s.GetClient("cli_o1"); return e },
+	} {
+		if err := check(); err != nil {
+			t.Fatalf("row missing after provision: %v", err)
+		}
+	}
+	if got, _ := s.GetClient("cli_o1"); len(got.RedirectURIs) != 0 {
+		t.Fatalf("redirect_uris want empty, got %#v", got.RedirectURIs)
+	}
+
+	// Atomic rollback: force a failure at the 3rd step (session) by colliding on
+	// an existing session id. The tenant + owner written earlier in the SAME
+	// transaction must be rolled back — nothing left behind.
+	if _, err := s.CreateSession(Session{ID: "ses_dup", TenantID: "ten_acme", UserID: "usr_o1", RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatalf("seed dup session: %v", err)
+	}
+	ten2 := Tenant{ID: "ten_gamma", CompanyName: "Gamma", Slug: "gamma", OwnerEmail: "g@gamma.test", CreatedAt: now}
+	owner2 := User{ID: "usr_o2", TenantID: "ten_gamma", Email: "g@gamma.test", CreatedAt: now, UpdatedAt: now}
+	collide := Session{ID: "ses_dup", TenantID: "ten_gamma", UserID: "usr_o2", RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	client2 := OIDCClient{ClientID: "cli_o2", ClientSecretHash: "h", TenantID: "ten_gamma", CreatedAt: now}
+	if err := s.ProvisionTenant(ten2, owner2, collide, client2); err != ErrConflict {
+		t.Fatalf("provision with duplicate session id: want ErrConflict, got %v", err)
+	}
+	if _, err := s.GetTenant("ten_gamma"); err != ErrNotFound {
+		t.Fatalf("tenant must roll back, got %v", err)
+	}
+	if _, err := s.GetUser("ten_gamma", "usr_o2"); err != ErrNotFound {
+		t.Fatalf("owner must roll back, got %v", err)
+	}
+	if _, err := s.GetClient("cli_o2"); err != ErrNotFound {
+		t.Fatalf("client must be absent, got %v", err)
 	}
 }

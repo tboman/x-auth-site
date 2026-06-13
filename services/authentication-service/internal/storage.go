@@ -75,6 +75,14 @@ type Storage interface {
 	GetTenantBySlug(slug string) (Tenant, error)
 	GetTenantByOwnerEmail(email string) (Tenant, error)
 
+	// ProvisionTenant atomically creates a complete self-service workspace —
+	// the tenant registry row, its owner user, the owner's initial session, and
+	// the confidential OIDC client — in a single all-or-nothing unit. A failure
+	// at any step must leave NO rows behind (the alternative orphans a tenant
+	// with no client, blocking the owner's email from a clean retry). Returns
+	// ErrConflict if the slug or owner email is already taken.
+	ProvisionTenant(t Tenant, owner User, sess Session, client OIDCClient) error
+
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -492,6 +500,29 @@ func (s *MemStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 		}
 	}
 	return Tenant{}, ErrNotFound
+}
+
+// ProvisionTenant writes the tenant, owner, session, and client under one lock.
+// All conflict checks run before any write, so a rejected provision leaves the
+// store untouched — the in-memory analogue of the PGStorage transaction.
+func (s *MemStorage) ProvisionTenant(t Tenant, owner User, sess Session, client OIDCClient) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.tenants {
+		if existing.Slug == t.Slug || existing.OwnerEmail == t.OwnerEmail {
+			return ErrConflict
+		}
+	}
+	for _, u := range s.users {
+		if u.TenantID == owner.TenantID && u.Email == owner.Email {
+			return ErrConflict
+		}
+	}
+	s.tenants[t.ID] = t
+	s.users[owner.ID] = owner
+	s.sessions[sess.ID] = sess
+	s.clients[client.ClientID] = client
+	return nil
 }
 
 // ---- Maintenance ----
