@@ -151,6 +151,10 @@ func TestSocialGoogleRealAuthorizeRedirectsToProvider(t *testing.T) {
 	if st := q.Get("state"); st == "" || st == "caller-state-1" {
 		t.Errorf("provider state = %q, want a fresh nonce", st)
 	}
+	// Force the account chooser rather than silent reuse of a live session.
+	if got := q.Get("prompt"); got != "select_account" {
+		t.Errorf("prompt = %q, want select_account", got)
+	}
 }
 
 func TestSocialGoogleRealCallbackRoundTrip(t *testing.T) {

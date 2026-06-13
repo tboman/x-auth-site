@@ -283,6 +283,11 @@ func (h *SocialHandlers) authorizeReal(w http.ResponseWriter, r *http.Request, c
 	aq.Set("state", nonce)
 	aq.Set("code_challenge", challenge)
 	aq.Set("code_challenge_method", "S256")
+	// Force the account chooser (OIDC prompt=select_account) so a user with a
+	// live provider session still picks which account to use, instead of being
+	// silently signed in with their single/last one. Honoured by Google and any
+	// OIDC-compliant provider.
+	aq.Set("prompt", "select_account")
 	authz.RawQuery = aq.Encode()
 	http.Redirect(w, r, authz.String(), http.StatusFound)
 }
