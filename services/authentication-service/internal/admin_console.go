@@ -39,18 +39,23 @@ type AdminConsoleHandlers struct {
 	// permitted to administer. Empty means no one can sign in (deny by
 	// default) — a deployment must set ADMIN_EMAILS explicitly.
 	AllowedEmails map[string]bool
+
+	// EnvOrigins is the CORS_ALLOWED_ORIGINS env baseline, shown read-only on
+	// the client-management page so the operator can see the global origins
+	// that apply regardless of per-client web origins.
+	EnvOrigins []string
 }
 
 // NewAdminConsoleHandlers builds the handler set, normalising the allowlist to
 // lower-case for case-insensitive comparison.
-func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails []string) *AdminConsoleHandlers {
+func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails, envOrigins []string) *AdminConsoleHandlers {
 	allow := make(map[string]bool, len(emails))
 	for _, e := range emails {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
 			allow[e] = true
 		}
 	}
-	return &AdminConsoleHandlers{Store: store, Logger: logger, Issuer: issuer, AllowedEmails: allow}
+	return &AdminConsoleHandlers{Store: store, Logger: logger, Issuer: issuer, AllowedEmails: allow, EnvOrigins: envOrigins}
 }
 
 func (h *AdminConsoleHandlers) isAllowed(email string) bool {
@@ -77,6 +82,10 @@ h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.02;margin:0 0 12px;letter-spac
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
 button,.btn{appearance:none;border:0;border-radius:6px;background:var(--accent);color:#00150e;font-weight:800;padding:10px 14px;text-decoration:none;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .btn.secondary,button.secondary{background:#22232b;color:var(--text);border:1px solid var(--line)}
+button.danger{background:var(--danger);color:#1a0000}
+label{display:block;color:var(--muted);font-size:.83rem;margin:12px 0 5px}
+input,textarea{width:100%;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:10px 12px;font:inherit}
+textarea{resize:vertical}h2{font-size:1.2rem}h3{font-size:1rem}
 code{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
 table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-top:1px solid var(--line);padding:10px 8px;text-align:left;vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}
@@ -120,13 +129,173 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.page(w, http.StatusOK, "X-Auth admin — tenants", `<h1>Tenants</h1>
-<p class="muted">Signed in as <strong>`+html.EscapeString(admin.User.Email)+`</strong>. `+
-		itoa(len(tenants))+` tenant(s). Derived from existing users and sessions — phase 1 has no tenant registry.</p>
+	h.page(w, http.StatusOK, "X-Auth admin", `<h1>Administration</h1>
+<p class="muted">Signed in as <strong>`+html.EscapeString(admin.User.Email)+`</strong>.</p>
 <form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>
+<h2 style="margin-top:28px">Tenants</h2>
+<p class="muted">`+itoa(len(tenants))+` tenant(s). Derived from existing users and sessions — phase 1 has no tenant registry.</p>
 <div class="panel"><table>
 <thead><tr><th>Tenant</th><th>Users</th><th>Sessions</th><th>Last activity (UTC)</th></tr></thead>
-<tbody>`+rows.String()+`</tbody></table></div>`)
+<tbody>`+rows.String()+`</tbody></table></div>`+
+		h.clientsSection())
+}
+
+// clientsSection renders the OIDC client-management block: the env CORS
+// baseline (read-only), the list of registered clients with delete buttons,
+// and the registration form.
+func (h *AdminConsoleHandlers) clientsSection() string {
+	clients, err := h.Store.ListClients()
+	if err != nil {
+		h.Logger.Error("admin_list_clients_failed", "err", err)
+		return `<h2 style="margin-top:32px">OIDC clients</h2><p class="err">Could not load clients.</p>`
+	}
+
+	var rows strings.Builder
+	if len(clients) == 0 {
+		rows.WriteString(`<tr><td colspan="4" class="muted">No clients registered.</td></tr>`)
+	} else {
+		for _, c := range clients {
+			rows.WriteString(`<tr><td><code>` + html.EscapeString(c.ClientID) + `</code></td>`)
+			rows.WriteString(`<td>` + originList(c.RedirectURIs) + `</td>`)
+			rows.WriteString(`<td>` + originList(c.WebOrigins) + `</td>`)
+			rows.WriteString(`<td><form method="post" action="/admin/clients/delete" ` +
+				`onsubmit="return confirm('Delete client ` + html.EscapeString(c.ClientID) + `?')">` +
+				`<input type="hidden" name="client_id" value="` + html.EscapeString(c.ClientID) + `">` +
+				`<button class="danger" type="submit">Delete</button></form></td></tr>`)
+		}
+	}
+
+	envOrigins := `<span class="muted">none</span>`
+	if len(h.EnvOrigins) > 0 {
+		envOrigins = originList(h.EnvOrigins)
+	}
+
+	return `<h2 style="margin-top:32px">OIDC clients</h2>
+<p class="muted">Public PKCE clients. An origin is allowed for browser calls (/token, /userinfo, /revoke)
+if it is a global env origin <em>or</em> a registered client's web origin.</p>
+<div class="panel">
+<p class="muted">Global origins (from <code>CORS_ALLOWED_ORIGINS</code> env): ` + envOrigins + `</p>
+<table>
+<thead><tr><th>Client ID</th><th>Redirect URIs</th><th>Web origins</th><th></th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table>
+</div>
+<div class="panel">
+<h3 style="margin:0 0 8px">Register a client</h3>
+<form method="post" action="/admin/clients">
+<label>Client ID</label>
+<input name="client_id" placeholder="unlimitedfreight-web" required>
+<label>Redirect URIs (one per line)</label>
+<textarea name="redirect_uris" rows="3" placeholder="https://unlimitedfreight.com/callback.html"></textarea>
+<label>Web origins (one per line, for CORS)</label>
+<textarea name="web_origins" rows="2" placeholder="https://unlimitedfreight.com"></textarea>
+<div class="actions"><button type="submit">Register client</button></div>
+</form>
+<p class="muted" style="margin-top:10px">⚠️ Clients registered here live in memory and are lost on redeploy.
+To make one permanent, add it to the <code>OIDC_CLIENTS</code> env var (and origins to
+<code>CORS_ALLOWED_ORIGINS</code>) on the Cloud Run service.</p>
+</div>`
+}
+
+// RegisterClient handles POST /admin/clients.
+func (h *AdminConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.currentAdmin(w, r); !ok {
+		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.loginError(w, "Could not parse the form.")
+		return
+	}
+	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
+	redirects := splitLines(r.PostForm.Get("redirect_uris"))
+	origins := splitLines(r.PostForm.Get("web_origins"))
+
+	if clientID == "" {
+		h.loginError(w, "client_id is required.")
+		return
+	}
+	if len(redirects) == 0 {
+		h.loginError(w, "At least one redirect URI is required.")
+		return
+	}
+	for _, u := range redirects {
+		parsed, err := url.Parse(u)
+		if err != nil || !parsed.IsAbs() {
+			h.loginError(w, "Redirect URI must be an absolute URL: "+u)
+			return
+		}
+	}
+	for i, o := range origins {
+		origins[i] = strings.TrimRight(o, "/")
+	}
+
+	if err := h.Store.PutClient(OIDCClient{
+		ClientID:     clientID,
+		RedirectURIs: redirects,
+		WebOrigins:   origins,
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		h.Logger.Error("admin_register_client_failed", "err", err, "client_id", clientID)
+		h.loginErrorStatus(w, http.StatusBadGateway, "Could not register the client.")
+		return
+	}
+	h.Logger.Info("admin_client_registered", "client_id", clientID, "by", "admin")
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// DeleteClient handles POST /admin/clients/delete.
+func (h *AdminConsoleHandlers) DeleteClient(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.currentAdmin(w, r); !ok {
+		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.loginError(w, "Could not parse the form.")
+		return
+	}
+	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
+	if clientID == "" {
+		h.loginError(w, "client_id is required.")
+		return
+	}
+	if err := h.Store.DeleteClient(clientID); err != nil && err != ErrNotFound {
+		h.Logger.Error("admin_delete_client_failed", "err", err, "client_id", clientID)
+		h.loginErrorStatus(w, http.StatusBadGateway, "Could not delete the client.")
+		return
+	}
+	h.Logger.Info("admin_client_deleted", "client_id", clientID)
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// splitLines splits a textarea value into trimmed, non-empty, de-duplicated
+// lines (also tolerating comma separation).
+func splitLines(raw string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	}) {
+		if f = strings.TrimSpace(f); f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// originList renders a slice as escaped <code> chips, or an em dash if empty.
+func originList(items []string) string {
+	if len(items) == 0 {
+		return `<span class="muted">—</span>`
+	}
+	var b strings.Builder
+	for i, it := range items {
+		if i > 0 {
+			b.WriteString("<br>")
+		}
+		b.WriteString(`<code>` + html.EscapeString(it) + `</code>`)
+	}
+	return b.String()
 }
 
 // LoginGoogle starts the real Google social login, returning to the admin

@@ -84,7 +84,7 @@ func Router(d Deps) http.Handler {
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
-	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails)
+	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -99,7 +99,7 @@ func Router(d Deps) http.Handler {
 	// fetch-able routes additionally answer OPTIONS preflights (the /userinfo
 	// Authorization header triggers one). /authorize is top-level navigation
 	// and needs no CORS.
-	withCORS := func(h http.HandlerFunc) http.Handler { return corsHandler(d.CORSOrigins, h) }
+	withCORS := func(h http.HandlerFunc) http.Handler { return corsHandler(d.CORSOrigins, d.Store, h) }
 
 	// OIDC discovery — static JSON.
 	mux.Handle("GET /.well-known/oauth-authorization-server", withCORS(oidc.OAuthMetadata))
@@ -143,6 +143,8 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /admin/login/google", admin.LoginGoogle)
 	mux.HandleFunc("GET /admin/social/callback", admin.SocialCallback)
 	mux.HandleFunc("POST /admin/logout", admin.Logout)
+	mux.HandleFunc("POST /admin/clients", admin.RegisterClient)
+	mux.HandleFunc("POST /admin/clients/delete", admin.DeleteClient)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
 	// these routes with tenantx.Middleware without firing it for OIDC traffic.

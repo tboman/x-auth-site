@@ -102,6 +102,52 @@ func TestPGStorageListTenants(t *testing.T) {
 	}
 }
 
+func TestPGStorageClientListDeleteWebOrigins(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	c := OIDCClient{
+		ClientID:     "uf_" + uuid.NewString(),
+		RedirectURIs: []string{"https://unlimitedfreight.com/cb"},
+		WebOrigins:   []string{"https://unlimitedfreight.com"},
+		CreatedAt:    now,
+	}
+	if err := s.PutClient(c); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	got, err := s.GetClient(c.ClientID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.WebOrigins) != 1 || got.WebOrigins[0] != "https://unlimitedfreight.com" {
+		t.Fatalf("web_origins roundtrip wrong: %+v", got)
+	}
+
+	clients, err := s.ListClients()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, cl := range clients {
+		if cl.ClientID == c.ClientID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("registered client missing from ListClients")
+	}
+
+	if err := s.DeleteClient(c.ClientID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetClient(c.ClientID); err != ErrNotFound {
+		t.Fatalf("after delete want ErrNotFound, got %v", err)
+	}
+	if err := s.DeleteClient(c.ClientID); err != ErrNotFound {
+		t.Fatalf("re-delete want ErrNotFound, got %v", err)
+	}
+}
+
 func TestPGStorageUserRoundTrip(t *testing.T) {
 	s := newPGStorage(t)
 	u := seedPGUser(t, s, "tenant-a", "alice@acme.test")

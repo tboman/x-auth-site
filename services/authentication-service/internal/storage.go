@@ -54,6 +54,11 @@ type Storage interface {
 	// OIDC clients
 	PutClient(c OIDCClient) error
 	GetClient(clientID string) (OIDCClient, error)
+	// ListClients returns every registered client, newest first. Used by the
+	// admin console's client-management view.
+	ListClients() ([]OIDCClient, error)
+	// DeleteClient removes a client by id. Returns ErrNotFound if absent.
+	DeleteClient(clientID string) error
 
 	// ListTenants derives the set of tenants from existing records. There is no
 	// tenant registry in phase 1 — tenants spring into existence on first use —
@@ -354,6 +359,34 @@ func (s *MemStorage) GetClient(clientID string) (OIDCClient, error) {
 		return OIDCClient{}, ErrNotFound
 	}
 	return c, nil
+}
+
+// ListClients returns every registered client, newest first.
+func (s *MemStorage) ListClients() ([]OIDCClient, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]OIDCClient, 0, len(s.clients))
+	for _, c := range s.clients {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ClientID < out[j].ClientID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// DeleteClient removes a client by id.
+func (s *MemStorage) DeleteClient(clientID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.clients[clientID]; !ok {
+		return ErrNotFound
+	}
+	delete(s.clients, clientID)
+	return nil
 }
 
 // ---- Tenants (derived) ----

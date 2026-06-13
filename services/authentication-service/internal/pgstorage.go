@@ -404,15 +404,20 @@ func (s *PGStorage) ConsumeAuthCode(code string) (AuthCode, error) {
 // MemStorage's map write.
 func (s *PGStorage) PutClient(c OIDCClient) error {
 	const q = `
-		INSERT INTO oidc_clients (client_id, client_secret_hash, redirect_uris, created_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO oidc_clients (client_id, client_secret_hash, redirect_uris, web_origins, created_at)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (client_id) DO UPDATE SET
 			client_secret_hash = EXCLUDED.client_secret_hash,
 			redirect_uris      = EXCLUDED.redirect_uris,
+			web_origins        = EXCLUDED.web_origins,
 			created_at         = EXCLUDED.created_at
 	`
+	origins := c.WebOrigins
+	if origins == nil {
+		origins = []string{}
+	}
 	if _, err := s.pool.Exec(bgCtx(), q,
-		c.ClientID, c.ClientSecretHash, c.RedirectURIs, c.CreatedAt.UTC(),
+		c.ClientID, c.ClientSecretHash, c.RedirectURIs, origins, c.CreatedAt.UTC(),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_client: %w", err)
 	}
@@ -422,13 +427,13 @@ func (s *PGStorage) PutClient(c OIDCClient) error {
 // GetClient reads an OIDC client by client id.
 func (s *PGStorage) GetClient(clientID string) (OIDCClient, error) {
 	const q = `
-		SELECT client_id, client_secret_hash, redirect_uris, created_at
+		SELECT client_id, client_secret_hash, redirect_uris, web_origins, created_at
 		  FROM oidc_clients
 		 WHERE client_id = $1
 	`
 	var c OIDCClient
 	err := s.pool.QueryRow(bgCtx(), q, clientID).Scan(
-		&c.ClientID, &c.ClientSecretHash, &c.RedirectURIs, &c.CreatedAt,
+		&c.ClientID, &c.ClientSecretHash, &c.RedirectURIs, &c.WebOrigins, &c.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OIDCClient{}, ErrNotFound
@@ -438,6 +443,46 @@ func (s *PGStorage) GetClient(clientID string) (OIDCClient, error) {
 	}
 	c.CreatedAt = c.CreatedAt.UTC()
 	return c, nil
+}
+
+// ListClients returns every registered client, newest first.
+func (s *PGStorage) ListClients() ([]OIDCClient, error) {
+	const q = `
+		SELECT client_id, client_secret_hash, redirect_uris, web_origins, created_at
+		  FROM oidc_clients
+		 ORDER BY created_at DESC, client_id ASC
+	`
+	rows, err := s.pool.Query(bgCtx(), q)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_clients: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]OIDCClient, 0)
+	for rows.Next() {
+		var c OIDCClient
+		if err := rows.Scan(&c.ClientID, &c.ClientSecretHash, &c.RedirectURIs, &c.WebOrigins, &c.CreatedAt); err != nil {
+			return nil, fmt.Errorf("pgstorage list_clients scan: %w", err)
+		}
+		c.CreatedAt = c.CreatedAt.UTC()
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_clients rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteClient removes a client by id.
+func (s *PGStorage) DeleteClient(clientID string) error {
+	tag, err := s.pool.Exec(bgCtx(), `DELETE FROM oidc_clients WHERE client_id = $1`, clientID)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_client: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---- Tenants (derived) ----

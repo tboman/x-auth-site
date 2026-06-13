@@ -191,7 +191,13 @@ type OIDCClient struct {
 	ClientID         string    `json:"client_id"`
 	ClientSecretHash string    `json:"-"` // never marshal the hash back to the wire
 	RedirectURIs     []string  `json:"redirect_uris"`
-	CreatedAt        time.Time `json:"created_at"`
+	// WebOrigins are the browser origins (scheme://host[:port]) allowed to make
+	// cross-origin fetch calls to the public OIDC surface on this client's
+	// behalf. The CORS handler unions these with the CORS_ALLOWED_ORIGINS env
+	// baseline, so a client registered through the admin console can call
+	// /token from its SPA without an env change + redeploy.
+	WebOrigins []string  `json:"web_origins,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // SocialProfile is the canned profile returned by a social-login stub callback.

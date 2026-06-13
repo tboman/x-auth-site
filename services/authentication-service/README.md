@@ -105,6 +105,17 @@ email revokes access immediately, even mid-session). The tenant listing is
 aggregates distinct `tenant_id`s across users and sessions with per-tenant
 counts and last-activity, newest first.
 
+The console also manages **OIDC clients**: it lists every registered client
+(including those seeded from `OIDC_CLIENTS`), and an admin can register a new
+public PKCE client (client id + redirect URIs + web origins) or delete one.
+Clients carry their own `web_origins` (migration `000004`); the CORS handler
+allows an origin if it is in the `CORS_ALLOWED_ORIGINS` env baseline **or** any
+registered client's web origins, consulted from the store per request — so a
+client registered in the console can call `/token` from its SPA immediately,
+with no env change or redeploy. Clients registered through the console live in
+the store and (under in-memory storage) do **not** survive a restart; the
+register form surfaces the `OIDC_CLIENTS` snippet to promote one to permanent.
+
 > **Hardening — public `/v1` admin tree lockdown (`V1_INTERNAL_ONLY`).**
 > `POST /v1/users` and `POST /v1/sessions` have no browser-facing caller (the
 > consoles and social login mutate users/sessions through the in-process Store;

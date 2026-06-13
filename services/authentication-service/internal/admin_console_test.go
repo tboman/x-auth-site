@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,140 @@ func TestListTenantsAggregation(t *testing.T) {
 	}
 	if byID["ten_y"].Users != 1 || byID["ten_y"].Sessions != 0 {
 		t.Errorf("ten_y counts wrong: %+v", byID["ten_y"])
+	}
+}
+
+// adminCookie signs in an allowlisted admin and returns the session cookie.
+func adminCookie(t *testing.T, r http.Handler, store Storage, email string) string {
+	t.Helper()
+	sess := seedAdminSession(t, store, email)
+	cb := driveAdminCallback(t, r, sess.ID)
+	c := sessionCookie(cb, adminSessionCookie)
+	if c == "" {
+		t.Fatalf("admin sign-in failed: %d", cb.Code)
+	}
+	return c
+}
+
+func TestAdminRegisterAndDeleteClient(t *testing.T) {
+	r, store := newAdminRouter(t, "tomasboman@gmail.com")
+	cookie := adminCookie(t, r, store, "tomasboman@gmail.com")
+
+	// Register a client with redirect URIs + web origins.
+	form := url.Values{
+		"client_id":     {"unlimitedfreight-web"},
+		"redirect_uris": {"https://unlimitedfreight.com/callback.html\nhttp://localhost:3000/callback.html"},
+		"web_origins":   {"https://unlimitedfreight.com"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/clients", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("register: want 302, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	got, err := store.GetClient("unlimitedfreight-web")
+	if err != nil {
+		t.Fatalf("client not stored: %v", err)
+	}
+	if len(got.RedirectURIs) != 2 || len(got.WebOrigins) != 1 || got.WebOrigins[0] != "https://unlimitedfreight.com" {
+		t.Fatalf("client stored wrong: %+v", got)
+	}
+
+	// It appears on the admin page.
+	home := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	home.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	hw := httptest.NewRecorder()
+	r.ServeHTTP(hw, home)
+	if !strings.Contains(hw.Body.String(), "unlimitedfreight-web") {
+		t.Fatal("registered client not shown on admin page")
+	}
+
+	// Delete it.
+	del := url.Values{"client_id": {"unlimitedfreight-web"}}
+	dreq := httptest.NewRequest(http.MethodPost, "/admin/clients/delete", strings.NewReader(del.Encode()))
+	dreq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	dreq.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	dw := httptest.NewRecorder()
+	r.ServeHTTP(dw, dreq)
+	if dw.Code != http.StatusFound {
+		t.Fatalf("delete: want 302, got %d", dw.Code)
+	}
+	if _, err := store.GetClient("unlimitedfreight-web"); err != ErrNotFound {
+		t.Fatalf("client should be gone, got %v", err)
+	}
+}
+
+func TestAdminClientMgmtRequiresAdmin(t *testing.T) {
+	r, _ := newAdminRouter(t, "tomasboman@gmail.com")
+	// No admin cookie -> register and delete are both refused (403).
+	for _, path := range []string{"/admin/clients", "/admin/clients/delete"} {
+		form := url.Values{"client_id": {"x"}, "redirect_uris": {"https://x.test/cb"}}
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s without admin: want 403, got %d", path, w.Code)
+		}
+	}
+}
+
+// TestDynamicCORSFromRegisteredClient pins that a registered client's web
+// origin is honored by the CORS handler without being in the env baseline.
+func TestDynamicCORSFromRegisteredClient(t *testing.T) {
+	r, store := newAdminRouter(t, "tomasboman@gmail.com")
+	const origin = "https://unlimitedfreight.com"
+
+	// Before registration: origin not allowed (no Allow-Origin header).
+	pre := httptest.NewRequest(http.MethodOptions, "/token", nil)
+	pre.Header.Set("Origin", origin)
+	pw := httptest.NewRecorder()
+	r.ServeHTTP(pw, pre)
+	if pw.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("origin must not be allowed before registration")
+	}
+
+	if err := store.PutClient(OIDCClient{
+		ClientID: "uf", RedirectURIs: []string{"https://unlimitedfreight.com/cb"},
+		WebOrigins: []string{origin}, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("put client: %v", err)
+	}
+
+	// After registration: the preflight echoes the origin.
+	post := httptest.NewRequest(http.MethodOptions, "/token", nil)
+	post.Header.Set("Origin", origin)
+	pow := httptest.NewRecorder()
+	r.ServeHTTP(pow, post)
+	if pow.Header().Get("Access-Control-Allow-Origin") != origin {
+		t.Fatalf("registered origin must be allowed; got %q", pow.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestListAndDeleteClientsMem(t *testing.T) {
+	store := NewMemStorage()
+	now := time.Now().UTC()
+	for _, id := range []string{"c1", "c2"} {
+		if err := store.PutClient(OIDCClient{ClientID: id, RedirectURIs: []string{"https://x/cb"}, CreatedAt: now}); err != nil {
+			t.Fatalf("put %s: %v", id, err)
+		}
+	}
+	clients, err := store.ListClients()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	// Includes the default seeded client + c1 + c2.
+	if len(clients) < 3 {
+		t.Fatalf("want >=3 clients, got %d", len(clients))
+	}
+	if err := store.DeleteClient("c1"); err != nil {
+		t.Fatalf("delete c1: %v", err)
+	}
+	if err := store.DeleteClient("c1"); err != ErrNotFound {
+		t.Fatalf("re-delete c1: want ErrNotFound, got %v", err)
 	}
 }
 
