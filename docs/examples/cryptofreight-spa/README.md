@@ -13,22 +13,22 @@ Files:
 
 ## How the chain works
 
-X-Auth's `/authorize` has no login UI yet (phase-1 stub), so identity comes
-from the social leg first:
+Identity comes from a hosted login leg first (X-Auth's `/authorize` mints the
+code but does not host the login UI in this two-leg model):
 
-1. `login()` → `/v1/social/google/authorize` → **Google consent** → X-Auth
-   callback verifies the code (PKCE) → redirects to `callback.html` with
-   `session_id` + `user_id`.
+1. `login()` → X-Auth's hosted chooser `/login`, where the user picks a method
+   (**Google** or **phone**). The method leg authenticates and redirects to
+   `callback.html` with `session_id` + `user_id`.
 2. `callback.html` immediately redirects to `/authorize` (OIDC leg) with
-   PKCE + `tenant_id` + the verified `user_id` → back to `callback.html`
-   with a one-shot `code`.
+   PKCE + `tenant_id` → back to `callback.html` with a one-shot `code`.
+   (X-Auth derives the user from the session cookie the leg set, so no
+   `user_id` is forwarded.)
 3. `auth.js` POSTs the `token_endpoint` with the PKCE verifier → stores the
    JWT access token / ID token / refresh token in `sessionStorage`, fetches
    `/userinfo`, and lands on a clean URL.
 
-When X-Auth grows a real login UI on `/authorize`, leg 1 disappears and
-`login()` starts at the `authorization_endpoint` directly — the rest of this
-client is already standard OIDC.
+`/login` is the single entry point — point your login button there and X-Auth
+owns the method selection (and can grow new methods) without client changes.
 
 ## X-Auth side — required environment
 

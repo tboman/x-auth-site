@@ -48,10 +48,11 @@ or with `acr_values=urn:xauth:otp:sms` to exercise the SMS-OTP interlude.
 
 ## Step 1 — the login button
 
-Link (or redirect) the browser to X-Auth's social authorize endpoint:
+Link (or redirect) the browser to X-Auth's hosted login chooser, where the
+visitor picks a method (Google or phone):
 
 ```
-GET <XAUTH_URL>/v1/social/google/authorize
+GET <XAUTH_URL>/login
       ?tenant_id=ten_cryptofreight
       &redirect_uri=https://cryptofreight.org/auth/callback
       &state=<random, stored in the visitor's cookie/session>
@@ -60,10 +61,17 @@ GET <XAUTH_URL>/v1/social/google/authorize
 - `state` is **your app's** CSRF token for this flow: generate ≥16 random
   bytes per login attempt, stash it (signed cookie or server session), and
   compare on the way back. X-Auth echoes it verbatim; it is never forwarded
-  to Google.
-- `redirect_uri` is where X-Auth sends the result. ⚠️ Today it is **not
-  allowlisted** (per-tenant redirect-URI registration is a phase-3 item), so
-  the `state` check is your only flow-integrity guard — do not skip it.
+  to the provider.
+- `redirect_uri` **must be registered** for your tenant's OIDC client (add it
+  on the `/dev` or `/admin` dashboard). X-Auth rejects any unregistered
+  redirect_uri with `invalid_redirect_uri` — this closes the open-redirect /
+  session-leak vector, so the result is only ever delivered to a URL you
+  registered. Keep verifying `state` regardless.
+
+> Prefer to skip the hosted chooser and go straight to one method? You still
+> can: `GET <XAUTH_URL>/v1/social/google/authorize?...` (same params) drives
+> Google directly. `/login` is the recommended entry point because X-Auth owns
+> the method selection there.
 
 ## Step 2 — the callback handler
 
@@ -113,11 +121,11 @@ const TENANT = "ten_cryptofreight";
 const app = express();
 app.use(cookieParser());
 
-// Step 1: kick off the flow
+// Step 1: kick off the flow — send the visitor to the hosted login chooser.
 app.get("/auth/login", (req, res) => {
   const state = crypto.randomBytes(24).toString("base64url");
   res.cookie("xauth_state", state, { httpOnly: true, sameSite: "lax", maxAge: 600_000 });
-  const u = new URL(`${XAUTH}/v1/social/google/authorize`);
+  const u = new URL(`${XAUTH}/login`);
   u.searchParams.set("tenant_id", TENANT);
   u.searchParams.set("redirect_uri", `${req.protocol}://${req.get("host")}/auth/callback`);
   u.searchParams.set("state", state);
@@ -201,7 +209,7 @@ refreshed; refresh on activity if you want sliding sessions.
 
 | Limitation | Consequence | Mitigation |
 |---|---|---|
-| `redirect_uri` not allowlisted per tenant | Anyone can start a flow that lands on their own URL | Your `state` check; phase-3 adds registration |
+| ~~`redirect_uri` not allowlisted~~ **(fixed)** | — | `redirect_uri` must now match a redirect URI registered for your tenant's client (or be same-origin); unregistered URIs are rejected. Still verify `state`. |
 | `session_id` arrives in the query string | It's a bearer credential in browser history / logs | Validate + set cookie + redirect to a clean URL immediately |
 | Tenant API unauthenticated (header only) | Anyone who can reach the service can read/mint sessions for any tenant | Network isolation; phase-3 API keys |
 | No `user_identities` table | Provider link is by email; email change at Google = new user | Acceptable for trial; linking table planned |

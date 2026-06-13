@@ -1,14 +1,15 @@
 // auth.js — X-Auth OIDC client for cryptofreight.org (no dependencies).
 //
-// Flow: social login (Google via X-Auth) → OIDC authorize → callback →
-// PKCE token exchange → JWT access/ID tokens in sessionStorage.
+// Flow: hosted login chooser (/login → Google or phone) → OIDC authorize →
+// callback → PKCE token exchange → JWT access/ID tokens in sessionStorage.
 //
-// X-Auth phase-1/2 notes baked into this client:
+// X-Auth notes baked into this client:
 //  - `issuer` must be the authentication-service base URL (where the
 //    discovery document lives), not the marketing site.
-//  - `tenantId` rides as a query param on /authorize and the social leg.
-//  - X-Auth's /authorize has no login UI yet — identity comes from the
-//    social leg, whose callback hands us a user_id that we forward.
+//  - `tenantId` rides as a query param on /authorize and the login leg.
+//  - login() points at X-Auth's hosted /login chooser; the method leg sets a
+//    session and hands the callback a session_id (X-Auth resolves the user
+//    server-side, so no user_id is forwarded into /authorize).
 //  - PKCE S256 is mandatory on the code flow; this client always sends it.
 
 const OIDC = {
@@ -53,11 +54,15 @@ async function discovery() {
 
 // ---- public API ----------------------------------------------------------
 
-// login() — kick off the whole chain. Leg 1: social login through X-Auth.
+// login() — kick off the whole chain. Send the user to X-Auth's hosted login
+// chooser (/login), where they pick a sign-in method (Google or phone). The
+// chooser forwards into the chosen method's leg, which lands back here with a
+// session — so handleCallback() below is unchanged. tenant_id, redirect_uri and
+// state are passed through and round-tripped.
 export function login() {
   const state = randomToken(24);
   SS.setItem('xauth_social_state', state);
-  const u = new URL(`${OIDC.issuer}/v1/social/${OIDC.provider}/authorize`);
+  const u = new URL(`${OIDC.issuer}/login`);
   u.searchParams.set('tenant_id', OIDC.tenantId);
   u.searchParams.set('redirect_uri', OIDC.redirectUri);
   u.searchParams.set('state', state);
