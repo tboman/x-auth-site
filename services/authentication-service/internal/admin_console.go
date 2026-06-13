@@ -122,7 +122,7 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 			if !t.LastActivity.IsZero() {
 				last = t.LastActivity.UTC().Format(time.RFC3339)
 			}
-			rows.WriteString(`<tr><td><code>` + html.EscapeString(t.TenantID) + `</code></td>`)
+			rows.WriteString(`<tr><td><a href="/admin/tenants/` + url.PathEscape(t.TenantID) + `"><code>` + html.EscapeString(t.TenantID) + `</code></a></td>`)
 			rows.WriteString(`<td class="num">` + itoa(t.Users) + `</td>`)
 			rows.WriteString(`<td class="num">` + itoa(t.Sessions) + `</td>`)
 			rows.WriteString(`<td class="muted">` + html.EscapeString(last) + `</td></tr>`)
@@ -201,6 +201,60 @@ if it is a global env origin <em>or</em> a registered client's web origin.</p>
 To make one permanent, add it to the <code>OIDC_CLIENTS</code> env var (and origins to
 <code>CORS_ALLOWED_ORIGINS</code>) on the Cloud Run service.</p>
 </div>`
+}
+
+// TenantDetail renders the identities for a single tenant — the master-admin
+// drill-down from the tenant listing. Staff-only (currentAdmin). Works for both
+// registry tenants (shows the company name) and derived/console tenants
+// (ten_admin, …, which have no registry row — the id is shown instead).
+func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.currentAdmin(w, r); !ok {
+		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
+		return
+	}
+	tenantID := r.PathValue("id")
+	if tenantID == "" {
+		h.page(w, http.StatusBadRequest, "X-Auth admin", `<h1 class="err">Missing tenant</h1>
+<div class="actions"><a class="btn" href="/admin">Back</a></div>`)
+		return
+	}
+
+	// Registry name when this is a self-service tenant; the raw id otherwise.
+	name := tenantID
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		name = t.CompanyName
+	}
+
+	users, err := h.Store.ListUsers(tenantID, 0, time.Time{})
+	if err != nil {
+		h.Logger.Error("admin_tenant_users_failed", "err", err, "tenant_id", tenantID)
+		h.page(w, http.StatusBadGateway, "X-Auth admin", `<h1 class="err">Could not load identities</h1>
+<div class="actions"><a class="btn" href="/admin">Back</a></div>`)
+		return
+	}
+	anchors, err := h.Store.ListIdentityAnchors(tenantID)
+	if err != nil {
+		h.Logger.Error("admin_tenant_anchors_failed", "err", err, "tenant_id", tenantID)
+		h.page(w, http.StatusBadGateway, "X-Auth admin", `<h1 class="err">Could not load identities</h1>
+<div class="actions"><a class="btn" href="/admin">Back</a></div>`)
+		return
+	}
+
+	h.page(w, http.StatusOK, "Tenant identities", `<h1>`+html.EscapeString(name)+`</h1>
+<p class="muted">Tenant <code>`+html.EscapeString(tenantID)+`</code> — `+itoa(len(users))+` identit`+plural(len(users), "y", "ies")+`.</p>
+<div class="actions"><a class="btn secondary" href="/admin">← All tenants</a></div>
+<h2 style="margin-top:24px">Identities</h2>
+<p class="muted">Every identity is anchored by its Google-verified email. Phone and passkey are additional
+anchor types: the store is ready for them, and they will appear here once the validation flows are built.</p>`+
+		identityTable(users, anchors))
+}
+
+// plural picks the singular or plural suffix for n.
+func plural(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // RegisterClient handles POST /admin/clients.

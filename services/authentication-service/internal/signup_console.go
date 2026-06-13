@@ -475,6 +475,12 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 	}
 
 	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
+	anchors, _ := h.Store.ListIdentityAnchors(owner.Tenant.ID)
+	usersSection := `<h2 style="margin-top:28px">Users</h2>
+<p class="muted">Everyone who has signed in to your application. Each is anchored by their Google-verified
+email; phone and passkey anchors will appear here once those sign-in methods are available.</p>` +
+		identityTable(users, anchors)
+
 	h.page(w, http.StatusOK, "Your X-Auth workspace", `<h1>`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
 <p class="muted">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> (workspace owner).</p>
 <form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
@@ -484,7 +490,7 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 <tr><td>Tenant ID</td><td><code>`+html.EscapeString(owner.Tenant.ID)+`</code></td></tr>
 <tr><td>Owner</td><td>`+html.EscapeString(owner.Tenant.OwnerEmail)+`</td></tr>
 <tr><td>Users</td><td>`+itoa(len(users))+`</td></tr>
-</table></div>`+client)
+</table></div>`+usersSection+client)
 }
 
 // RegenerateSecret issues a fresh client secret for the owner's client and

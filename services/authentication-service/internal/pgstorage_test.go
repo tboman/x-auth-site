@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -706,5 +706,61 @@ func TestPGStorageProvisionTenant(t *testing.T) {
 	}
 	if _, err := s.GetClient("cli_o2"); err != ErrNotFound {
 		t.Fatalf("client must be absent, got %v", err)
+	}
+}
+
+// TestPGStorageIdentityAnchors exercises the identity_anchors table: create
+// (including a verified_at roundtrip), the uq_identity_anchor conflict, and the
+// tenant-scoped newest-first listing.
+func TestPGStorageIdentityAnchors(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	verified := now.Add(-time.Minute)
+
+	phone := IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: "usr_a", TenantID: "ten_acme",
+		Type: AnchorPhone, Value: "+15551230001", CreatedAt: now,
+	}
+	if _, err := s.CreateIdentityAnchor(phone); err != nil {
+		t.Fatalf("create phone: %v", err)
+	}
+	passkey := IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: "usr_a", TenantID: "ten_acme",
+		Type: AnchorPasskey, Value: "cred-xyz", VerifiedAt: &verified, CreatedAt: now.Add(time.Second),
+	}
+	if _, err := s.CreateIdentityAnchor(passkey); err != nil {
+		t.Fatalf("create passkey: %v", err)
+	}
+	// Same value/type in a different tenant is fine (tenant-scoped uniqueness).
+	if _, err := s.CreateIdentityAnchor(IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: "usr_b", TenantID: "ten_beta",
+		Type: AnchorPhone, Value: "+15551230001", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("same value other tenant should succeed: %v", err)
+	}
+	// Re-using (tenant, type, value) → ErrConflict.
+	if _, err := s.CreateIdentityAnchor(IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: "usr_c", TenantID: "ten_acme",
+		Type: AnchorPhone, Value: "+15551230001", CreatedAt: now,
+	}); err != ErrConflict {
+		t.Fatalf("dup anchor: want ErrConflict, got %v", err)
+	}
+
+	got, err := s.ListIdentityAnchors("ten_acme")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ten_acme should have 2 anchors, got %d: %+v", len(got), got)
+	}
+	// Newest-first: the passkey (now+1s) precedes the phone (now).
+	if got[0].Type != AnchorPasskey || got[1].Type != AnchorPhone {
+		t.Fatalf("anchors not newest-first: %+v", got)
+	}
+	if got[0].VerifiedAt == nil || !got[0].VerifiedAt.Equal(verified) {
+		t.Fatalf("verified_at not roundtripped: %+v", got[0].VerifiedAt)
+	}
+	if got[1].VerifiedAt != nil {
+		t.Fatalf("phone anchor should be unverified, got %v", got[1].VerifiedAt)
 	}
 }

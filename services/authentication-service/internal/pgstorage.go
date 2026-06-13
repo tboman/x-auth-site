@@ -646,6 +646,54 @@ func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 	return t, nil
 }
 
+// ---- Identity anchors ----
+
+// CreateIdentityAnchor inserts an additional anchor row. A 23505 on
+// uq_identity_anchor (tenant_id, anchor_type, anchor_value) becomes ErrConflict,
+// exactly like MemStorage's in-memory check.
+func (s *PGStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, error) {
+	const q = `
+		INSERT INTO identity_anchors (id, user_id, tenant_id, anchor_type, anchor_value, verified_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := s.pool.Exec(bgCtx(), q,
+		a.ID, a.UserID, a.TenantID, a.Type, a.Value, nullableTime(a.VerifiedAt), a.CreatedAt.UTC())
+	if isUniqueViolation(err) {
+		return IdentityAnchor{}, ErrConflict
+	}
+	if err != nil {
+		return IdentityAnchor{}, fmt.Errorf("pgstorage create_identity_anchor: %w", err)
+	}
+	return a, nil
+}
+
+// ListIdentityAnchors returns every anchor in tenantID, newest first.
+func (s *PGStorage) ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error) {
+	const q = `
+		SELECT id, user_id, tenant_id, anchor_type, anchor_value, verified_at, created_at
+		  FROM identity_anchors
+		 WHERE tenant_id = $1
+		 ORDER BY created_at DESC, id DESC
+	`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_identity_anchors: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]IdentityAnchor, 0)
+	for rows.Next() {
+		a, err := scanAnchor(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_identity_anchors rows: %w", err)
+	}
+	return out, nil
+}
+
 // ---- Maintenance ----
 
 // PurgeExpired runs the Postgres equivalent of MemStorage.PurgeExpired — see
@@ -751,6 +799,24 @@ func scanToken(r rowScanner) (Token, error) {
 	t.IssuedAt = t.IssuedAt.UTC()
 	t.ExpiresAt = t.ExpiresAt.UTC()
 	return t, nil
+}
+
+func scanAnchor(r rowScanner) (IdentityAnchor, error) {
+	var (
+		a          IdentityAnchor
+		verifiedAt *time.Time
+	)
+	if err := r.Scan(
+		&a.ID, &a.UserID, &a.TenantID, &a.Type, &a.Value, &verifiedAt, &a.CreatedAt,
+	); err != nil {
+		return IdentityAnchor{}, err
+	}
+	if verifiedAt != nil {
+		ts := verifiedAt.UTC()
+		a.VerifiedAt = &ts
+	}
+	a.CreatedAt = a.CreatedAt.UTC()
+	return a, nil
 }
 
 // isUniqueViolation reports whether err is a Postgres unique_violation (23505),

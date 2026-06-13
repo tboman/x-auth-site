@@ -75,6 +75,16 @@ type Storage interface {
 	GetTenantBySlug(slug string) (Tenant, error)
 	GetTenantByOwnerEmail(email string) (Tenant, error)
 
+	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
+	// additional way to identify a user — a phone number or a passkey credential
+	// id (email stays canonical on users.email). Returns ErrConflict when the
+	// (tenant_id, type, value) triple is already taken. ListIdentityAnchors
+	// returns every anchor in a tenant, newest first — the master-admin
+	// identities view groups them by user. Validation (verifying the anchor) is
+	// not implemented yet, so created anchors carry a nil VerifiedAt.
+	CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, error)
+	ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error)
+
 	// ProvisionTenant atomically creates a complete self-service workspace —
 	// the tenant registry row, its owner user, the owner's initial session, and
 	// the confidential OIDC client — in a single all-or-nothing unit. A failure
@@ -92,12 +102,13 @@ type Storage interface {
 // MemStorage is an in-memory, thread-safe Storage implementation.
 type MemStorage struct {
 	mu       sync.RWMutex
-	users    map[string]User       // keyed by user id
-	sessions map[string]Session    // keyed by session id
-	tokens   map[string]Token      // keyed by token_hash
-	codes    map[string]AuthCode   // keyed by authorization code
-	clients  map[string]OIDCClient // keyed by client id
-	tenants  map[string]Tenant     // keyed by tenant id
+	users    map[string]User           // keyed by user id
+	sessions map[string]Session        // keyed by session id
+	tokens   map[string]Token          // keyed by token_hash
+	codes    map[string]AuthCode       // keyed by authorization code
+	clients  map[string]OIDCClient     // keyed by client id
+	tenants  map[string]Tenant         // keyed by tenant id
+	anchors  map[string]IdentityAnchor // keyed by anchor id
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -110,6 +121,7 @@ func NewMemStorage() *MemStorage {
 		codes:    make(map[string]AuthCode),
 		clients:  make(map[string]OIDCClient),
 		tenants:  make(map[string]Tenant),
+		anchors:  make(map[string]IdentityAnchor),
 	}
 	s.seedDefaultClient()
 	return s
@@ -523,6 +535,44 @@ func (s *MemStorage) ProvisionTenant(t Tenant, owner User, sess Session, client 
 	s.sessions[sess.ID] = sess
 	s.clients[client.ClientID] = client
 	return nil
+}
+
+// ---- Identity anchors ----
+
+// CreateIdentityAnchor records an additional anchor for a user. Returns
+// ErrConflict if the (tenant_id, type, value) triple is already taken (mirrors
+// the uq_identity_anchor constraint in the PG schema).
+func (s *MemStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.anchors {
+		if existing.TenantID == a.TenantID && existing.Type == a.Type && existing.Value == a.Value {
+			return IdentityAnchor{}, ErrConflict
+		}
+	}
+	s.anchors[a.ID] = a
+	return a, nil
+}
+
+// ListIdentityAnchors returns every anchor in tenantID, newest first (CreatedAt
+// desc, id desc tie-break) — the order the master-admin identities view groups
+// by user.
+func (s *MemStorage) ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]IdentityAnchor, 0)
+	for _, a := range s.anchors {
+		if a.TenantID == tenantID {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 // ---- Maintenance ----

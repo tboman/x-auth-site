@@ -133,6 +133,35 @@ type Tenant struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// Identity anchor types. An identity (a users row) can be identified by one or
+// more anchors. Email is today's primary anchor, minted from Google social
+// login and stored canonically on users.email; phone and passkey are additional
+// anchor types whose ownership-proof (validation) flows are not built yet — see
+// the IdentityAnchor doc and migration 000007.
+const (
+	AnchorEmail   = "email"
+	AnchorPhone   = "phone"
+	AnchorPasskey = "passkey"
+)
+
+// IdentityAnchor is one way an identity can be identified: an email address, an
+// E.164 phone number, or a passkey (WebAuthn credential id). A user may hold
+// several — notably one passkey per device. VerifiedAt is nil until the
+// (not-yet-implemented) validation flow confirms ownership, so a freshly
+// recorded phone/passkey anchor is unverified by construction.
+//
+// email remains the canonical primary anchor on users.email; this type backs
+// the additional/alternative anchors persisted in the identity_anchors table.
+type IdentityAnchor struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id"`
+	TenantID   string     `json:"tenant_id"`
+	Type       string     `json:"type"`
+	Value      string     `json:"value"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
 // TokenType discriminates between access and refresh token records.
 const (
 	TokenTypeAccess  = "access"

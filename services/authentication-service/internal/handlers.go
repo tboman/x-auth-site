@@ -166,6 +166,9 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/logout", admin.Logout)
 	mux.HandleFunc("POST /admin/clients", admin.RegisterClient)
 	mux.HandleFunc("POST /admin/clients/delete", admin.DeleteClient)
+	// Master-admin drill-down: identities for one tenant. Staff-only (the
+	// handler re-checks currentAdmin); a more specific pattern than GET /admin/.
+	mux.HandleFunc("GET /admin/tenants/{id}", admin.TenantDetail)
 
 	// Self-service signup funnel + tenant-owner dashboard endpoints. The
 	// provisioning action (/admin/signup/start) is rate-limited per IP since it
