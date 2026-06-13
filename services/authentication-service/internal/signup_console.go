@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"log/slog"
@@ -280,6 +281,15 @@ func (h *SignupConsoleHandlers) renderSecret(w http.ResponseWriter, company, ten
 <label style="margin-top:14px">Client secret (shown once)</label>
 <div class="secret">`+html.EscapeString(secret)+`</div>
 </div>
+<div class="panel">
+<h3 style="margin:0 0 8px">Starter kit</h3>
+<p class="muted">A ready-to-run sign-in page wired to this client. Download both into one folder
+and paste the secret above into <code>auth.js</code>.</p>
+<div class="actions">
+<a class="btn" href="/admin/owner/download/landing.html">Download landing.html</a>
+<a class="btn secondary" href="/admin/owner/download/auth.js">Download auth.js</a>
+</div>
+</div>
 <div class="actions"><a class="btn" href="/admin">Continue to dashboard</a></div>`)
 }
 
@@ -374,7 +384,17 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 <label>Web origins (one per line, for browser CORS)</label>
 <textarea name="web_origins" rows="2" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com">` + html.EscapeString(strings.Join(c.WebOrigins, "\n")) + `</textarea>
 <div class="actions"><button type="submit">Save</button></div>
-</form></div>`
+</form></div>
+<h2 style="margin-top:28px">Starter kit</h2>
+<div class="panel">
+<p class="muted">A ready-to-run sign-in page wired to your client. Download both files into the
+same folder, paste your client secret into <code>auth.js</code>, and serve them from an
+origin listed under your client's web origins above.</p>
+<div class="actions">
+<a class="btn" href="/admin/owner/download/landing.html">Download landing.html</a>
+<a class="btn secondary" href="/admin/owner/download/auth.js">Download auth.js</a>
+</div>
+</div>`
 	}
 
 	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
@@ -451,6 +471,189 @@ func (h *SignupConsoleHandlers) UpdateClient(w http.ResponseWriter, r *http.Requ
 	}
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
+
+// ---- starter kit (downloadable integration files) ----
+
+// DownloadAuthJS serves a tenant-specific auth.js — a dependency-free
+// Authorization-Code + PKCE OIDC client pre-filled with the owner's issuer,
+// client id, redirect URI, and tenant. Owner-only.
+func (h *SignupConsoleHandlers) DownloadAuthJS(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if !owner.HasClient {
+		h.errorPage(w, http.StatusBadRequest, "No client to generate a kit for.", "/admin")
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="auth.js"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, h.starterAuthJS(owner.Tenant, owner.Client))
+}
+
+// DownloadLanding serves a tenant-specific landing.html — a styled sign-in page
+// that drives auth.js and renders the signed-in profile. Owner-only.
+func (h *SignupConsoleHandlers) DownloadLanding(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if !owner.HasClient {
+		h.errorPage(w, http.StatusBadRequest, "No client to generate a kit for.", "/admin")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="landing.html"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, h.starterLandingHTML(owner.Tenant, owner.Client))
+}
+
+// starterRedirectURI returns the client's first registered redirect URI, or a
+// localhost default when none is set yet (the dashboard prompts the owner to
+// register one).
+func starterRedirectURI(c OIDCClient) string {
+	if len(c.RedirectURIs) > 0 {
+		return c.RedirectURIs[0]
+	}
+	return "http://localhost:8000/landing.html"
+}
+
+// starterAuthJS builds auth.js with a config header injected from the tenant's
+// client. %q produces valid JS double-quoted string literals for these ASCII
+// values, and the value itself can safely contain '%'.
+func (h *SignupConsoleHandlers) starterAuthJS(t Tenant, c OIDCClient) string {
+	issuer := strings.TrimRight(h.Issuer, "/")
+	header := fmt.Sprintf(`// X-Auth starter client — tenant %q (%s)
+// Authorization Code + PKCE against %s
+//
+// SECURITY NOTE: for a runnable quick-start this demo performs the /token
+// exchange in the browser using the client secret. A CONFIDENTIAL client's
+// secret must NOT ship in production browser code — move the /token call to
+// your backend and keep the secret server-side. Also ensure the origin serving
+// these files is listed as a Web origin on your client (X-Auth console →
+// "Update web origins") so the browser /token + /userinfo calls pass CORS.
+const XAUTH = {
+  issuer: %q,
+  clientId: %q,
+  clientSecret: "PASTE_YOUR_CLIENT_SECRET_HERE",
+  redirectUri: %q,
+  scope: "openid profile email",
+  tenantId: %q
+};
+`, t.CompanyName, t.ID, issuer, issuer, c.ClientID, starterRedirectURI(c), t.ID)
+	return header + starterAuthJSBody
+}
+
+// starterLandingHTML builds landing.html. The template carries literal '%'
+// (CSS), so company-name injection uses ReplaceAll rather than a format string.
+func (h *SignupConsoleHandlers) starterLandingHTML(t Tenant, c OIDCClient) string {
+	out := strings.ReplaceAll(starterLandingTemplate, "__COMPANY__", html.EscapeString(t.CompanyName))
+	return out
+}
+
+// starterAuthJSBody is the static (config-independent) half of auth.js.
+const starterAuthJSBody = `
+// ---- PKCE OIDC client (no dependencies) ----
+window.XAuth = (function () {
+  const cfg = XAUTH;
+  function b64url(buf) { return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function rand(n) { const a = new Uint8Array(n); crypto.getRandomValues(a); return b64url(a.buffer); }
+  async function sha256(s) { return crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); }
+
+  async function login() {
+    const verifier = rand(32), state = rand(16);
+    sessionStorage.setItem('xauth_verifier', verifier);
+    sessionStorage.setItem('xauth_state', state);
+    const challenge = b64url(await sha256(verifier));
+    const u = new URL(cfg.issuer + '/authorize');
+    u.search = new URLSearchParams({
+      response_type: 'code', client_id: cfg.clientId, redirect_uri: cfg.redirectUri,
+      scope: cfg.scope, state: state, code_challenge: challenge,
+      code_challenge_method: 'S256', tenant_id: cfg.tenantId
+    }).toString();
+    location.href = u.toString();
+  }
+
+  async function handleRedirect() {
+    const p = new URLSearchParams(location.search);
+    const code = p.get('code');
+    if (!code) return getSession();
+    if (p.get('state') !== sessionStorage.getItem('xauth_state')) throw new Error('state mismatch');
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code', code: code, redirect_uri: cfg.redirectUri,
+      client_id: cfg.clientId, client_secret: cfg.clientSecret,
+      code_verifier: sessionStorage.getItem('xauth_verifier')
+    });
+    const res = await fetch(cfg.issuer + '/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body });
+    if (!res.ok) throw new Error('token exchange failed: ' + res.status + ' ' + (await res.text()));
+    const tokens = await res.json();
+    let user = null;
+    try { const ui = await fetch(cfg.issuer + '/userinfo', { headers: { Authorization: 'Bearer ' + tokens.access_token } }); if (ui.ok) user = await ui.json(); } catch (e) {}
+    const session = { tokens: tokens, user: user };
+    sessionStorage.setItem('xauth_session', JSON.stringify(session));
+    history.replaceState({}, '', cfg.redirectUri.split('?')[0]);
+    return session;
+  }
+
+  function getSession() { try { return JSON.parse(sessionStorage.getItem('xauth_session') || 'null'); } catch (e) { return null; } }
+  function logout() { sessionStorage.removeItem('xauth_session'); location.href = cfg.redirectUri.split('?')[0]; }
+  return { login: login, handleRedirect: handleRedirect, getSession: getSession, logout: logout, config: cfg };
+})();
+`
+
+// starterLandingTemplate is landing.html with __COMPANY__ placeholders.
+const starterLandingTemplate = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__COMPANY__ — Sign in</title>
+<style>
+:root{color-scheme:dark;--bg:#09090b;--panel:#121217;--text:#dddde4;--muted:#8a8a96;--line:rgba(255,255,255,.11);--accent:#00e096}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(1200px 600px at 50% -10%,rgba(0,224,150,.08),transparent),var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+.card{width:min(420px,calc(100% - 32px));background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:32px}
+.brand{font-weight:800;letter-spacing:-.02em;color:var(--accent);margin-bottom:18px}
+h1{margin:0 0 6px;font-size:1.7rem;letter-spacing:-.02em}.muted{color:var(--muted);margin:0 0 22px;font-size:.92rem}
+button{appearance:none;border:0;border-radius:9px;background:var(--accent);color:#00150e;font-weight:800;padding:12px 16px;width:100%;cursor:pointer;font:inherit}
+button.sec{background:#22232b;color:var(--text);border:1px solid var(--line);margin-top:10px}
+pre{white-space:pre-wrap;word-break:break-word;background:#0b0b10;border:1px solid var(--line);border-radius:8px;padding:12px;font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.82rem}
+.err{color:#ff8e8e}
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">__COMPANY__</div>
+  <h1>Sign in</h1>
+  <p class="muted">Secured by X-Auth</p>
+  <button id="login">Sign in with X-Auth</button>
+  <div id="profile" hidden></div>
+  <pre id="error" class="err" hidden></pre>
+</main>
+<script src="auth.js"></script>
+<script>
+(async function () {
+  const $ = function (id) { return document.getElementById(id); };
+  $('login').addEventListener('click', function () { XAuth.login(); });
+  try {
+    const s = await XAuth.handleRedirect();
+    if (s) {
+      $('login').hidden = true;
+      const u = (s && s.user) || {};
+      const p = $('profile'); p.hidden = false;
+      p.innerHTML = '<h1>Signed in</h1><p class="muted">' + (u.email || u.sub || '(no email claim)') + '</p>'
+        + '<pre>' + JSON.stringify(s.user, null, 2) + '</pre>'
+        + '<button class="sec" id="logout">Sign out</button>';
+      $('logout').addEventListener('click', function () { XAuth.logout(); });
+    }
+  } catch (e) { const er = $('error'); er.hidden = false; er.textContent = String(e); }
+})();
+</script>
+</body>
+</html>
+`
 
 // ---- session helpers ----
 

@@ -290,6 +290,51 @@ func TestSignupRateLimited(t *testing.T) {
 	}
 }
 
+func TestOwnerDownloadsStarterKit(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "https://app.acme.com/callback")
+	ownerCookie := sessionCookie(w, ownerSessionCookie)
+	client, _ := (&SignupConsoleHandlers{Store: store}).tenantClient("ten_acme")
+
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: ownerCookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	js := get("/admin/owner/download/auth.js")
+	if js.Code != http.StatusOK {
+		t.Fatalf("auth.js: want 200, got %d", js.Code)
+	}
+	if cd := js.Header().Get("Content-Disposition"); !strings.Contains(cd, `filename="auth.js"`) {
+		t.Fatalf("auth.js missing attachment disposition: %q", cd)
+	}
+	body := js.Body.String()
+	for _, want := range []string{client.ClientID, "https://app.acme.com/callback", "ten_acme", "PASTE_YOUR_CLIENT_SECRET_HERE", "code_challenge_method"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("auth.js missing %q", want)
+		}
+	}
+
+	html := get("/admin/owner/download/landing.html")
+	if html.Code != http.StatusOK {
+		t.Fatalf("landing.html: want 200, got %d", html.Code)
+	}
+	if !strings.Contains(html.Body.String(), "Acme") || !strings.Contains(html.Body.String(), `src="auth.js"`) {
+		t.Fatalf("landing.html missing expected content:\n%s", html.Body.String())
+	}
+
+	// Not signed in → refused.
+	anon := httptest.NewRequest(http.MethodGet, "/admin/owner/download/auth.js", nil)
+	aw := httptest.NewRecorder()
+	r.ServeHTTP(aw, anon)
+	if aw.Code != http.StatusForbidden {
+		t.Fatalf("anon download: want 403, got %d", aw.Code)
+	}
+}
+
 // TestSignupClientEnforcedAtToken proves the signup-minted confidential client's
 // secret is actually enforced end-to-end: a code exchange with the wrong secret
 // is refused, the right one succeeds.
