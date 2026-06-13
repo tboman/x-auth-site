@@ -38,6 +38,11 @@ type Deps struct {
 	// AdminEmails is the Google-account allowlist for the hosted admin console
 	// (/admin). Empty means the console denies all sign-ins (deny by default).
 	AdminEmails []string
+
+	// DevAutologin re-enables the legacy /authorize behaviour (trust a user_id
+	// parameter / auto-create a dev user) for local development and tests.
+	// OFF in production, where /authorize requires a real authz-session cookie.
+	DevAutologin bool
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -81,6 +86,7 @@ func Router(d Deps) http.Handler {
 		Verifier:      verifier,
 		JWTIssuer:     jwtIssuer,
 		Authenticator: d.Authenticator,
+		DevAutologin:  d.DevAutologin,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}

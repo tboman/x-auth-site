@@ -144,6 +144,7 @@ func TestDeveloperRegisteredClientCompletesOIDCRoundTrip(t *testing.T) {
 		Authenticator: &mockAuthenticator{},
 		Issuer:        issuer,
 		Signer:        testSigner,
+		DevAutologin:  true, // round-trip mechanics; cookie auth covered in oidc_authz_test.go
 	})
 	srv.Config.Handler = r
 	srv.Start()

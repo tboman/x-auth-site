@@ -188,9 +188,15 @@ type AuthCode struct {
 // client (see storage.go seedDefaultClient); full dynamic registration lives in
 // broker-service for now.
 type OIDCClient struct {
-	ClientID         string    `json:"client_id"`
-	ClientSecretHash string    `json:"-"` // never marshal the hash back to the wire
-	RedirectURIs     []string  `json:"redirect_uris"`
+	ClientID         string `json:"client_id"`
+	ClientSecretHash string `json:"-"` // never marshal the hash back to the wire
+	// TenantID binds the client to a single tenant. When set, /authorize uses
+	// it as the authoritative tenant and rejects a contradicting tenant_id
+	// parameter — a client cannot operate across tenant boundaries. Empty means
+	// unbound (legacy clients seeded before this field; /authorize falls back to
+	// the request's tenant_id).
+	TenantID     string    `json:"tenant_id,omitempty"`
+	RedirectURIs []string  `json:"redirect_uris"`
 	// WebOrigins are the browser origins (scheme://host[:port]) allowed to make
 	// cross-origin fetch calls to the public OIDC surface on this client's
 	// behalf. The CORS handler unions these with the CORS_ALLOWED_ORIGINS env

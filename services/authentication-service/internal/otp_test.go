@@ -25,6 +25,7 @@ func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage)
 		Authenticator: mock,
 		Issuer:        "http://test.local",
 		Signer:        testSigner,
+		DevAutologin:  true, // legacy /authorize path; secure cookie path covered in oidc_authz_test.go
 	})
 	return r, store
 }

@@ -155,7 +155,12 @@ func (h *AdminConsoleHandlers) clientsSection() string {
 		rows.WriteString(`<tr><td colspan="4" class="muted">No clients registered.</td></tr>`)
 	} else {
 		for _, c := range clients {
+			tenant := `<span class="muted">unbound</span>`
+			if c.TenantID != "" {
+				tenant = `<code>` + html.EscapeString(c.TenantID) + `</code>`
+			}
 			rows.WriteString(`<tr><td><code>` + html.EscapeString(c.ClientID) + `</code></td>`)
+			rows.WriteString(`<td>` + tenant + `</td>`)
 			rows.WriteString(`<td>` + originList(c.RedirectURIs) + `</td>`)
 			rows.WriteString(`<td>` + originList(c.WebOrigins) + `</td>`)
 			rows.WriteString(`<td><form method="post" action="/admin/clients/delete" ` +
@@ -176,7 +181,7 @@ if it is a global env origin <em>or</em> a registered client's web origin.</p>
 <div class="panel">
 <p class="muted">Global origins (from <code>CORS_ALLOWED_ORIGINS</code> env): ` + envOrigins + `</p>
 <table>
-<thead><tr><th>Client ID</th><th>Redirect URIs</th><th>Web origins</th><th></th></tr></thead>
+<thead><tr><th>Client ID</th><th>Tenant</th><th>Redirect URIs</th><th>Web origins</th><th></th></tr></thead>
 <tbody>` + rows.String() + `</tbody></table>
 </div>
 <div class="panel">
@@ -184,6 +189,8 @@ if it is a global env origin <em>or</em> a registered client's web origin.</p>
 <form method="post" action="/admin/clients">
 <label>Client ID</label>
 <input name="client_id" placeholder="unlimitedfreight-web" required>
+<label>Tenant ID (binds the client to one tenant; recommended)</label>
+<input name="tenant_id" placeholder="ten_unlimitedfreight">
 <label>Redirect URIs (one per line)</label>
 <textarea name="redirect_uris" rows="3" placeholder="https://unlimitedfreight.com/callback.html"></textarea>
 <label>Web origins (one per line, for CORS)</label>
@@ -207,6 +214,7 @@ func (h *AdminConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http.Req
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
+	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
 	redirects := splitLines(r.PostForm.Get("redirect_uris"))
 	origins := splitLines(r.PostForm.Get("web_origins"))
 
@@ -231,6 +239,7 @@ func (h *AdminConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http.Req
 
 	if err := h.Store.PutClient(OIDCClient{
 		ClientID:     clientID,
+		TenantID:     tenantID,
 		RedirectURIs: redirects,
 		WebOrigins:   origins,
 		CreatedAt:    time.Now().UTC(),

@@ -100,6 +100,7 @@ func newTestRouter(t *testing.T) (http.Handler, Storage) {
 		Authenticator: &mockAuthenticator{},
 		Issuer:        "http://test.local",
 		Signer:        testSigner,
+		DevAutologin:  true, // legacy /authorize path for tests that pre-date cookie auth
 	})
 	return r, store
 }

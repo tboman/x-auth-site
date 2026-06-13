@@ -108,6 +108,7 @@ func TestPGStorageClientListDeleteWebOrigins(t *testing.T) {
 
 	c := OIDCClient{
 		ClientID:     "uf_" + uuid.NewString(),
+		TenantID:     "ten_unlimitedfreight",
 		RedirectURIs: []string{"https://unlimitedfreight.com/cb"},
 		WebOrigins:   []string{"https://unlimitedfreight.com"},
 		CreatedAt:    now,
@@ -121,6 +122,9 @@ func TestPGStorageClientListDeleteWebOrigins(t *testing.T) {
 	}
 	if len(got.WebOrigins) != 1 || got.WebOrigins[0] != "https://unlimitedfreight.com" {
 		t.Fatalf("web_origins roundtrip wrong: %+v", got)
+	}
+	if got.TenantID != "ten_unlimitedfreight" {
+		t.Fatalf("tenant_id roundtrip wrong: %q", got.TenantID)
 	}
 
 	clients, err := s.ListClients()

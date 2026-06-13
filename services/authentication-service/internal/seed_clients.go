@@ -13,9 +13,16 @@ import (
 // environment variable, bridging the gap until dynamic client registration
 // lands. Format (semicolon-separated entries, comma-separated URIs):
 //
-//	OIDC_CLIENTS="cryptofreight-web=https://cryptofreight.org/callback.html,http://localhost:3000/callback.html;other-app=https://other.example/cb"
+//	OIDC_CLIENTS="client-id=uri,uri;other-app=https://other.example/cb"
 //
-// Seeded clients are public (no secret) — they are expected to use the
+// Each entry may optionally bind the client to a tenant by prefixing the URIs
+// with "tenant_id|":
+//
+//	OIDC_CLIENTS="cryptofreight-web=ten_cryptofreight|https://cryptofreight.org/callback.html,http://localhost:3000/callback.html"
+//
+// A tenant-bound client is pinned to that tenant at /authorize (a contradicting
+// tenant_id parameter is rejected). Entries with no "tenant_id|" prefix stay
+// unbound for back-compat. Seeded clients are public (no secret) — they use the
 // authorization-code flow with PKCE, which /authorize mandates anyway.
 // PutClient is an upsert in both storage backends, so re-seeding at every
 // boot is idempotent and env changes take effect on restart.
@@ -30,10 +37,18 @@ func SeedClientsFromEnv(store Storage, logger *slog.Logger) error {
 		if entry == "" {
 			continue
 		}
-		id, uris, ok := strings.Cut(entry, "=")
+		id, spec, ok := strings.Cut(entry, "=")
 		id = strings.TrimSpace(id)
 		if !ok || id == "" {
-			return fmt.Errorf("OIDC_CLIENTS: malformed entry %q (want client-id=uri[,uri...])", entry)
+			return fmt.Errorf("OIDC_CLIENTS: malformed entry %q (want client-id=[tenant|]uri[,uri...])", entry)
+		}
+
+		// Optional "tenant_id|" prefix binds the client to a tenant.
+		tenantID := ""
+		uris := spec
+		if t, rest, hasTenant := strings.Cut(spec, "|"); hasTenant {
+			tenantID = strings.TrimSpace(t)
+			uris = rest
 		}
 
 		var list []string
@@ -55,12 +70,13 @@ func SeedClientsFromEnv(store Storage, logger *slog.Logger) error {
 		if err := store.PutClient(OIDCClient{
 			ClientID:         id,
 			ClientSecretHash: "", // public client — PKCE is the proof of possession
+			TenantID:         tenantID,
 			RedirectURIs:     list,
 			CreatedAt:        time.Now().UTC(),
 		}); err != nil {
 			return fmt.Errorf("OIDC_CLIENTS: seed client %q: %w", id, err)
 		}
-		logger.Info("oidc_client_seeded", "client_id", id, "redirect_uris", len(list))
+		logger.Info("oidc_client_seeded", "client_id", id, "tenant_id", tenantID, "redirect_uris", len(list))
 	}
 	return nil
 }

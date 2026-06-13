@@ -128,6 +128,30 @@ register form surfaces the `OIDC_CLIENTS` snippet to promote one to permanent.
 > service runs with this set. `/healthz`, the OIDC surface, social login, and
 > the `/dev` + `/admin` consoles are unaffected.
 
+**Phase 2.9 — `/authorize` hardening: client↔tenant binding + session-based
+identity.** Two layers close the gap where a public client's only guard was its
+redirect URI:
+
+- **Client↔tenant binding.** `OIDCClient.tenant_id` (migration `000005`) pins a
+  client to one tenant. `/authorize` uses it as the authoritative tenant and
+  rejects a contradicting `tenant_id` query parameter — a client can no longer
+  drive flows in tenants it was not registered for. Set it via the admin form,
+  the `OIDC_CLIENTS` env (`client=tenant_id|uri,uri`), or DCR later. Unbound
+  (legacy) clients fall back to the request's `tenant_id`.
+- **Session-based identity.** `/authorize` no longer trusts a client-supplied
+  `user_id` (forgeable, exposed to the front-end). It resolves the user from an
+  HttpOnly `xauth_authz_session` cookie (Path=`/authorize`, SameSite=Lax) set by
+  an identity-proving leg — the social-login callback or the dev console — after
+  real authentication. No valid session → an RFC 6749 §4.1.2.1 `login_required`
+  error redirect to the client. The cookie's session must belong to the client's
+  tenant, so a session from another tenant cannot cross over.
+
+The existing SPA flow keeps working unchanged: it already runs the social leg
+before `/authorize`, so the callback sets the cookie and `/authorize` reads it
+(the SPA's now-redundant forwarded `user_id` is ignored). `AUTHORIZE_DEV_AUTOLOGIN=true`
+re-enables the legacy `user_id`/auto-dev-user path for local development; it is
+**off in production**.
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - Strict client authentication (public dev client still allowed without a secret)
@@ -369,6 +393,7 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 | `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for the `/internal/v1/` tree when mTLS is not in play. Inbound: requests must carry `X-Internal-Auth: <secret>` (constant-time compare) or arrive over verified mTLS, else structured 401. Outbound: the same value is stamped on calls to authenticator-service. Unset -> internal routes are open (local dev). |
 | `V1_INTERNAL_ONLY` | `false` | `true` puts the `httpx.InternalAuth` gate on the public `/v1/users` + `/v1/sessions` tree too (not just `/internal/v1`), for public-ingress deployments with no VPC trust boundary. `/healthz`, OIDC, social, `/dev`, `/admin` stay open. |
 | `ADMIN_EMAILS` | _(unset)_ | Comma-separated Google-account allowlist for the `/admin` console. Empty denies all admin sign-ins. |
+| `AUTHORIZE_DEV_AUTOLOGIN` | _(unset)_ | `true` re-enables the legacy `/authorize` behaviour (trust a `user_id` param / auto-create a dev user) for local dev. **Must be unset in production**, where `/authorize` requires a real `xauth_authz_session` cookie. |
 
 ## Run locally
 

@@ -136,6 +136,10 @@ func main() {
 		// Google-account allowlist for the /admin console (comma-separated;
 		// empty denies all admin sign-ins).
 		AdminEmails: splitNonEmpty(config.Env("ADMIN_EMAILS", "")),
+		// Local-dev escape hatch: trust user_id / auto-create a dev user at
+		// /authorize. MUST be unset in production (where a real authz-session
+		// cookie is required).
+		DevAutologin: config.Env("AUTHORIZE_DEV_AUTOLOGIN", "") == "true",
 	})
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the

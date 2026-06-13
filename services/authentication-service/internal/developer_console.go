@@ -244,6 +244,7 @@ func (h *DeveloperConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http
 	c := OIDCClient{
 		ClientID:         clientID,
 		ClientSecretHash: "",
+		TenantID:         devConsoleTenantID, // dev clients are pinned to the console's tenant
 		RedirectURIs:     redirects,
 		CreatedAt:        time.Now().UTC(),
 	}
@@ -288,6 +289,12 @@ func (h *DeveloperConsoleHandlers) StartOIDC(w http.ResponseWriter, r *http.Requ
 		CreatedAt:    time.Now().UTC(),
 	})
 
+	// Identify the developer to /authorize via the authz-session cookie (the
+	// same mechanism the SPA social leg uses), not a forgeable user_id param.
+	// The dev session is in devConsoleTenantID, which dev-registered clients
+	// are bound to, so /authorize's tenant lookup matches.
+	SetAuthzSession(w, sess.Session.ID, sess.Session.ExpiresAt)
+
 	authz, _ := url.Parse(strings.TrimRight(h.Issuer, "/") + "/authorize")
 	q := authz.Query()
 	q.Set("client_id", client.ClientID)
@@ -295,7 +302,6 @@ func (h *DeveloperConsoleHandlers) StartOIDC(w http.ResponseWriter, r *http.Requ
 	q.Set("response_type", "code")
 	q.Set("scope", "openid profile email")
 	q.Set("tenant_id", sess.Session.TenantID)
-	q.Set("user_id", sess.User.ID)
 	q.Set("state", state)
 	q.Set("nonce", randToken(24))
 	q.Set("code_challenge", pkceS256(verifier))

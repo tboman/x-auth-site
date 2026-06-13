@@ -53,6 +53,11 @@ type OIDCHandlers struct {
 	// authenticator-service.
 	Authenticator AuthenticatorClient
 
+	// DevAutologin re-enables the legacy /authorize behaviour (trust a user_id
+	// parameter, or auto-create a dev user) for local development and tests.
+	// OFF in production, where /authorize requires a real authz-session cookie.
+	DevAutologin bool
+
 	// Parked /authorize requests awaiting step-up verification, keyed by
 	// one-time flow id (see otp.go). Same in-process pattern as the social
 	// handshake.
@@ -148,10 +153,6 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "redirect_uri is required")
 		return
 	}
-	if tenantID == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant_id is required (phase 1 stub)")
-		return
-	}
 	// PKCE is mandatory and S256-only (§10.4). RFC 7636 defaults an omitted
 	// method to "plain", which we do not support — so the method must be
 	// explicitly S256.
@@ -183,33 +184,58 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve or synthesise the user. Phase-1 convenience: if user_id is missing,
-	// auto-create a dev user so smoke tests can run without prior POST /v1/users.
+	// Determine the authoritative tenant. A tenant-bound client (§ client↔tenant
+	// binding) pins it and a contradicting tenant_id parameter is rejected — a
+	// client cannot drive flows in tenants it was not registered for. An unbound
+	// (legacy) client falls back to the request parameter.
+	effectiveTenant := client.TenantID
+	if effectiveTenant == "" {
+		effectiveTenant = tenantID
+	} else if tenantID != "" && tenantID != effectiveTenant {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant_id does not match the client's registered tenant")
+		return
+	}
+	if effectiveTenant == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "tenant_id is required (client is not tenant-bound)")
+		return
+	}
+
+	// Resolve the end user. The secure path identifies the user from the
+	// authz-session cookie set by an identity-proving leg (social login, the
+	// dev console) — NOT from a client-supplied user_id, which a caller could
+	// forge. With no valid session the request is unauthenticated: bounce back
+	// to the client with the OAuth `login_required` error (RFC 6749 §4.1.2.1)
+	// so it can start a login.
+	//
+	// DevAutologin re-enables the legacy phase-1 behaviour (trust a user_id
+	// parameter, or auto-create a dev user) for local development and tests. It
+	// is OFF in production.
 	var user User
-	if userID != "" {
-		user, err = h.Store.GetUser(tenantID, userID)
-		if err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "user_id not found in tenant")
-			return
-		}
-	} else {
-		devEmail := "dev@example.com"
-		user, err = h.Store.GetUserByEmail(tenantID, devEmail)
-		if err != nil {
-			now := time.Now().UTC()
-			user, err = h.Store.CreateUser(User{
-				ID:        "usr_" + uuid.NewString(),
-				TenantID:  tenantID,
-				Email:     devEmail,
-				Name:      "Dev User",
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
+	if h.DevAutologin {
+		if userID != "" {
+			user, err = h.Store.GetUser(effectiveTenant, userID)
 			if err != nil {
-				h.Logger.Error("authorize_auto_user_failed", "err", err, "tenant_id", tenantID)
+				httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "user_id not found in tenant")
+				return
+			}
+		} else {
+			user, err = h.devAutoUser(effectiveTenant)
+			if err != nil {
+				h.Logger.Error("authorize_auto_user_failed", "err", err, "tenant_id", effectiveTenant)
 				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to provision dev user")
 				return
 			}
+		}
+	} else {
+		sess, ok := h.authzSession(r, effectiveTenant)
+		if !ok {
+			h.redirectAuthorizeError(w, r, redir, state, "login_required", "authentication required — sign in first")
+			return
+		}
+		user, err = h.Store.GetUser(effectiveTenant, sess.UserID)
+		if err != nil {
+			h.redirectAuthorizeError(w, r, redir, state, "login_required", "session user no longer exists")
+			return
 		}
 	}
 
@@ -220,7 +246,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	if spec, ok := matchStepUp(q.Get("acr_values")); ok {
 		h.startStepUpFlow(w, r, spec, pendingAuthorize{
 			ClientID:      clientID,
-			TenantID:      tenantID,
+			TenantID:      effectiveTenant,
 			UserID:        user.ID,
 			RedirectURI:   redirectURI,
 			Scope:         scope,
@@ -233,13 +259,81 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 
 	h.mintCodeAndRedirect(w, r, AuthCode{
 		ClientID:      clientID,
-		TenantID:      tenantID,
+		TenantID:      effectiveTenant,
 		UserID:        user.ID,
 		RedirectURI:   redirectURI,
 		Scope:         scope,
 		State:         state,
 		Nonce:         nonce,
 		CodeChallenge: codeChallenge,
+	})
+}
+
+// AuthzSessionCookie is the HttpOnly cookie that carries the browser's
+// authenticated session id into /authorize. It is set by an identity-proving
+// leg (the social-login callback, the dev console) and read by /authorize to
+// resolve the end user without trusting a client-supplied user_id. Scoped to
+// /authorize so it is not sent to the token, userinfo, or console surfaces.
+const AuthzSessionCookie = "xauth_authz_session"
+
+// SetAuthzSession writes the authz-session cookie for sessionID.
+func SetAuthzSession(w http.ResponseWriter, sessionID string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     AuthzSessionCookie,
+		Value:    sessionID,
+		Path:     "/authorize",
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// authzSession resolves the live session referenced by the authz-session
+// cookie, scoped to the given tenant. Returns false when the cookie is absent,
+// the session is unknown to this tenant, invalidated, or expired.
+func (h *OIDCHandlers) authzSession(r *http.Request, tenantID string) (Session, bool) {
+	c, err := r.Cookie(AuthzSessionCookie)
+	if err != nil || c.Value == "" {
+		return Session{}, false
+	}
+	sess, err := h.Store.GetSession(tenantID, c.Value)
+	if err != nil || sess.InvalidatedAt != nil || time.Now().UTC().After(sess.ExpiresAt) {
+		return Session{}, false
+	}
+	return sess, true
+}
+
+// redirectAuthorizeError bounces an OAuth error back to the client's
+// (already-validated) redirect_uri per RFC 6749 §4.1.2.1.
+func (h *OIDCHandlers) redirectAuthorizeError(w http.ResponseWriter, r *http.Request, redir *url.URL, state, code, desc string) {
+	rq := redir.Query()
+	rq.Set("error", code)
+	if desc != "" {
+		rq.Set("error_description", desc)
+	}
+	if state != "" {
+		rq.Set("state", state)
+	}
+	redir.RawQuery = rq.Encode()
+	http.Redirect(w, r, redir.String(), http.StatusFound)
+}
+
+// devAutoUser returns (creating if needed) the dev@example.com user for the
+// DevAutologin path. Never used in production.
+func (h *OIDCHandlers) devAutoUser(tenantID string) (User, error) {
+	const devEmail = "dev@example.com"
+	if u, err := h.Store.GetUserByEmail(tenantID, devEmail); err == nil {
+		return u, nil
+	}
+	now := time.Now().UTC()
+	return h.Store.CreateUser(User{
+		ID:        "usr_" + uuid.NewString(),
+		TenantID:  tenantID,
+		Email:     devEmail,
+		Name:      "Dev User",
+		CreatedAt: now,
+		UpdatedAt: now,
 	})
 }
 

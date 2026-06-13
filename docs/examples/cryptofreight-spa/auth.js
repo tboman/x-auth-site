@@ -108,9 +108,11 @@ async function socialLegDone(q) {
   u.searchParams.set('nonce', nonce);
   u.searchParams.set('code_challenge', await s256(verifier));
   u.searchParams.set('code_challenge_method', 'S256');
-  // X-Auth phase-1 extensions: tenant + the user the social leg verified.
+  // X-Auth derives the tenant from the registered client and the user from the
+  // session cookie the social leg set on the auth domain — so we no longer
+  // forward a user_id (which the IdP would not trust anyway). tenant_id is sent
+  // only as a sanity check; it must match the client's registered tenant.
   u.searchParams.set('tenant_id', OIDC.tenantId);
-  u.searchParams.set('user_id', q.get('user_id'));
   // Step-up: X-Auth interrupts /authorize with a hosted OTP page when an
   // acr is requested; the ID token comes back with acr/amr claims to prove it.
   if (OIDC.acrValues) u.searchParams.set('acr_values', OIDC.acrValues);

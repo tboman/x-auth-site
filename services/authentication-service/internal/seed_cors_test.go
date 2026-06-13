@@ -63,6 +63,7 @@ func TestSeededClientAuthorizes(t *testing.T) {
 	r := Router(Deps{
 		Store: store, Logger: logger, Authenticator: &mockAuthenticator{},
 		Issuer: "http://test.local", Signer: testSigner,
+		DevAutologin: true, // exercises client/redirect validation, not the cookie gate
 	})
 
 	q := url.Values{

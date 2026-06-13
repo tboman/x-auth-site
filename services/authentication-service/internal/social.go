@@ -355,6 +355,12 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 
+	// Set the authz-session cookie so the subsequent /authorize call can
+	// identify this user server-side, without the SPA forwarding a (forgeable)
+	// user_id. SameSite=Lax is sent on the SPA's top-level navigation to
+	// /authorize.
+	SetAuthzSession(w, sess.ID, sess.ExpiresAt)
+
 	// Redirect back to the caller's redirect_uri with session metadata.
 	// A richer implementation would hand back an ID token; phase 1 returns the
 	// session id directly so local dev flows can keep working without JWT plumbing.
