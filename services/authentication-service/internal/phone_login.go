@@ -295,8 +295,11 @@ func (h *PhoneLoginHandlers) resolveUser(w http.ResponseWriter, flow pendingPhon
 	}
 
 	now := time.Now().UTC()
+	// A phone-first signup has no email/name. Seed the display name with the
+	// verified number so /userinfo (sub/email/name) still carries a human
+	// identity — relying apps can show the phone instead of a blank "signed in".
 	user, err := h.Store.CreateUser(User{
-		ID: "usr_" + uuid.NewString(), TenantID: flow.TenantID, CreatedAt: now, UpdatedAt: now,
+		ID: "usr_" + uuid.NewString(), TenantID: flow.TenantID, Name: flow.Phone, CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {
 		h.Logger.Error("phone_user_create_failed", "err", err, "tenant_id", flow.TenantID)
