@@ -413,12 +413,20 @@ func (s *PGStorage) PutClient(c OIDCClient) error {
 			web_origins        = EXCLUDED.web_origins,
 			created_at         = EXCLUDED.created_at
 	`
+	// Both array columns are TEXT[] NOT NULL: a nil slice encodes as SQL NULL
+	// (the column DEFAULT only applies when the column is omitted, not when NULL
+	// is passed explicitly), so coerce nil → empty array. A client registered
+	// without a redirect URI (optional at self-service signup) hits this.
+	redirects := c.RedirectURIs
+	if redirects == nil {
+		redirects = []string{}
+	}
 	origins := c.WebOrigins
 	if origins == nil {
 		origins = []string{}
 	}
 	if _, err := s.pool.Exec(bgCtx(), q,
-		c.ClientID, c.ClientSecretHash, c.TenantID, c.RedirectURIs, origins, c.CreatedAt.UTC(),
+		c.ClientID, c.ClientSecretHash, c.TenantID, redirects, origins, c.CreatedAt.UTC(),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_client: %w", err)
 	}
