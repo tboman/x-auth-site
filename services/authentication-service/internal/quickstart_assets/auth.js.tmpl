@@ -17,7 +17,7 @@ const OIDC = {
   redirectUri: window.location.origin + '/callback.html',  // must be a registered redirect URI
   scope:       'openid profile email',
   tenantId:    '{{.TenantID}}',                            // this workspace's tenant
-  provider:    'google',                                   // social provider for the login leg
+  provider:    'google',                                   // informational; the hosted /login chooser picks the provider
   acrValues:   '{{.AcrValues}}',                           // e.g. 'urn:xauth:otp:sms' to force SMS OTP ('' = skip)
 };
 // discovery: {issuer}/.well-known/openid-configuration
@@ -53,11 +53,15 @@ async function discovery() {
 
 // ---- public API ----------------------------------------------------------
 
-// login() — kick off the whole chain. Leg 1: social login through X-Auth.
+// login() — kick off the whole chain. Send the user to X-Auth's hosted login
+// chooser (/login), where they pick a sign-in method (Google today; more to
+// come). The chooser forwards into the social leg, which lands back here with a
+// session — so handleCallback() below is unchanged. tenant_id, redirect_uri and
+// state are passed through and round-tripped.
 export function login() {
   const state = randomToken(24);
   SS.setItem('xauth_social_state', state);
-  const u = new URL(`${OIDC.issuer}/v1/social/${OIDC.provider}/authorize`);
+  const u = new URL(`${OIDC.issuer}/login`);
   u.searchParams.set('tenant_id', OIDC.tenantId);
   u.searchParams.set('redirect_uri', OIDC.redirectUri);
   u.searchParams.set('state', state);

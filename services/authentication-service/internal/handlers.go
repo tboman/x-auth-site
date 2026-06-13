@@ -91,6 +91,7 @@ func Router(d Deps) http.Handler {
 		DevAutologin:  d.DevAutologin,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
+	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
@@ -134,6 +135,11 @@ func Router(d Deps) http.Handler {
 	// Social login stubs — public, no tenant header (tenant_id is a query param).
 	mux.HandleFunc("GET /v1/social/{provider}/authorize", social.Authorize)
 	mux.HandleFunc("GET /v1/social/{provider}/callback", social.Callback)
+
+	// Hosted end-user login chooser — public, top-level navigation. A tenant's
+	// app sends users here to pick a sign-in method (Google today; phone soon).
+	// The Google button forwards to the social leg above.
+	mux.HandleFunc("GET /login", login.Login)
 
 	// Hosted developer console: Google sign-in -> OIDC client registration ->
 	// built-in code+PKCE round-trip tester with optional ACR selection.
