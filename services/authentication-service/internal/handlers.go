@@ -188,6 +188,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/logout", signup.OwnerLogout)
 	mux.HandleFunc("POST /admin/owner/regenerate-secret", signup.RegenerateSecret)
 	mux.HandleFunc("POST /admin/owner/client", signup.UpdateClient)
+	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
 	// these routes with tenantx.Middleware without firing it for OIDC traffic.

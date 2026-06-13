@@ -25,11 +25,14 @@ import (
 //	x-auth.com  ──"Get Started Free" + company name──▶  GET /admin/signup?company=…
 //	GET  /admin/signup          → confirm form (company + optional app URL)
 //	GET  /admin/signup/start    → Google login leg (rate-limited), into ten_signup
-//	GET  /admin/signup/callback → read the verified email, PROVISION:
+//	GET  /admin/signup/callback → read the verified email, PROVISION (atomically):
 //	                                tenant (named after company, if free)
 //	                                + owner user + session
-//	                                + a random CONFIDENTIAL OIDC client (id+secret)
-//	                              → one-time "here is your secret" screen
+//	                                + a PUBLIC OIDC client (PKCE, no secret)
+//	                              → "workspace ready" screen with a downloadable,
+//	                                pre-filled browser starter kit (see quickstart.go).
+//	                                Owners can mint a secret later for a server-side
+//	                                (confidential) client.
 //
 // Returning owners sign back in via GET /admin/owner/login (same Google leg),
 // resolved to their workspace by owner email. The dashboard lives at /admin
@@ -222,14 +225,17 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 		ID: "ses_" + uuid.NewString(), TenantID: tenantID, UserID: owner.ID, RiskLevel: RiskLow,
 		CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Duration(SessionTTLSeconds) * time.Second),
 	}
-	// Confidential OIDC client: random id + random secret. Only the SHA-256
-	// hash is stored; the plaintext is shown to the owner exactly once below.
+	// Public OIDC client: a browser SPA can't safely hold a secret, so the
+	// workspace's default client authenticates with PKCE and NO secret
+	// (ClientSecretHash empty marks it public — see extractClientCreds). The
+	// owner downloads a pre-filled starter kit for it from the dashboard; if
+	// they later need a server-side/confidential client they can mint a secret
+	// there, which the quickstart screen and dashboard explain.
 	clientID := "cli_" + randToken(8)
-	secret := randToken(32)
 	redirects, origins := redirectAndOrigin(intent.Redirect)
 	client := OIDCClient{
 		ClientID:         clientID,
-		ClientSecretHash: HashToken(secret),
+		ClientSecretHash: "",
 		TenantID:         tenantID,
 		RedirectURIs:     redirects,
 		WebOrigins:       origins,
@@ -252,7 +258,81 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 
 	h.setOwnerCookie(w, tenantID, sess.ID, sess.ExpiresAt)
 	h.Logger.Info("signup_provisioned", "tenant_id", tenantID, "client_id", clientID, "owner", email)
-	h.renderSecret(w, intent.Company, tenantID, clientID, secret, true)
+	h.renderWorkspaceReady(w, tenant, client)
+}
+
+// renderWorkspaceReady is the post-signup screen for a public-client workspace:
+// the workspace identifiers plus the downloadable starter kit. There is no
+// secret to show (public/PKCE client).
+func (h *SignupConsoleHandlers) renderWorkspaceReady(w http.ResponseWriter, t Tenant, c OIDCClient) {
+	h.page(w, http.StatusOK, "Workspace created", `<h1 class="ok">Workspace created</h1>
+<p class="muted">Your X-Auth workspace is ready. It uses a public (PKCE) OIDC client — there's no secret to manage.</p>
+<div class="panel"><table>
+<tr><td>Workspace</td><td><strong>`+html.EscapeString(t.CompanyName)+`</strong></td></tr>
+<tr><td>Tenant ID</td><td><code>`+html.EscapeString(t.ID)+`</code></td></tr>
+<tr><td>Client ID</td><td><code>`+html.EscapeString(c.ClientID)+`</code></td></tr>
+<tr><td>Type</td><td>Public — PKCE, no client secret</td></tr>
+</table></div>`+
+		h.quickstartPanel(c.ClientID)+
+		`<div class="actions"><a class="btn" href="/admin">Continue to dashboard</a></div>`)
+}
+
+// quickstartPanel renders the "download your starter kit" block shared by the
+// post-signup screen and the owner dashboard. The links hit DownloadQuickstart,
+// which serves each file pre-filled for this workspace's public client.
+func (h *SignupConsoleHandlers) quickstartPanel(clientID string) string {
+	var links strings.Builder
+	for _, a := range quickstartAssets {
+		links.WriteString(`<a class="btn secondary" href="/admin/owner/download/` + a.Download + `" download>` + a.Download + `</a>`)
+	}
+	issuer := html.EscapeString(strings.TrimRight(h.Issuer, "/"))
+	return `<h2 style="margin-top:28px">Quickstart — browser app</h2>
+<div class="panel">
+<p class="muted">A dependency-free OIDC client, pre-filled for this workspace
+(<code>` + html.EscapeString(clientID) + `</code>). Download all three files into one folder on any static host:</p>
+<div class="actions">` + links.String() + `</div>
+<ol class="muted" style="margin:14px 0 0;padding-left:20px;line-height:1.7">
+<li>Host <code>landing.html</code>, <code>callback.html</code> and <code>auth.js</code> together (e.g. <code>https://yourapp.com/</code>).</li>
+<li>Add <code>https://yourapp.com/callback.html</code> as a redirect URI below.</li>
+<li>Open <code>landing.html</code> and click <strong>Sign in</strong>. Discovery: <code>` + issuer + `/.well-known/openid-configuration</code>.</li>
+</ol>
+</div>`
+}
+
+// DownloadQuickstart serves one starter file, filled in for the signed-in
+// owner's workspace, as an attachment. Public clients only — the files ship to
+// the browser and must never carry a secret.
+func (h *SignupConsoleHandlers) DownloadQuickstart(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if !owner.HasClient {
+		h.errorPage(w, http.StatusBadRequest, "This workspace has no OIDC client yet.", "/admin")
+		return
+	}
+	if owner.Client.ClientSecretHash != "" {
+		h.errorPage(w, http.StatusBadRequest,
+			"The browser starter kit is only available for a public (PKCE) client. Your client is confidential.", "/admin")
+		return
+	}
+	asset, ok := quickstartAssetByName(r.PathValue("asset"))
+	if !ok {
+		h.errorPage(w, http.StatusNotFound, "Unknown starter file.", "/admin")
+		return
+	}
+	body, err := renderQuickstart(asset, quickstartParamsFor(h.Issuer, owner.Tenant, owner.Client))
+	if err != nil {
+		h.Logger.Error("quickstart_render_failed", "err", err, "asset", asset.Download)
+		h.errorPage(w, http.StatusInternalServerError, "Could not generate the file.", "/admin")
+		return
+	}
+	w.Header().Set("Content-Type", asset.ContentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+asset.Download+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // renderSecret shows the one-time client secret. firstTime distinguishes the
@@ -343,32 +423,55 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 		client = `<p class="err">No OIDC client found for this workspace.</p>`
 	} else {
 		c := owner.Client
+		public := c.ClientSecretHash == ""
 		redirects := originList(c.RedirectURIs)
 		origins := originList(c.WebOrigins)
 		notice := ""
 		if len(c.RedirectURIs) == 0 {
 			notice = `<p class="warn">⚠️ No redirect URI set yet — add your application's callback URL below before starting an OIDC flow.</p>`
 		}
+		typeLabel := "Confidential — client secret required"
+		if public {
+			typeLabel = "Public — PKCE, no client secret"
+		}
+
+		// Public client → offer the browser starter kit; let the owner mint a
+		// secret to switch to a confidential/server-side client. Confidential
+		// client → the regenerate-secret action (the starter kit is hidden,
+		// since a browser can't hold the secret).
+		quickstart := ""
+		var secretPanel string
+		if public {
+			quickstart = h.quickstartPanel(c.ClientID)
+			secretPanel = `<div class="panel">
+<h3 style="margin:0 0 8px">Server-side app?</h3>
+<p class="muted">This client is public (PKCE). If you integrate from a backend that can keep a secret, generate one — this converts the client to confidential and the browser quickstart no longer applies.</p>
+<form method="post" action="/admin/owner/regenerate-secret" onsubmit="return confirm('Generate a client secret? The client becomes confidential.')">
+<button class="secondary" type="submit">Generate client secret</button>
+</form></div>`
+		} else {
+			secretPanel = `<div class="panel">
+<form method="post" action="/admin/owner/regenerate-secret" onsubmit="return confirm('Regenerate the client secret? The current secret stops working immediately.')">
+<button class="danger" type="submit">Regenerate secret</button>
+</form></div>`
+		}
+
 		client = `<h2 style="margin-top:28px">OIDC client</h2>
 <div class="panel"><table>
 <tr><td>Client ID</td><td><code>` + html.EscapeString(c.ClientID) + `</code></td></tr>
-<tr><td>Type</td><td>Confidential (client secret required)</td></tr>
+<tr><td>Type</td><td>` + typeLabel + `</td></tr>
 <tr><td>Redirect URIs</td><td>` + redirects + `</td></tr>
 <tr><td>Web origins</td><td>` + origins + `</td></tr>
-</table>` + notice + `
-<form method="post" action="/admin/owner/regenerate-secret" onsubmit="return confirm('Regenerate the client secret? The current secret stops working immediately.')" style="margin-top:14px">
-<button class="danger" type="submit">Regenerate secret</button>
-</form>
-</div>
+</table>` + notice + `</div>` + quickstart + `
 <div class="panel">
 <h3 style="margin:0 0 8px">Update redirect URIs &amp; web origins</h3>
 <form method="post" action="/admin/owner/client">
 <label>Redirect URIs (one per line)</label>
-<textarea name="redirect_uris" rows="3" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com/callback">` + html.EscapeString(strings.Join(c.RedirectURIs, "\n")) + `</textarea>
+<textarea name="redirect_uris" rows="3" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com/callback.html">` + html.EscapeString(strings.Join(c.RedirectURIs, "\n")) + `</textarea>
 <label>Web origins (one per line, for browser CORS)</label>
 <textarea name="web_origins" rows="2" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com">` + html.EscapeString(strings.Join(c.WebOrigins, "\n")) + `</textarea>
 <div class="actions"><button type="submit">Save</button></div>
-</form></div>`
+</form></div>` + secretPanel
 	}
 
 	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})

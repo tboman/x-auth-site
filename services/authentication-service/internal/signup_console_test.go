@@ -156,15 +156,24 @@ func extractSecret(t *testing.T, body string) string {
 	return strings.TrimSpace(rest[:j])
 }
 
-func TestSignupProvisionsTenantAndConfidentialClient(t *testing.T) {
+func TestSignupProvisionsTenantAndPublicClient(t *testing.T) {
 	r, store := newAdminRouter(t) // no admin emails; stub social
-	w := driveSignup(t, r, store, "owner@acme.test", "Acme Inc", "https://app.acme.com/callback")
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme Inc", "https://app.acme.com/callback.html")
 	if w.Code != http.StatusOK {
 		t.Fatalf("signup callback: want 200, got %d (%s)", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, "Workspace created") || !strings.Contains(body, "ten_acme-inc") {
-		t.Fatalf("secret screen missing expected content:\n%s", body)
+		t.Fatalf("ready screen missing expected content:\n%s", body)
+	}
+	// Public-client workspace: no secret shown, and the quickstart downloads offered.
+	if strings.Contains(body, `class="secret"`) {
+		t.Fatal("public-client signup must not render a client secret")
+	}
+	for _, asset := range []string{"auth.js", "callback.html", "landing.html"} {
+		if !strings.Contains(body, "/admin/owner/download/"+asset) {
+			t.Fatalf("ready screen missing quickstart download for %s", asset)
+		}
 	}
 
 	// Tenant registry row.
@@ -176,7 +185,7 @@ func TestSignupProvisionsTenantAndConfidentialClient(t *testing.T) {
 	if _, err := store.GetUserByEmail("ten_acme-inc", "owner@acme.test"); err != nil {
 		t.Fatalf("owner user missing: %v", err)
 	}
-	// Confidential client bound to the tenant, secret hash matches the displayed secret.
+	// Public client bound to the tenant — empty secret hash marks it public.
 	var client OIDCClient
 	clients, _ := store.ListClients()
 	for _, c := range clients {
@@ -187,14 +196,10 @@ func TestSignupProvisionsTenantAndConfidentialClient(t *testing.T) {
 	if client.ClientID == "" || !strings.HasPrefix(client.ClientID, "cli_") {
 		t.Fatalf("no cli_ client bound to tenant: %+v", clients)
 	}
-	if client.ClientSecretHash == "" {
-		t.Fatal("client must be confidential (non-empty secret hash)")
+	if client.ClientSecretHash != "" {
+		t.Fatalf("client must be public (empty secret hash), got %q", client.ClientSecretHash)
 	}
-	secret := extractSecret(t, body)
-	if HashToken(secret) != client.ClientSecretHash {
-		t.Fatal("displayed secret does not hash to the stored secret hash")
-	}
-	if len(client.RedirectURIs) != 1 || client.RedirectURIs[0] != "https://app.acme.com/callback" {
+	if len(client.RedirectURIs) != 1 || client.RedirectURIs[0] != "https://app.acme.com/callback.html" {
 		t.Fatalf("redirect URIs not set from signup: %+v", client.RedirectURIs)
 	}
 	if len(client.WebOrigins) != 1 || client.WebOrigins[0] != "https://app.acme.com" {
@@ -327,55 +332,106 @@ func TestSignupRateLimited(t *testing.T) {
 	}
 }
 
-// TestSignupClientEnforcedAtToken proves the signup-minted confidential client's
-// secret is actually enforced end-to-end: a code exchange with the wrong secret
-// is refused, the right one succeeds.
-func TestSignupClientEnforcedAtToken(t *testing.T) {
+// TestSignupClientPublicTokenExchange proves the signup-minted PUBLIC client
+// completes the code grant with PKCE and NO client secret — the flow the
+// downloadable browser quickstart relies on.
+func TestSignupClientPublicTokenExchange(t *testing.T) {
 	r, store := newAdminRouter(t)
-	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "https://app.acme.com/callback")
-	secret := extractSecret(t, w.Body.String())
+	driveSignup(t, r, store, "owner@acme.test", "Acme", "https://app.acme.com/callback.html")
 	client, _ := (&SignupConsoleHandlers{Store: store}).tenantClient("ten_acme")
+	if client.ClientSecretHash != "" {
+		t.Fatalf("signup client must be public, got secret hash %q", client.ClientSecretHash)
+	}
 	owner, err := store.GetUserByEmail("ten_acme", "owner@acme.test")
 	if err != nil {
 		t.Fatalf("owner: %v", err)
 	}
 
 	verifier := randToken(48)
-	seedCode := func(code string) {
-		if err := store.PutAuthCode(AuthCode{
-			Code: code, ClientID: client.ClientID, TenantID: "ten_acme", UserID: owner.ID,
-			RedirectURI: "https://app.acme.com/callback", Scope: "openid",
-			CodeChallenge: pkceS256(verifier), CreatedAt: time.Now().UTC(),
-		}); err != nil {
-			t.Fatalf("seed code: %v", err)
-		}
-	}
-	exchange := func(code, secret string) *httptest.ResponseRecorder {
-		form := url.Values{
-			"grant_type":    {"authorization_code"},
-			"code":          {code},
-			"redirect_uri":  {"https://app.acme.com/callback"},
-			"code_verifier": {verifier},
-			"client_id":     {client.ClientID},
-			"client_secret": {secret},
-		}
-		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		tw := httptest.NewRecorder()
-		r.ServeHTTP(tw, req)
-		return tw
+	if err := store.PutAuthCode(AuthCode{
+		Code: "code-pub", ClientID: client.ClientID, TenantID: "ten_acme", UserID: owner.ID,
+		RedirectURI: "https://app.acme.com/callback.html", Scope: "openid",
+		CodeChallenge: pkceS256(verifier), CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed code: %v", err)
 	}
 
-	seedCode("code-wrong")
-	if tw := exchange("code-wrong", "not-the-secret"); tw.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong secret: want 401, got %d (%s)", tw.Code, tw.Body.String())
+	// No client_secret in the body — a public client authenticates by PKCE alone.
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {"code-pub"},
+		"redirect_uri":  {"https://app.acme.com/callback.html"},
+		"code_verifier": {verifier},
+		"client_id":     {client.ClientID},
 	}
-	seedCode("code-right")
-	tw := exchange("code-right", secret)
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tw := httptest.NewRecorder()
+	r.ServeHTTP(tw, req)
 	if tw.Code != http.StatusOK {
-		t.Fatalf("correct secret: want 200, got %d (%s)", tw.Code, tw.Body.String())
+		t.Fatalf("public PKCE exchange: want 200, got %d (%s)", tw.Code, tw.Body.String())
 	}
 	if !strings.Contains(tw.Body.String(), "access_token") {
 		t.Fatalf("token response missing access_token:\n%s", tw.Body.String())
+	}
+}
+
+// TestQuickstartDownload covers the per-tenant starter-kit download: owner-gated,
+// pre-filled with the workspace's client/tenant ids, served as an attachment.
+func TestQuickstartDownload(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme Inc", "https://app.acme.com/callback.html")
+	ownerCookie := sessionCookie(w, ownerSessionCookie)
+	client, _ := (&SignupConsoleHandlers{Store: store}).tenantClient("ten_acme-inc")
+
+	get := func(asset, cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/admin/owner/download/"+asset, nil)
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		}
+		rw := httptest.NewRecorder()
+		r.ServeHTTP(rw, req)
+		return rw
+	}
+
+	// Unauthenticated → forbidden.
+	if rw := get("auth.js", ""); rw.Code != http.StatusForbidden {
+		t.Fatalf("anon download: want 403, got %d", rw.Code)
+	}
+
+	// auth.js, customized for this workspace, served as an attachment.
+	rw := get("auth.js", ownerCookie)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("auth.js: want 200, got %d (%s)", rw.Code, rw.Body.String())
+	}
+	if cd := rw.Header().Get("Content-Disposition"); !strings.Contains(cd, `filename="auth.js"`) {
+		t.Fatalf("missing attachment disposition: %q", cd)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, client.ClientID) || !strings.Contains(body, "ten_acme-inc") {
+		t.Fatalf("auth.js not customized with client/tenant ids:\n%s", body)
+	}
+	if strings.Contains(body, "{{") || strings.Contains(body, "cryptofreight") {
+		t.Fatalf("auth.js still has template artifacts / example values:\n%s", body)
+	}
+
+	// HTML asset renders with the brand.
+	if rw := get("landing.html", ownerCookie); rw.Code != http.StatusOK || !strings.Contains(rw.Body.String(), "Acme Inc") {
+		t.Fatalf("landing.html: code=%d brand=%v", rw.Code, strings.Contains(rw.Body.String(), "Acme Inc"))
+	}
+
+	// Unknown asset → 404.
+	if rw := get("evil.sh", ownerCookie); rw.Code != http.StatusNotFound {
+		t.Fatalf("unknown asset: want 404, got %d", rw.Code)
+	}
+
+	// Confidential client → starter kit is withheld.
+	c := client
+	c.ClientSecretHash = HashToken("s3cret")
+	if err := store.PutClient(c); err != nil {
+		t.Fatalf("make confidential: %v", err)
+	}
+	if rw := get("auth.js", ownerCookie); rw.Code != http.StatusBadRequest {
+		t.Fatalf("confidential download: want 400, got %d", rw.Code)
 	}
 }

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Signing in… — {{.Company}}</title>
+  <style>
+    body { background:#0b0e14; color:#d7dae0; font-family:system-ui,sans-serif;
+           display:grid; place-items:center; min-height:100vh; margin:0 }
+    .err { color:#f04040; max-width:32rem; font-family:monospace; white-space:pre-wrap }
+  </style>
+</head>
+<body>
+  <div id="msg">Signing you in…</div>
+  <script type="module">
+    import { handleCallback } from './auth.js';
+    handleCallback().catch(err => {
+      const el = document.getElementById('msg');
+      el.className = 'err';
+      el.textContent = err.message + '\n\nReturn to the home page and try again.';
+    });
+  </script>
+</body>
+</html>
