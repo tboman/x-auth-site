@@ -75,32 +75,55 @@ export async function handleCallback() {
   const q = new URLSearchParams(location.search);
 
   if (q.get('error')) {
+    // A direct step-up against an expired session comes back as login_required;
+    // fall back to a full login (which re-applies any pending step-up acr).
+    if (q.get('error') === 'login_required') return login();
     throw new Error(`login failed: ${q.get('error')}`);
   }
   if (q.get('session_id') && q.get('user_id')) {
-    return socialLegDone(q); // leg 1 done → start leg 2 (OIDC code flow)
+    return socialLegDone(q); // login leg done → start the OIDC code flow
   }
   if (q.get('code')) {
-    return codeLegDone(q);   // leg 2 done → exchange code for tokens
+    return codeLegDone(q);   // OIDC leg done → exchange code for tokens
   }
   throw new Error('callback reached without session_id or code');
 }
 
-// Leg 1 landed: X-Auth authenticated the user with Google and minted a
-// session. Forward the user into the OIDC authorize so the tokens carry the
-// real subject. (When X-Auth grows a real login UI on /authorize, this leg
-// collapses away and login() starts at the authorization_endpoint directly.)
+// stepUp(acr) — raise the CURRENT session's assurance (e.g. SMS OTP) WITHOUT a
+// fresh identity login. Goes straight to /authorize, reusing the X-Auth session
+// from the original login, so X-Auth shows only the challenge — no Google
+// re-login. If the session has expired, X-Auth returns login_required and
+// handleCallback() falls back to a full login() that re-applies this acr.
+export async function stepUp(acr = 'urn:xauth:otp:sms') {
+  SS.setItem('xauth_stepup_acr', acr);
+  await gotoAuthorize(acr);
+}
+
+// Login leg landed: X-Auth authenticated the user and minted a session. Forward
+// into the OIDC authorize so the tokens carry the real subject. A pending
+// step-up acr (stashed by stepUp() before a session-expiry fallback) takes
+// precedence over the client's default acrValues.
 async function socialLegDone(q) {
   if (q.get('state') !== SS.getItem('xauth_social_state')) {
     throw new Error('state mismatch on social callback');
   }
   SS.removeItem('xauth_social_state');
+  const pending = SS.getItem('xauth_stepup_acr');
+  SS.removeItem('xauth_stepup_acr');
+  await gotoAuthorize(pending || OIDC.acrValues);
+}
 
+// gotoAuthorize navigates to the OIDC authorization_endpoint with PKCE. acr (if
+// set) requests a step-up interlude; the ID token comes back with acr/amr
+// claims proving it. X-Auth derives the tenant from the registered client and
+// the user from the session cookie, so no user_id is forwarded (tenant_id is
+// sent only as a sanity check; it must match the client's registered tenant).
+async function gotoAuthorize(acr) {
   const verifier = randomToken(48);
   const state = randomToken(24);
+  const nonce = randomToken(16);
   SS.setItem('xauth_pkce_verifier', verifier);
   SS.setItem('xauth_oidc_state', state);
-  const nonce = randomToken(16);
   SS.setItem('xauth_nonce', nonce);
 
   const doc = await discovery();
@@ -113,14 +136,8 @@ async function socialLegDone(q) {
   u.searchParams.set('nonce', nonce);
   u.searchParams.set('code_challenge', await s256(verifier));
   u.searchParams.set('code_challenge_method', 'S256');
-  // X-Auth derives the tenant from the registered client and the user from the
-  // session cookie the social leg set on the auth domain — so we no longer
-  // forward a user_id (which the IdP would not trust anyway). tenant_id is sent
-  // only as a sanity check; it must match the client's registered tenant.
   u.searchParams.set('tenant_id', OIDC.tenantId);
-  // Step-up: X-Auth interrupts /authorize with a hosted OTP page when an
-  // acr is requested; the ID token comes back with acr/amr claims to prove it.
-  if (OIDC.acrValues) u.searchParams.set('acr_values', OIDC.acrValues);
+  if (acr) u.searchParams.set('acr_values', acr);
   location.replace(u);
 }
 

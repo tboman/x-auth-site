@@ -30,6 +30,15 @@ code but does not host the login UI in this two-leg model):
 `/login` is the single entry point — point your login button there and X-Auth
 owns the method selection (and can grow new methods) without client changes.
 
+### Step-up (reuse the session — no re-login)
+
+To raise assurance for a sensitive action, call `stepUp('urn:xauth:otp:sms')`.
+It goes **straight to `/authorize`**, reusing the X-Auth session from the
+original login, so X-Auth shows only the OTP challenge — it does **not** send the
+user back through Google. The fresh tokens come back with `acr`/`amr` claims
+proving the step-up. If the session has expired, X-Auth returns `login_required`
+and `handleCallback()` falls back to a full `login()` that re-applies the acr.
+
 ## X-Auth side — required environment
 
 ```bash

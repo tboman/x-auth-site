@@ -177,4 +177,12 @@ func TestQuickstartAuthJSUsesHostedLogin(t *testing.T) {
 	if strings.Contains(js, "/v1/social/") {
 		t.Errorf("auth.js should no longer reference the social leg path directly:\n%s", js)
 	}
+	// Step-up reuses the existing session by going straight to /authorize, with a
+	// login_required fallback to full login.
+	if !strings.Contains(js, "export async function stepUp") {
+		t.Errorf("auth.js must expose stepUp() for session-reuse step-up:\n%s", js)
+	}
+	if !strings.Contains(js, "login_required") {
+		t.Errorf("auth.js must handle login_required (session-expiry fallback):\n%s", js)
+	}
 }
