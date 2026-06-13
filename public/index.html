@@ -1017,6 +1017,84 @@
             .footer-inner { flex-direction: column; gap: 1.5rem; text-align: center; }
             .footer-links { flex-wrap: wrap; justify-content: center; }
         }
+
+        /* ── Use Cases / In Production ── */
+        .usecase-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+            margin-top: 3.5rem;
+        }
+        .usecase-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 2.25rem 2rem;
+            backdrop-filter: blur(12px);
+            transition: border-color 0.2s;
+            display: flex;
+            flex-direction: column;
+        }
+        .usecase-card:hover { border-color: var(--accent-ring); }
+        .uc-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
+        .usecase-card h3 {
+            color: var(--text);
+            margin: 0.7rem 0 0.4rem;
+            font-size: 1.3rem;
+            line-height: 1.3;
+        }
+        .uc-customer { font-size: 0.78rem; color: var(--muted); margin-bottom: 1rem; }
+        .uc-customer a {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid var(--accent-ring);
+        }
+        .usecase-card > p { color: var(--muted); font-size: 0.875rem; line-height: 1.75; }
+        .uc-flow {
+            list-style: none;
+            margin: 1.5rem 0 0.5rem;
+            padding: 0;
+            counter-reset: ucstep;
+            display: grid;
+            gap: 0.7rem;
+        }
+        .uc-flow li {
+            position: relative;
+            counter-increment: ucstep;
+            padding-left: 2.5rem;
+            font-size: 0.84rem;
+            color: var(--text);
+            line-height: 1.55;
+            min-height: 1.6rem;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .uc-flow li::before {
+            content: counter(ucstep, decimal-leading-zero);
+            position: absolute;
+            left: 0; top: 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.68rem;
+            color: var(--accent);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            border-radius: 5px;
+            width: 1.6rem; height: 1.6rem;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .uc-flow li strong { color: var(--text); font-weight: 600; }
+        .uc-flow li span { color: var(--muted); margin-left: 0.3rem; }
+        .usecase-card .tag-row { margin-top: auto; padding-top: 1.5rem; }
+        @media (max-width: 960px) {
+            .usecase-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -1031,6 +1109,7 @@
             </div>
             <nav>
                 <a href="#apps">For Apps</a>
+                <a href="#use-cases">Use Cases</a>
                 <a href="#agents">For Agents</a>
                 <a href="/quickstarts/">Quickstarts</a>
                 <a href="#pricing">Pricing</a>
@@ -1422,6 +1501,61 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
                     <span class="tag">Tenant Policy</span>
                     <span class="tag">Risk Tiers</span>
                     <span class="tag">Zero Trust</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 5b: Use Cases / In Production ── -->
+<section id="use-cases">
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">In Production</div>
+            <h2>Two ways teams ship<br>X-Auth for Apps.</h2>
+            <p class="lead">The same OIDC provider, dropped in two ways &mdash; managed login and sessions, or login plus on-demand step-up. Both are live today on XentraNET products.</p>
+        </div>
+        <div class="usecase-grid">
+            <!-- Use case 1: Login & sessions -->
+            <div class="usecase-card">
+                <span class="uc-num">Use case 01 &middot; Login &amp; sessions</span>
+                <h3>Managed login &mdash; social &amp; phone, sessions handled.</h3>
+                <p class="uc-customer">Live on <a href="https://unlimitedfreight.com" target="_blank" rel="noopener">Unlimited&nbsp;Freight</a> &mdash; enterprise AI agents for freight ops.</p>
+                <p>Hand X-Auth your sign-in and you're done. The hosted <code>/login</code> chooser lets users pick <strong>Google</strong> or their <strong>phone number</strong>; X-Auth verifies them, mints the session, and rotates tokens. No password store, no SMS plumbing, no session bugs to own.</p>
+                <ol class="uc-flow">
+                    <li><strong>Hosted chooser</strong> <span>&mdash; user picks Google or phone at <code>/login</code>.</span></li>
+                    <li><strong>Verify</strong> <span>&mdash; social sign-in or SMS one-time code, on X-Auth's UI.</span></li>
+                    <li><strong>Session minted</strong> <span>&mdash; OIDC code + PKCE returns access, ID &amp; rotating refresh tokens.</span></li>
+                    <li><strong>Stay signed in</strong> <span>&mdash; silent refresh; one revoke kills the whole token family.</span></li>
+                </ol>
+                <div class="tag-row">
+                    <span class="tag">Hosted /login</span>
+                    <span class="tag">Google</span>
+                    <span class="tag">Phone / SMS OTP</span>
+                    <span class="tag">OIDC + PKCE</span>
+                    <span class="tag">Session management</span>
+                    <span class="tag">Rotating refresh</span>
+                </div>
+            </div>
+            <!-- Use case 2: On-demand step-up -->
+            <div class="usecase-card">
+                <span class="uc-num">Use case 02 &middot; On-demand step-up</span>
+                <h3>Social login, then prove it for what matters.</h3>
+                <p class="uc-customer">Live on <a href="https://cryptofreight.org" target="_blank" rel="noopener">CryptoFreight</a> &mdash; on-chain freight settlement.</p>
+                <p>Everyday access stays frictionless on a normal social login. The moment a user reaches something sensitive &mdash; a booking, the settlement ledger &mdash; X-Auth runs an <strong>on-demand step-up</strong>: a <strong>passkey (FIDO2)</strong> or an <strong>SMS one-time code</strong>, reusing the existing session so there's no second full login. The session is upgraded with the achieved ACR.</p>
+                <ol class="uc-flow">
+                    <li><strong>Social login</strong> <span>&mdash; frictionless Google sign-in, low-risk session.</span></li>
+                    <li><strong>Sensitive action</strong> <span>&mdash; the app requests an assurance level via <code>acr_values</code>.</span></li>
+                    <li><strong>Step-up challenge</strong> <span>&mdash; passkey or SMS OTP, no re-login (session reuse).</span></li>
+                    <li><strong>ACR upgraded</strong> <span>&mdash; the token carries the achieved assurance; the gate opens.</span></li>
+                </ol>
+                <div class="tag-row">
+                    <span class="tag">Social login</span>
+                    <span class="tag">Passkeys / FIDO2</span>
+                    <span class="tag">SMS OTP</span>
+                    <span class="tag">acr_values</span>
+                    <span class="tag">Step-up</span>
+                    <span class="tag">Session reuse</span>
                 </div>
             </div>
         </div>
