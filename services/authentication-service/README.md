@@ -152,6 +152,35 @@ before `/authorize`, so the callback sets the cookie and `/authorize` reads it
 re-enables the legacy `user_id`/auto-dev-user path for local development; it is
 **off in production**.
 
+**Phase 2.10 — self-service signup + tenant-owner dashboard (done).** The
+marketing site's "Get Started Free" CTA opens a company-name modal and hands off
+to `GET /admin/signup?company=…`. After a Google sign-in (the same real social
+leg, run in a staging `ten_signup` tenant) the service provisions, in one shot:
+a **tenant** named after the company (if the slug is free), the **owner** user
+and session, and a **confidential** OIDC client with a random `cli_<rand>` id and
+a random secret — only the SHA-256 hash is stored, so the plaintext is shown
+**once** on a post-signup screen (with a Regenerate button for later). The secret
+is genuinely enforced: `/token`'s `extractClientCreds` already requires a matching
+secret for any client with a non-empty hash.
+
+This is the **first real tenant registry**: `tenants` (migration `000006`, slug +
+owner_email both UNIQUE) carries the human company name, replacing the
+derived-only model for self-service workspaces. The derived `ListTenants` is kept
+for the staff console. A duplicate company name is refused ("pick another"); a
+returning owner (same Google email) is routed back to their existing workspace
+rather than minting a second one.
+
+`GET /admin` is now **role-aware**: a `ADMIN_EMAILS` staff member still gets the
+full all-tenants console (above); everyone else gets the **tenant-owner
+dashboard** — their one tenant and one client only, with edit-redirect-URIs and
+regenerate-secret actions. The owner browser session is an HttpOnly
+`xauth_owner_session` cookie (Path=`/admin`) whose value is `<tenantID>|<sessionID>`
+(the tenant rides along because an owner's session lives in their own
+`ten_<slug>`); `currentOwner` additionally requires the session user's email to
+equal the tenant's `owner_email`, so an ordinary end-user with a session in the
+tenant cannot reach the dashboard. Open signup is rate-limited per IP via
+`pkg/ratex` (`SIGNUP_RATE`, default `10/1h`).
+
 **Still deferred** (every `TODO(phase-2)` comment in the codebase):
 
 - Strict client authentication (public dev client still allowed without a secret)
@@ -289,6 +318,27 @@ e.g. `http://localhost:8082/v1/social/google/callback` for local dev.
 | `GET` | `/dev/oidc/callback` | Exchanges the code at `/token` with PKCE and renders token claims |
 | `POST` | `/dev/logout` | Invalidates the console session and clears the cookie |
 
+### Self-service signup & tenant-owner dashboard
+
+Reached from the marketing site's "Get Started Free". The signup leg runs the
+Google social login in the staging `ten_signup` tenant, then provisions a real
+tenant + owner + confidential OIDC client (see Phase 2.10 above).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/admin/signup?company=...` | Landing form: company name (prefilled) + optional app redirect URI |
+| `GET` | `/admin/signup/start` | Stashes intent + CSRF nonce, starts the Google leg. **Rate-limited per IP** (`SIGNUP_RATE`) |
+| `GET` | `/admin/signup/callback` | Reads the verified email; provisions tenant + owner + client; shows the one-time secret. Duplicate company → "taken"; returning owner → existing workspace |
+| `GET` | `/admin/owner/login` | Returning-owner Google sign-in |
+| `GET` | `/admin/owner/callback` | Resolves the email to a workspace; sets the owner cookie. Unknown email → "no workspace yet" |
+| `POST` | `/admin/owner/regenerate-secret` | Issues a fresh client secret, shown once |
+| `POST` | `/admin/owner/client` | Edit the client's redirect URIs / web origins |
+| `POST` | `/admin/owner/logout` | Invalidates the owner session and clears the cookie |
+
+`GET /admin` itself is role-aware: a `ADMIN_EMAILS` staff member gets the
+all-tenants console; a signed-in owner gets their single-tenant dashboard;
+everyone else gets the customer landing (owner sign-in + a staff-sign-in link).
+
 The console is intentionally small: clients are public PKCE clients, duplicate
 `client_id`s are rejected, and the in-page registered-client list is
 process-local even though the actual OIDC client row is persisted by storage.
@@ -392,7 +442,8 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 | `TLS_CA_FILE` | _(unset)_ | CA bundle used to verify authenticator-service's certificate on outbound calls (`tlsx.Transport`). |
 | `INTERNAL_AUTH_SECRET` | _(unset)_ | Shared secret for the `/internal/v1/` tree when mTLS is not in play. Inbound: requests must carry `X-Internal-Auth: <secret>` (constant-time compare) or arrive over verified mTLS, else structured 401. Outbound: the same value is stamped on calls to authenticator-service. Unset -> internal routes are open (local dev). |
 | `V1_INTERNAL_ONLY` | `false` | `true` puts the `httpx.InternalAuth` gate on the public `/v1/users` + `/v1/sessions` tree too (not just `/internal/v1`), for public-ingress deployments with no VPC trust boundary. `/healthz`, OIDC, social, `/dev`, `/admin` stay open. |
-| `ADMIN_EMAILS` | _(unset)_ | Comma-separated Google-account allowlist for the `/admin` console. Empty denies all admin sign-ins. |
+| `ADMIN_EMAILS` | _(unset)_ | Comma-separated Google-account allowlist for the staff `/admin` console (all-tenants view). Empty denies all staff sign-ins. Customer self-service signup and the tenant-owner dashboard are unaffected. |
+| `SIGNUP_RATE` | `10/1h` | Per-IP rate limit (`N/duration`, e.g. `5/30m`) on the self-service signup action `GET /admin/signup/start`. Malformed values log a warning and keep the default. |
 | `AUTHORIZE_DEV_AUTOLOGIN` | _(unset)_ | `true` re-enables the legacy `/authorize` behaviour (trust a `user_id` param / auto-create a dev user) for local dev. **Must be unset in production**, where `/authorize` requires a real `xauth_authz_session` cookie. |
 
 ## Run locally
