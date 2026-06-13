@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
+	"github.com/xentranet/x-auth/pkg/ratex"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -91,6 +93,7 @@ func Router(d Deps) http.Handler {
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
+	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 
@@ -143,14 +146,48 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("GET /dev/oidc/start", dev.StartOIDC)
 	mux.HandleFunc("GET /dev/oidc/callback", dev.OIDCCallback)
 
-	// Hosted admin console: Google sign-in (email allowlist) -> tenant listing.
-	mux.HandleFunc("GET /admin", admin.Home)
-	mux.HandleFunc("GET /admin/", admin.Home)
+	// Hosted admin console at /admin is role-aware: a XentraNET staff member on
+	// the ADMIN_EMAILS allowlist gets the full all-tenants console (admin.Home);
+	// everyone else gets the customer view (signup.Home — the tenant-owner
+	// dashboard if signed in, otherwise the self-service landing). currentAdmin
+	// has no side effects when the staff cookie is absent, so a plain visitor
+	// falls straight through to the owner path.
+	adminHome := func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := admin.currentAdmin(w, r); ok {
+			admin.Home(w, r)
+			return
+		}
+		signup.Home(w, r)
+	}
+	mux.HandleFunc("GET /admin", adminHome)
+	mux.HandleFunc("GET /admin/", adminHome)
 	mux.HandleFunc("GET /admin/login/google", admin.LoginGoogle)
 	mux.HandleFunc("GET /admin/social/callback", admin.SocialCallback)
 	mux.HandleFunc("POST /admin/logout", admin.Logout)
 	mux.HandleFunc("POST /admin/clients", admin.RegisterClient)
 	mux.HandleFunc("POST /admin/clients/delete", admin.DeleteClient)
+
+	// Self-service signup funnel + tenant-owner dashboard endpoints. The
+	// provisioning action (/admin/signup/start) is rate-limited per IP since it
+	// is open to anyone with a Google account (SIGNUP_RATE, default 10/1h).
+	signupLimit, signupWindow := 10, time.Hour
+	if v := os.Getenv("SIGNUP_RATE"); v != "" {
+		if n, win, err := ratex.ParseRate(v); err == nil {
+			signupLimit, signupWindow = n, win
+		} else {
+			d.Logger.Warn("signup_rate_invalid", "value", v, "err", err)
+		}
+	}
+	signupStart := ratex.Middleware(ratex.New(signupLimit, signupWindow),
+		func(r *http.Request) string { return clientIP(r) })(http.HandlerFunc(signup.SignupStart))
+	mux.HandleFunc("GET /admin/signup", signup.SignupLanding)
+	mux.Handle("GET /admin/signup/start", signupStart)
+	mux.HandleFunc("GET /admin/signup/callback", signup.SignupCallback)
+	mux.HandleFunc("GET /admin/owner/login", signup.OwnerLogin)
+	mux.HandleFunc("GET /admin/owner/callback", signup.OwnerCallback)
+	mux.HandleFunc("POST /admin/owner/logout", signup.OwnerLogout)
+	mux.HandleFunc("POST /admin/owner/regenerate-secret", signup.RegenerateSecret)
+	mux.HandleFunc("POST /admin/owner/client", signup.UpdateClient)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
 	// these routes with tenantx.Middleware without firing it for OIDC traffic.

@@ -530,6 +530,60 @@ func (s *PGStorage) ListTenants() ([]TenantSummary, error) {
 	return out, nil
 }
 
+// ---- Tenant registry ----
+
+// CreateTenant inserts a registry row. The slug and owner_email unique
+// constraints (migration 000006) back the ErrConflict contract: a 23505 on
+// either becomes ErrConflict, exactly like the MemStorage in-memory check.
+func (s *PGStorage) CreateTenant(t Tenant) (Tenant, error) {
+	const q = `
+		INSERT INTO tenants (id, company_name, slug, owner_email, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`
+	_, err := s.pool.Exec(bgCtx(), q,
+		t.ID, t.CompanyName, t.Slug, t.OwnerEmail, t.CreatedAt.UTC(),
+	)
+	if isUniqueViolation(err) {
+		return Tenant{}, ErrConflict
+	}
+	if err != nil {
+		return Tenant{}, fmt.Errorf("pgstorage create_tenant: %w", err)
+	}
+	return t, nil
+}
+
+// GetTenant returns the registry row for id, or ErrNotFound.
+func (s *PGStorage) GetTenant(id string) (Tenant, error) {
+	return s.getTenant(`WHERE id = $1`, id)
+}
+
+// GetTenantBySlug returns the registry row whose slug matches, or ErrNotFound.
+func (s *PGStorage) GetTenantBySlug(slug string) (Tenant, error) {
+	return s.getTenant(`WHERE slug = $1`, slug)
+}
+
+// GetTenantByOwnerEmail returns the registry row owned by email, or ErrNotFound.
+func (s *PGStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
+	return s.getTenant(`WHERE owner_email = $1`, email)
+}
+
+// getTenant runs the shared SELECT with a caller-supplied single-arg WHERE.
+func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
+	q := `SELECT id, company_name, slug, owner_email, created_at FROM tenants ` + where
+	var t Tenant
+	err := s.pool.QueryRow(bgCtx(), q, arg).Scan(
+		&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Tenant{}, ErrNotFound
+	}
+	if err != nil {
+		return Tenant{}, fmt.Errorf("pgstorage get_tenant: %w", err)
+	}
+	t.CreatedAt = t.CreatedAt.UTC()
+	return t, nil
+}
+
 // ---- Maintenance ----
 
 // PurgeExpired runs the Postgres equivalent of MemStorage.PurgeExpired — see

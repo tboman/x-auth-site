@@ -106,14 +106,31 @@ type UpgradeSessionRequest struct {
 	StepUpCompleted bool   `json:"step_up_completed"`
 }
 
-// TenantSummary is one row of the admin console's tenant listing. There is no
-// tenant registry in phase 1, so these fields are derived by aggregating the
-// records that reference each tenant_id.
+// TenantSummary is one row of the admin console's tenant listing. The staff
+// console still derives these by aggregating the records that reference each
+// tenant_id (a tenant may exist only as users/sessions, with no registry row —
+// e.g. ten_admin, ten_developer, ten_signup).
 type TenantSummary struct {
 	TenantID     string    `json:"tenant_id"`
 	Users        int       `json:"users"`
 	Sessions     int       `json:"sessions"`
 	LastActivity time.Time `json:"last_activity"`
+}
+
+// Tenant is a self-service-provisioned workspace, created when a visitor signs
+// up from the marketing site ("Get Started Free"). Unlike the derived
+// TenantSummary, this is a first-class registry row: it carries the
+// human-supplied CompanyName, the Slug used to derive the tenant id
+// (ID == "ten_" + Slug), and the OwnerEmail of the Google account that created
+// it. Slug and OwnerEmail are both unique — a company name can be claimed once,
+// and a Google account owns at most one self-service tenant (so a returning
+// owner is routed back to their workspace rather than making a second one).
+type Tenant struct {
+	ID          string    `json:"id"`
+	CompanyName string    `json:"company_name"`
+	Slug        string    `json:"slug"`
+	OwnerEmail  string    `json:"owner_email"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // TokenType discriminates between access and refresh token records.
@@ -195,8 +212,8 @@ type OIDCClient struct {
 	// parameter — a client cannot operate across tenant boundaries. Empty means
 	// unbound (legacy clients seeded before this field; /authorize falls back to
 	// the request's tenant_id).
-	TenantID     string    `json:"tenant_id,omitempty"`
-	RedirectURIs []string  `json:"redirect_uris"`
+	TenantID     string   `json:"tenant_id,omitempty"`
+	RedirectURIs []string `json:"redirect_uris"`
 	// WebOrigins are the browser origins (scheme://host[:port]) allowed to make
 	// cross-origin fetch calls to the public OIDC surface on this client's
 	// behalf. The CORS handler unions these with the CORS_ALLOWED_ORIGINS env

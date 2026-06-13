@@ -60,11 +60,20 @@ type Storage interface {
 	// DeleteClient removes a client by id. Returns ErrNotFound if absent.
 	DeleteClient(clientID string) error
 
-	// ListTenants derives the set of tenants from existing records. There is no
-	// tenant registry in phase 1 — tenants spring into existence on first use —
-	// so this aggregates distinct tenant_ids across users and sessions with
-	// per-tenant counts, newest activity first. Used by the admin console.
+	// ListTenants derives the set of tenants from existing records by
+	// aggregating distinct tenant_ids across users and sessions with per-tenant
+	// counts, newest activity first. Used by the staff admin console — it
+	// surfaces every tenant, including registry-less ones (ten_admin, …).
 	ListTenants() ([]TenantSummary, error)
+
+	// Tenant registry (self-service signup). A registry row carries the
+	// company name and owner. CreateTenant returns ErrConflict if the slug OR
+	// the owner email is already taken. The Get* lookups return ErrNotFound on
+	// a miss.
+	CreateTenant(t Tenant) (Tenant, error)
+	GetTenant(id string) (Tenant, error)
+	GetTenantBySlug(slug string) (Tenant, error)
+	GetTenantByOwnerEmail(email string) (Tenant, error)
 
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
@@ -80,6 +89,7 @@ type MemStorage struct {
 	tokens   map[string]Token      // keyed by token_hash
 	codes    map[string]AuthCode   // keyed by authorization code
 	clients  map[string]OIDCClient // keyed by client id
+	tenants  map[string]Tenant     // keyed by tenant id
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -91,6 +101,7 @@ func NewMemStorage() *MemStorage {
 		tokens:   make(map[string]Token),
 		codes:    make(map[string]AuthCode),
 		clients:  make(map[string]OIDCClient),
+		tenants:  make(map[string]Tenant),
 	}
 	s.seedDefaultClient()
 	return s
@@ -427,6 +438,60 @@ func (s *MemStorage) ListTenants() ([]TenantSummary, error) {
 		return out[i].LastActivity.After(out[j].LastActivity)
 	})
 	return out, nil
+}
+
+// ---- Tenant registry ----
+
+// CreateTenant inserts a registry row. Returns ErrConflict if the slug or the
+// owner email is already taken (mirrors the unique constraints in the PG
+// schema so behaviour doesn't drift between stores).
+func (s *MemStorage) CreateTenant(t Tenant) (Tenant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.tenants {
+		if existing.Slug == t.Slug || existing.OwnerEmail == t.OwnerEmail {
+			return Tenant{}, ErrConflict
+		}
+	}
+	s.tenants[t.ID] = t
+	return t, nil
+}
+
+// GetTenant returns the registry row for id, or ErrNotFound.
+func (s *MemStorage) GetTenant(id string) (Tenant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.tenants[id]
+	if !ok {
+		return Tenant{}, ErrNotFound
+	}
+	return t, nil
+}
+
+// GetTenantBySlug returns the registry row whose slug matches, or ErrNotFound.
+// Used for the "is this company name available?" check at signup.
+func (s *MemStorage) GetTenantBySlug(slug string) (Tenant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.tenants {
+		if t.Slug == slug {
+			return t, nil
+		}
+	}
+	return Tenant{}, ErrNotFound
+}
+
+// GetTenantByOwnerEmail returns the registry row owned by email, or
+// ErrNotFound. Used to route a returning owner back to their workspace.
+func (s *MemStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.tenants {
+		if t.OwnerEmail == email {
+			return t, nil
+		}
+	}
+	return Tenant{}, ErrNotFound
 }
 
 // ---- Maintenance ----
