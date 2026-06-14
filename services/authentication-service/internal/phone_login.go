@@ -42,6 +42,10 @@ type PhoneLoginHandlers struct {
 	Logger *slog.Logger
 	Issuer string
 
+	// Analyzer records the device fingerprint + runs CAEP drift analysis at the
+	// phone-OTP validation.
+	Analyzer *DeviceAnalyzer
+
 	mu    sync.Mutex
 	otps  map[string]pendingPhoneOTP  // keyed by otp flow id (carried in the form)
 	links map[string]pendingPhoneLink // keyed by link id (carried in a cookie)
@@ -269,7 +273,7 @@ func (h *PhoneLoginHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Logger.Info("phone_login", "tenant_id", flow.TenantID, "user_id", user.ID, "new", isNew)
-	recordDeviceSignal(h.Store, h.Logger, r, flow.TenantID, user.ID, sess.ID, DeviceStageOTP, r.PostForm.Get("device_fp"))
+	h.Analyzer.Observe(r, flow.TenantID, user.ID, sess.ID, DeviceStageOTP, r.PostForm.Get("device_fp"))
 
 	if isNew {
 		h.offerLink(w, flow, user, sess)

@@ -753,6 +753,37 @@ func (s *PGStorage) ListDeviceSignals(tenantID string, limit int) ([]DeviceSigna
 	return out, nil
 }
 
+// ListDeviceSignalsByUser returns tenantID/userID's observations, newest first.
+func (s *PGStorage) ListDeviceSignalsByUser(tenantID, userID string, limit int) ([]DeviceSignal, error) {
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	const q = `
+		SELECT id, tenant_id, user_id, session_id, stage, fingerprint, ip_address, user_agent, created_at
+		  FROM device_signals
+		 WHERE tenant_id = $1 AND user_id = $2
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $3
+	`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_device_signals_by_user: %w", err)
+	}
+	defer rows.Close()
+	out := make([]DeviceSignal, 0)
+	for rows.Next() {
+		ds, err := scanDeviceSignal(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ds)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_device_signals_by_user rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetIdentityAnchorByValue resolves a single anchor by its (tenant, type,
 // value) — the lookup phone login uses to find whether a number is already
 // known. Returns ErrNotFound on a miss. The uq_identity_anchor constraint makes

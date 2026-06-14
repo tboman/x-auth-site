@@ -29,6 +29,58 @@ func NewPGStorage(pool *pgxpool.Pool) *PGStorage {
 	return &PGStorage{pool: pool}
 }
 
+// RecordCAEPEvent appends a received SET event (payload as JSONB).
+func (s *PGStorage) RecordCAEPEvent(e CAEPEvent) error {
+	payload, err := json.Marshal(e.Payload)
+	if err != nil {
+		return fmt.Errorf("risk pgstorage caep payload: %w", err)
+	}
+	const q = `
+		INSERT INTO caep_events
+			(id, tenant_id, subject_user_id, subject_session_id, event_type, payload, received_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	if _, err := s.pool.Exec(context.Background(), q,
+		e.ID, e.TenantID, e.SubjectUserID, e.SubjectSessionID, e.EventType, payload, e.ReceivedAt.UTC()); err != nil {
+		return fmt.Errorf("risk pgstorage record_caep_event: %w", err)
+	}
+	return nil
+}
+
+// UpsertAssurance writes the (tenant, user) posture.
+func (s *PGStorage) UpsertAssurance(a AssuranceState) error {
+	const q = `
+		INSERT INTO assurance_state (tenant_id, user_id, level, compliant, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+			level      = EXCLUDED.level,
+			compliant  = EXCLUDED.compliant,
+			updated_at = EXCLUDED.updated_at`
+	if _, err := s.pool.Exec(context.Background(), q,
+		a.TenantID, a.UserID, a.Level, a.Compliant, a.UpdatedAt.UTC()); err != nil {
+		return fmt.Errorf("risk pgstorage upsert_assurance: %w", err)
+	}
+	return nil
+}
+
+// GetAssurance reads the (tenant, user) posture, ErrNotFound when none.
+func (s *PGStorage) GetAssurance(tenantID, userID string) (AssuranceState, error) {
+	const q = `
+		SELECT tenant_id, user_id, level, compliant, updated_at
+		  FROM assurance_state
+		 WHERE tenant_id = $1 AND user_id = $2`
+	var a AssuranceState
+	err := s.pool.QueryRow(context.Background(), q, tenantID, userID).Scan(
+		&a.TenantID, &a.UserID, &a.Level, &a.Compliant, &a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AssuranceState{}, ErrNotFound
+	}
+	if err != nil {
+		return AssuranceState{}, fmt.Errorf("risk pgstorage get_assurance: %w", err)
+	}
+	a.UpdatedAt = a.UpdatedAt.UTC()
+	return a, nil
+}
+
 // bgCtx is the background context used for DB operations. The current Storage
 // signatures don't accept context (matching MemStorage); we rely on pool-level
 // defaults until the interface grows ctx support.

@@ -301,8 +301,8 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		"user_id", flow.UserID, "tenant_id", flow.TenantID, "method", flow.Method)
 
 	// Record the device fingerprint captured at this step-up validation (stage
-	// reflects the method: passkey for FIDO2, otp otherwise).
-	recordDeviceSignal(h.Store, h.Logger, r, flow.TenantID, flow.UserID, flow.AuthzSessionID,
+	// reflects the method: passkey for FIDO2, otp otherwise) + drift analysis.
+	h.Analyzer.Observe(r, flow.TenantID, flow.UserID, flow.AuthzSessionID,
 		stageForMethod(flow.Method), r.PostForm.Get("device_fp"))
 
 	// A protection-level flow stamps the requested level as the token's acr (the

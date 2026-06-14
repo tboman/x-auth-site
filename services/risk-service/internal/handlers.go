@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -29,6 +30,10 @@ type Handlers struct {
 	Store  Storage
 	Logger *slog.Logger
 	Clock  Clock
+
+	// CAEPVerifier verifies incoming Security Event Tokens against authn's JWKS
+	// (caep.go). Nil → the SET receiver returns 503 (not configured).
+	CAEPVerifier *jwtx.Verifier
 }
 
 // NewHandlers constructs a Handlers value with the given storage and logger,
@@ -70,6 +75,12 @@ func (h *Handlers) Router() http.Handler {
 	// tenant-scoped v1 mux. One registration, zero handler duplication.
 	mux.Handle("/internal/v1/",
 		httpx.InternalAuth(h.Logger)(http.StripPrefix("/internal", tenantx.Middleware(v1))))
+
+	// CAEP SET receiver — internal (service-to-service from authn), NOT tenant-
+	// scoped: the tenant + subject come from the verified SET claims. A more
+	// specific pattern than /internal/v1/ so it wins the route match.
+	mux.Handle("POST /internal/v1/ssf/events",
+		httpx.InternalAuth(h.Logger)(http.HandlerFunc(h.ReceiveSET)))
 
 	return httpx.Recover(h.Logger)(httpx.Logging(h.Logger)(mux))
 }

@@ -97,6 +97,9 @@ type Storage interface {
 	// tenant's observations, newest first, capped at limit (<=0 = default cap).
 	RecordDeviceSignal(ds DeviceSignal) error
 	ListDeviceSignals(tenantID string, limit int) ([]DeviceSignal, error)
+	// ListDeviceSignalsByUser returns one user's observations, newest first —
+	// the history the device analyzer compares a fresh fingerprint against.
+	ListDeviceSignalsByUser(tenantID, userID string, limit int) ([]DeviceSignal, error)
 
 	// ProvisionTenant atomically creates a complete self-service workspace —
 	// the tenant registry row, its owner user, the owner's initial session, and
@@ -623,6 +626,22 @@ func (s *MemStorage) ListDeviceSignals(tenantID string, limit int) ([]DeviceSign
 	// devSigs is append-ordered (oldest→newest); walk backwards for newest-first.
 	for i := len(s.devSigs) - 1; i >= 0 && len(out) < limit; i-- {
 		if s.devSigs[i].TenantID == tenantID {
+			out = append(out, s.devSigs[i])
+		}
+	}
+	return out, nil
+}
+
+// ListDeviceSignalsByUser returns tenantID/userID's observations, newest first.
+func (s *MemStorage) ListDeviceSignalsByUser(tenantID, userID string, limit int) ([]DeviceSignal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	out := make([]DeviceSignal, 0)
+	for i := len(s.devSigs) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.devSigs[i].TenantID == tenantID && s.devSigs[i].UserID == userID {
 			out = append(out, s.devSigs[i])
 		}
 	}

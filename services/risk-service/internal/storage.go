@@ -34,6 +34,13 @@ type Storage interface {
 	ListPolicies(tenantID string, limit int, cursor time.Time) ([]Policy, error)
 	UpdatePolicy(p Policy) (Policy, error)
 	DeletePolicy(tenantID, id string) error
+
+	// CAEP receiver state. RecordCAEPEvent appends a received SET event (audit);
+	// UpsertAssurance writes the derived (tenant, user) posture; GetAssurance
+	// reads it (ErrNotFound when none recorded yet).
+	RecordCAEPEvent(e CAEPEvent) error
+	UpsertAssurance(a AssuranceState) error
+	GetAssurance(tenantID, userID string) (AssuranceState, error)
 }
 
 // MemStorage is a thread-safe in-memory Storage implementation.
@@ -41,6 +48,8 @@ type MemStorage struct {
 	mu          sync.RWMutex
 	evaluations map[string]RiskEvaluation // keyed by evaluation id
 	policies    map[string]Policy         // keyed by policy id
+	caepEvents  []CAEPEvent               // append-only
+	assurance   map[string]AssuranceState // keyed by tenantID|userID
 }
 
 // NewMemStorage returns an initialised in-memory store.
@@ -48,7 +57,35 @@ func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		evaluations: make(map[string]RiskEvaluation),
 		policies:    make(map[string]Policy),
+		assurance:   make(map[string]AssuranceState),
 	}
+}
+
+// RecordCAEPEvent appends a received CAEP event.
+func (s *MemStorage) RecordCAEPEvent(e CAEPEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.caepEvents = append(s.caepEvents, e)
+	return nil
+}
+
+// UpsertAssurance writes the (tenant, user) posture.
+func (s *MemStorage) UpsertAssurance(a AssuranceState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assurance[a.TenantID+"|"+a.UserID] = a
+	return nil
+}
+
+// GetAssurance reads the (tenant, user) posture, ErrNotFound when none.
+func (s *MemStorage) GetAssurance(tenantID, userID string) (AssuranceState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	a, ok := s.assurance[tenantID+"|"+userID]
+	if !ok {
+		return AssuranceState{}, ErrNotFound
+	}
+	return a, nil
 }
 
 // PutEvaluation inserts the evaluation. The caller fills ID, TenantID, and

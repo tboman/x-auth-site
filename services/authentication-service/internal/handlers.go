@@ -86,6 +86,14 @@ func Router(d Deps) http.Handler {
 	// Per-session protection-level assurance ledger (protection.go). Lives as
 	// long as a session so a satisfied level passes through for the session's life.
 	protection := NewProtectionLedger(time.Duration(SessionTTLSeconds) * time.Second)
+
+	// CAEP transmitter + device analyzer (caep.go / device_analyzer.go). The
+	// transmitter posts signed SETs to risk-service's receiver at RISK_EVENTS_URL
+	// (log-only when unset); the analyzer compares each fingerprint to history
+	// and emits assurance / session-revoked events.
+	caepTx := NewCAEPTransmitter(d.Signer, jwtIssuer, os.Getenv("RISK_EVENTS_URL"),
+		os.Getenv(httpx.EnvInternalAuthSecret), d.Logger)
+	analyzer := NewDeviceAnalyzer(d.Store, d.Logger, caepTx)
 	oidc := &OIDCHandlers{
 		Store:         d.Store,
 		Logger:        d.Logger,
@@ -97,10 +105,12 @@ func Router(d Deps) http.Handler {
 		DevAutologin:  d.DevAutologin,
 		StepUps:       stepUps,
 		Protection:    protection,
+		Analyzer:      analyzer,
 	}
-	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
+	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	phone := NewPhoneLoginHandlers(d.Store, d.Logger, d.Issuer)
+	phone.Analyzer = analyzer
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
 	admin.StepUps = stepUps

@@ -1,12 +1,6 @@
 package internal
 
-import (
-	"log/slog"
-	"net/http"
-	"time"
-
-	"github.com/google/uuid"
-)
+import "time"
 
 // device_signals.go captures a client-side device fingerprint (FingerprintJS
 // visitorId) at each login/authorize validation stage and appends it to the
@@ -47,31 +41,6 @@ func stageForMethod(method string) string {
 		return DeviceStagePasskey
 	}
 	return DeviceStageOTP
-}
-
-// recordDeviceSignal appends a device observation, best-effort. An empty
-// fingerprint (FingerprintJS unavailable / blocked) is a no-op — we don't want
-// to log empty rows. ip/user_agent come from the request.
-func recordDeviceSignal(store Storage, logger *slog.Logger, r *http.Request, tenantID, userID, sessionID, stage, fp string) {
-	if fp == "" {
-		return
-	}
-	ds := DeviceSignal{
-		ID:          "dvs_" + uuid.NewString(),
-		TenantID:    tenantID,
-		UserID:      userID,
-		SessionID:   sessionID,
-		Stage:       stage,
-		Fingerprint: fp,
-		IPAddress:   clientIP(r),
-		UserAgent:   r.UserAgent(),
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := store.RecordDeviceSignal(ds); err != nil {
-		logger.Error("device_signal_record_failed", "err", err, "stage", stage, "tenant_id", tenantID)
-		return
-	}
-	logger.Info("device_signal", "stage", stage, "tenant_id", tenantID, "user_id", userID, "fingerprint", fp)
 }
 
 // deviceFPScript is the shared client snippet injected into hosted pages that

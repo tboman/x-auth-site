@@ -73,6 +73,10 @@ type OIDCHandlers struct {
 	// protection-level interface (protection.go). Optional (nil never passes
 	// through, so every protection request challenges).
 	Protection *ProtectionLedger
+
+	// Analyzer records the device fingerprint + runs CAEP drift analysis at the
+	// /authorize step-up validation.
+	Analyzer *DeviceAnalyzer
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.

@@ -49,6 +49,10 @@ type SocialHandlers struct {
 	// Nil means a default client with a 10s timeout.
 	HTTP *http.Client
 
+	// Analyzer records the device fingerprint + runs CAEP drift analysis at the
+	// social-login validation. Required (Observe is nil-safe but we always wire it).
+	Analyzer *DeviceAnalyzer
+
 	// mu guards pending. Stub entries are keyed by the mock code; real entries
 	// are keyed by the state nonce we hand the provider.
 	mu          sync.Mutex
@@ -427,8 +431,9 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 
-	// Record the device fingerprint captured at this social-login validation.
-	recordDeviceSignal(h.Store, h.Logger, r, pending.TenantID, user.ID, sess.ID, DeviceStageSocial, pending.DeviceFP)
+	// Record the device fingerprint captured at this social-login validation
+	// and run drift analysis (CAEP emission).
+	h.Analyzer.Observe(r, pending.TenantID, user.ID, sess.ID, DeviceStageSocial, pending.DeviceFP)
 
 	// Set the authz-session cookie so the subsequent /authorize call can
 	// identify this user server-side, without the SPA forwarding a (forgeable)

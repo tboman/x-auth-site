@@ -50,6 +50,21 @@ func main() {
 
 	handlers := internal.NewHandlers(store, logger)
 
+	// CAEP SET receiver: trust authentication-service's signing key by fetching
+	// its JWKS. Both AUTHN_JWKS_URL and AUTHN_ISSUER must be set to enable the
+	// receiver; otherwise POST /internal/v1/ssf/events returns 503.
+	if jwksURL, issuer := os.Getenv("AUTHN_JWKS_URL"), os.Getenv("AUTHN_ISSUER"); jwksURL != "" && issuer != "" {
+		v, err := internal.VerifierFromJWKS(jwksURL, issuer)
+		if err != nil {
+			logger.Error("caep_verifier_init_failed", "err", err, "jwks_url", jwksURL)
+		} else {
+			handlers.CAEPVerifier = v
+			logger.Info("caep_receiver_enabled", "issuer", issuer)
+		}
+	} else {
+		logger.Warn("caep_receiver_disabled", "reason", "AUTHN_JWKS_URL / AUTHN_ISSUER unset")
+	}
+
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
 	// TLS_CERT_FILE / TLS_KEY_FILE / TLS_CLIENT_CA_FILE env vars. A nil config
 	// means plaintext local dev; a partial config is fatal.
