@@ -269,6 +269,7 @@ func (h *PhoneLoginHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Logger.Info("phone_login", "tenant_id", flow.TenantID, "user_id", user.ID, "new", isNew)
+	recordDeviceSignal(h.Store, h.Logger, r, flow.TenantID, user.ID, sess.ID, DeviceStageOTP, r.PostForm.Get("device_fp"))
 
 	if isNew {
 		h.offerLink(w, flow, user, sess)
@@ -554,10 +555,11 @@ func (h *PhoneLoginHandlers) renderCodeForm(w http.ResponseWriter, flowID, phone
 <p class="muted">We texted a 6-digit code to <strong>`+html.EscapeString(phone)+`</strong>.</p>`+errBlock+`
 <form class="panel" method="post" action="/login/phone/verify">
 `+hidden("flow", flowID)+`
+<input type="hidden" name="device_fp" data-device-fp>
 <label for="code">Verification code</label>
 <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" autofocus required>
 <button class="btn" type="submit" style="margin-top:14px">Verify</button>
-</form>`)
+</form>`+deviceFPScript)
 }
 
 // ---- page shell ----

@@ -113,10 +113,10 @@ func (h *LoginHandlers) Login(w http.ResponseWriter, r *http.Request) {
 	h.page(w, http.StatusOK, "Sign in", `<h1>`+html.EscapeString(heading)+`</h1>
 <p class="muted">Choose how you'd like to continue.</p>
 <div class="panel">
-<a class="btn" href="`+html.EscapeString(googleHref)+`">Continue with Google</a>
+<a class="btn" href="`+html.EscapeString(googleHref)+`" data-device-fp>Continue with Google</a>
 <div class="sep">or</div>
 <a class="btn secondary" href="`+html.EscapeString(phoneHref)+`">Continue with phone</a>
-</div>`)
+</div>`+deviceFPScript)
 }
 
 // errorPage renders a minimal sign-in error. No back link — the user arrived

@@ -107,6 +107,31 @@ func sessionsPanel(sessions []Session, emailByUser map[string]string, now time.T
 	return b.String()
 }
 
+// deviceSignalsPanel renders the device-fingerprint observations captured at
+// each validation stage (social / otp / passkey) — the device-analysis view.
+func deviceSignalsPanel(signals []DeviceSignal, emailByUser map[string]string) string {
+	var b strings.Builder
+	b.WriteString(`<h2 style="margin-top:28px">Device signals</h2>
+<p class="muted">Device fingerprints captured at login / step-up validation, newest first.</p>
+<div class="panel"><table>
+<thead><tr><th>Fingerprint</th><th>Stage</th><th>User</th><th>IP</th><th>Captured (UTC)</th></tr></thead><tbody>`)
+	if len(signals) == 0 {
+		b.WriteString(`<tr><td colspan="5" class="muted">No device signals yet.</td></tr>`)
+	} else {
+		for _, ds := range signals {
+			b.WriteString(`<tr>`)
+			b.WriteString(`<td><code>` + html.EscapeString(ds.Fingerprint) + `</code></td>`)
+			b.WriteString(`<td>` + html.EscapeString(ds.Stage) + `</td>`)
+			b.WriteString(`<td>` + userLabel(ds.UserID, emailByUser) + `</td>`)
+			b.WriteString(`<td class="muted">` + html.EscapeString(ds.IPAddress) + `</td>`)
+			b.WriteString(`<td class="muted">` + ds.CreatedAt.UTC().Format(time.RFC3339) + `</td>`)
+			b.WriteString(`</tr>`)
+		}
+	}
+	b.WriteString(`</tbody></table></div>`)
+	return b.String()
+}
+
 // stepUpsPanel renders the live in-progress step-up attempts — who is mid-OTP
 // on an /authorize call right now. Empty renders a quiet "none" note.
 func stepUpsPanel(attempts []StepUpAttempt, emailByUser map[string]string, now time.Time) string {

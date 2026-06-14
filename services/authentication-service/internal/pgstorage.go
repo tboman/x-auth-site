@@ -706,6 +706,53 @@ func (s *PGStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, erro
 	return a, nil
 }
 
+// RecordDeviceSignal appends one device observation to the append-only log.
+func (s *PGStorage) RecordDeviceSignal(ds DeviceSignal) error {
+	const q = `
+		INSERT INTO device_signals
+			(id, tenant_id, user_id, session_id, stage, fingerprint, ip_address, user_agent, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err := s.pool.Exec(bgCtx(), q,
+		ds.ID, ds.TenantID, nullable(ds.UserID), nullable(ds.SessionID), ds.Stage,
+		ds.Fingerprint, nullable(ds.IPAddress), nullable(ds.UserAgent), ds.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("pgstorage record_device_signal: %w", err)
+	}
+	return nil
+}
+
+// ListDeviceSignals returns tenantID's observations, newest first, capped.
+func (s *PGStorage) ListDeviceSignals(tenantID string, limit int) ([]DeviceSignal, error) {
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	const q = `
+		SELECT id, tenant_id, user_id, session_id, stage, fingerprint, ip_address, user_agent, created_at
+		  FROM device_signals
+		 WHERE tenant_id = $1
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT $2
+	`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_device_signals: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]DeviceSignal, 0)
+	for rows.Next() {
+		ds, err := scanDeviceSignal(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ds)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_device_signals rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetIdentityAnchorByValue resolves a single anchor by its (tenant, type,
 // value) — the lookup phone login uses to find whether a number is already
 // known. Returns ErrNotFound on a miss. The uq_identity_anchor constraint makes
@@ -857,6 +904,24 @@ func scanToken(r rowScanner) (Token, error) {
 	t.IssuedAt = t.IssuedAt.UTC()
 	t.ExpiresAt = t.ExpiresAt.UTC()
 	return t, nil
+}
+
+func scanDeviceSignal(r rowScanner) (DeviceSignal, error) {
+	var (
+		ds                        DeviceSignal
+		userID, sessionID, ip, ua *string
+	)
+	if err := r.Scan(
+		&ds.ID, &ds.TenantID, &userID, &sessionID, &ds.Stage, &ds.Fingerprint, &ip, &ua, &ds.CreatedAt,
+	); err != nil {
+		return DeviceSignal{}, err
+	}
+	ds.UserID = derefString(userID)
+	ds.SessionID = derefString(sessionID)
+	ds.IPAddress = derefString(ip)
+	ds.UserAgent = derefString(ua)
+	ds.CreatedAt = ds.CreatedAt.UTC()
+	return ds, nil
 }
 
 func scanAnchor(r rowScanner) (IdentityAnchor, error) {

@@ -300,6 +300,11 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 	h.Logger.Info("stepup_flow_completed", "flow_id", flowID, "challenge_id", flow.ChallengeID,
 		"user_id", flow.UserID, "tenant_id", flow.TenantID, "method", flow.Method)
 
+	// Record the device fingerprint captured at this step-up validation (stage
+	// reflects the method: passkey for FIDO2, otp otherwise).
+	recordDeviceSignal(h.Store, h.Logger, r, flow.TenantID, flow.UserID, flow.AuthzSessionID,
+		stageForMethod(flow.Method), r.PostForm.Get("device_fp"))
+
 	// A protection-level flow stamps the requested level as the token's acr (the
 	// method's own ACR is the fallback for plain method step-ups) and records the
 	// satisfied rank so later equal-or-lower requests pass through.
@@ -364,6 +369,7 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <form method="POST" action="/authorize/verify">
     <input type="hidden" name="flow" value="{{.FlowID}}">
+    <input type="hidden" name="device_fp" data-device-fp>
     {{if eq .Method "fido2"}}
     <!-- Stub ceremony: the real WebAuthn adapter replaces this with a
          navigator.credentials.get() call and posts the signed assertion. -->
@@ -376,6 +382,7 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
     {{end}}
   </form>
 </div>
+` + deviceFPScript + `
 </body>
 </html>
 `))

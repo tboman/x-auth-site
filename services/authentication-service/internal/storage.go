@@ -92,6 +92,12 @@ type Storage interface {
 	// ErrNotFound on a miss.
 	GetIdentityAnchorByValue(tenantID, anchorType, value string) (IdentityAnchor, error)
 
+	// Device signals (append-only). RecordDeviceSignal logs one device
+	// observation captured at a validation stage; ListDeviceSignals returns a
+	// tenant's observations, newest first, capped at limit (<=0 = default cap).
+	RecordDeviceSignal(ds DeviceSignal) error
+	ListDeviceSignals(tenantID string, limit int) ([]DeviceSignal, error)
+
 	// ProvisionTenant atomically creates a complete self-service workspace —
 	// the tenant registry row, its owner user, the owner's initial session, and
 	// the confidential OIDC client — in a single all-or-nothing unit. A failure
@@ -116,6 +122,7 @@ type MemStorage struct {
 	clients  map[string]OIDCClient     // keyed by client id
 	tenants  map[string]Tenant         // keyed by tenant id
 	anchors  map[string]IdentityAnchor // keyed by anchor id
+	devSigs  []DeviceSignal            // append-only device-signal log
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -595,6 +602,31 @@ func (s *MemStorage) CreateIdentityAnchor(a IdentityAnchor) (IdentityAnchor, err
 	}
 	s.anchors[a.ID] = a
 	return a, nil
+}
+
+// RecordDeviceSignal appends one device observation.
+func (s *MemStorage) RecordDeviceSignal(ds DeviceSignal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.devSigs = append(s.devSigs, ds)
+	return nil
+}
+
+// ListDeviceSignals returns tenantID's observations, newest first, capped.
+func (s *MemStorage) ListDeviceSignals(tenantID string, limit int) ([]DeviceSignal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = DefaultSessionListCap
+	}
+	out := make([]DeviceSignal, 0)
+	// devSigs is append-ordered (oldest→newest); walk backwards for newest-first.
+	for i := len(s.devSigs) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.devSigs[i].TenantID == tenantID {
+			out = append(out, s.devSigs[i])
+		}
+	}
+	return out, nil
 }
 
 // GetIdentityAnchorByValue resolves one anchor by (tenant, type, value). The

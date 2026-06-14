@@ -66,6 +66,7 @@ type socialPending struct {
 	RedirectURI  string
 	State        string // the caller's state, echoed back on the final redirect
 	CodeVerifier string // PKCE verifier (real mode only)
+	DeviceFP     string // FingerprintJS visitorId from /login, recorded on success
 	CreatedAt    time.Time
 }
 
@@ -170,8 +171,12 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Device fingerprint captured client-side on /login (FingerprintJS), carried
+	// here as a query param and recorded once the login resolves a session.
+	deviceFP := q.Get("device_fp")
+
 	if cfg, ok := h.providerConfig(provider); ok {
-		h.authorizeReal(w, r, cfg, provider, tenantID, redirectURI, state)
+		h.authorizeReal(w, r, cfg, provider, tenantID, redirectURI, state, deviceFP)
 		return
 	}
 
@@ -182,6 +187,7 @@ func (h *SocialHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		TenantID:    tenantID,
 		RedirectURI: redirectURI,
 		State:       state,
+		DeviceFP:    deviceFP,
 		CreatedAt:   time.Now().UTC(),
 	})
 
@@ -254,7 +260,7 @@ func sameOrigin(base, candidate string) bool {
 // nonce is ours (single-use, unguessable) — the caller's state rides along in
 // the pending entry and is echoed on the final redirect, never forwarded to
 // the provider.
-func (h *SocialHandlers) authorizeReal(w http.ResponseWriter, r *http.Request, cfg SocialProviderConfig, provider, tenantID, redirectURI, callerState string) {
+func (h *SocialHandlers) authorizeReal(w http.ResponseWriter, r *http.Request, cfg SocialProviderConfig, provider, tenantID, redirectURI, callerState, deviceFP string) {
 	nonce := randToken(32)
 	verifier := randToken(48) // 64 chars — within RFC 7636's 43..128 bounds
 	sum := sha256.Sum256([]byte(verifier))
@@ -266,6 +272,7 @@ func (h *SocialHandlers) authorizeReal(w http.ResponseWriter, r *http.Request, c
 		RedirectURI:  redirectURI,
 		State:        callerState,
 		CodeVerifier: verifier,
+		DeviceFP:     deviceFP,
 		CreatedAt:    time.Now().UTC(),
 	})
 
@@ -419,6 +426,9 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create session")
 		return
 	}
+
+	// Record the device fingerprint captured at this social-login validation.
+	recordDeviceSignal(h.Store, h.Logger, r, pending.TenantID, user.ID, sess.ID, DeviceStageSocial, pending.DeviceFP)
 
 	// Set the authz-session cookie so the subsequent /authorize call can
 	// identify this user server-side, without the SPA forwarding a (forgeable)

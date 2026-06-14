@@ -271,7 +271,19 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 anchor types: the store is ready for them, and they will appear here once the validation flows are built.</p>`+
 		identityTable(users, anchors)+
 		sessionsPanel(sessions, emailByUser, now, revoke)+
-		stepUpsPanel(h.StepUps.ListByTenant(tenantID), emailByUser, now))
+		stepUpsPanel(h.StepUps.ListByTenant(tenantID), emailByUser, now)+
+		deviceSignalsPanel(h.deviceSignals(tenantID), emailByUser))
+}
+
+// deviceSignals fetches the tenant's recent device observations, swallowing
+// errors (the panel renders "none" rather than failing the whole page).
+func (h *AdminConsoleHandlers) deviceSignals(tenantID string) []DeviceSignal {
+	sigs, err := h.Store.ListDeviceSignals(tenantID, 50)
+	if err != nil {
+		h.Logger.Error("admin_device_signals_failed", "err", err, "tenant_id", tenantID)
+		return nil
+	}
+	return sigs
 }
 
 // RevokeSession handles POST /admin/sessions/revoke — staff invalidates any

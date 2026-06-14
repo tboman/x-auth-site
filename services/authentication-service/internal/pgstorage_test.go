@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -735,6 +735,41 @@ func TestPGStorageProvisionTenant(t *testing.T) {
 	}
 	if _, err := s.GetClient("cli_o2"); err != ErrNotFound {
 		t.Fatalf("client must be absent, got %v", err)
+	}
+}
+
+// TestPGStorageDeviceSignals exercises the append-only device_signals log.
+func TestPGStorageDeviceSignals(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for i, st := range []string{DeviceStageSocial, DeviceStageOTP, DeviceStagePasskey} {
+		if err := s.RecordDeviceSignal(DeviceSignal{
+			ID: "dvs_" + uuid.NewString(), TenantID: "ten_a", UserID: "u", SessionID: "ses_1",
+			Stage: st, Fingerprint: "fp" + uuid.NewString(), IPAddress: "1.2.3.4", UserAgent: "UA",
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+	_ = s.RecordDeviceSignal(DeviceSignal{
+		ID: "dvs_" + uuid.NewString(), TenantID: "ten_b", Stage: DeviceStageSocial, Fingerprint: "fpb", CreatedAt: now,
+	})
+
+	got, err := s.ListDeviceSignals("ten_a", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("ten_a should have 3 signals, got %d", len(got))
+	}
+	if got[0].Stage != DeviceStagePasskey || got[2].Stage != DeviceStageSocial {
+		t.Fatalf("not newest-first: %+v", got)
+	}
+	if got[0].IPAddress != "1.2.3.4" || got[0].UserAgent != "UA" || got[0].SessionID != "ses_1" {
+		t.Fatalf("fields not roundtripped: %+v", got[0])
+	}
+	if capped, _ := s.ListDeviceSignals("ten_a", 1); len(capped) != 1 {
+		t.Fatalf("cap not applied: %d", len(capped))
 	}
 }
 
