@@ -1158,123 +1158,6 @@
             <a href="#apps" class="btn btn-primary">X-Auth for Apps</a>
             <a href="#agents" class="btn btn-ghost">X-Auth for Agents</a>
         </div>
-        <div class="code-pair">
-            <input type="radio" name="lang" id="lang-js" checked>
-            <input type="radio" name="lang" id="lang-swift">
-            <input type="radio" name="lang" id="lang-kotlin">
-            <input type="radio" name="lang" id="lang-angular">
-
-            <div class="terminal-shell">
-                <div class="term-bar">
-                    <div class="dot dot-r"></div>
-                    <div class="dot dot-y"></div>
-                    <div class="dot dot-g"></div>
-                    <span class="term-label">x-auth — frontend integration</span>
-                </div>
-                <div class="tab-bar">
-                    <label for="lang-js">JavaScript</label>
-                    <label for="lang-swift">iOS (Swift)</label>
-                    <label for="lang-kotlin">Android (Kotlin)</label>
-                    <label for="lang-angular">Angular</label>
-                </div>
-                <div class="term-body">
-<pre class="tab-panel" data-lang="js"><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
-
-<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
-
-document.<span class="fn">querySelector</span>(<span class="str">'#transfer'</span>).onclick = <span class="kw">async</span> () =&gt; {
-  <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> xauth.<span class="fn">advice</span>({
-    action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
-  });
-
-  <span class="kw">if</span> (decision === <span class="str">'ALLOW'</span>) {
-    <span class="fn">fetch</span>(<span class="str">'/api/transfer'</span>, {
-      headers: { authorization: <span class="str">`Bearer ${access_token}`</span> },
-    });
-  }
-};</code></pre>
-<pre class="tab-panel" data-lang="swift"><code><span class="kw">import</span> XAuth
-
-<span class="kw">let</span> xauth = <span class="fn">XAuth</span>(tenantId: <span class="str">"your-app"</span>)
-
-<span class="cmt">// Bind the user's tap to a transaction-scoped access token.</span>
-<span class="kw">@IBAction func</span> <span class="fn">onTransfer</span>(_ sender: UIButton) {
-    <span class="fn">Task</span> {
-        <span class="kw">let</span> advice = <span class="kw">try await</span> xauth.<span class="fn">advice</span>(
-            action: <span class="str">"transfer"</span>, amount: 2999, currency: <span class="str">"USD"</span>
-        )
-        <span class="kw">guard</span> advice.decision == .allow <span class="kw">else</span> { <span class="kw">return</span> }
-
-        <span class="kw">var</span> req = <span class="fn">URLRequest</span>(url: <span class="fn">URL</span>(string: <span class="str">"/api/transfer"</span>)!)
-        req.<span class="fn">setValue</span>(<span class="str">"Bearer \(advice.accessToken)"</span>,
-                     forHTTPHeaderField: <span class="str">"Authorization"</span>)
-        _ = <span class="kw">try await</span> URLSession.shared.<span class="fn">data</span>(<span class="kw">for</span>: req)
-    }
-}</code></pre>
-<pre class="tab-panel" data-lang="kotlin"><code><span class="kw">import</span> com.xentranet.xauth.XAuth
-
-<span class="kw">private val</span> xauth = <span class="fn">XAuth</span>(tenantId = <span class="str">"your-app"</span>)
-
-<span class="cmt">// Coroutine-scoped advice() call from a button click.</span>
-transferButton.<span class="fn">setOnClickListener</span> {
-    lifecycleScope.<span class="fn">launch</span> {
-        <span class="kw">val</span> advice = xauth.<span class="fn">advice</span>(
-            action = <span class="str">"transfer"</span>, amount = 2999, currency = <span class="str">"USD"</span>
-        )
-        <span class="kw">if</span> (advice.decision != Decision.ALLOW) <span class="kw">return</span>@launch
-
-        httpClient.<span class="fn">post</span>(<span class="str">"/api/transfer"</span>) {
-            <span class="fn">header</span>(<span class="str">"Authorization"</span>, <span class="str">"Bearer ${advice.accessToken}"</span>)
-        }
-    }
-}</code></pre>
-<pre class="tab-panel" data-lang="angular"><code><span class="kw">import</span> { Component, inject } <span class="kw">from</span> <span class="str">'@angular/core'</span>;
-<span class="kw">import</span> { HttpClient } <span class="kw">from</span> <span class="str">'@angular/common/http'</span>;
-<span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth-angular'</span>;
-
-<span class="fn">@Component</span>({ selector: <span class="str">'app-transfer'</span> })
-<span class="kw">export class</span> TransferComponent {
-  <span class="kw">private</span> xauth = <span class="fn">inject</span>(XAuth);
-  <span class="kw">private</span> http  = <span class="fn">inject</span>(HttpClient);
-
-  <span class="kw">async</span> <span class="fn">onTransfer</span>() {
-    <span class="kw">const</span> { decision, access_token } = <span class="kw">await</span> <span class="kw">this</span>.xauth.<span class="fn">advice</span>({
-      action: <span class="str">'transfer'</span>, amount: 2999, currency: <span class="str">'USD'</span>,
-    });
-    <span class="kw">if</span> (decision !== <span class="str">'ALLOW'</span>) <span class="kw">return</span>;
-
-    <span class="kw">this</span>.http.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, {}, {
-      headers: { Authorization: <span class="str">`Bearer ${access_token}`</span> },
-    }).<span class="fn">subscribe</span>();
-  }
-}</code></pre>
-                </div>
-            </div>
-
-            <div class="terminal-shell">
-                <div class="term-bar">
-                    <div class="dot dot-r"></div>
-                    <div class="dot dot-y"></div>
-                    <div class="dot dot-g"></div>
-                    <span class="term-label">x-auth — backend verification (Node.js)</span>
-                </div>
-                <div class="term-body"><pre><code><span class="kw">import</span> { XAuth } <span class="kw">from</span> <span class="str">'@xentranet/x-auth'</span>;
-
-<span class="kw">const</span> xauth = XAuth.<span class="fn">init</span>({ tenantId: <span class="str">'your-app'</span> });
-
-app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span class="kw">async</span> (req, res) =&gt; {
-  <span class="kw">const</span> bearer = req.headers.authorization?.<span class="fn">replace</span>(<span class="str">'Bearer '</span>, <span class="str">''</span>);
-
-  <span class="cmt">// Throws if the token is invalid, expired, or for a different action.</span>
-  <span class="kw">const</span> { transaction_ctx } = <span class="kw">await</span> xauth.<span class="fn">verify</span>(bearer, {
-    expect: { action: <span class="str">'transfer'</span>, amount: req.body.amount },
-  });
-
-  <span class="kw">await</span> ledger.<span class="fn">transfer</span>(transaction_ctx);
-  res.<span class="fn">json</span>({ ok: <span class="kw">true</span> });
-});</code></pre></div>
-            </div>
-        </div>
     </div>
 </section>
 
@@ -1493,13 +1376,23 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
     <div class="container">
         <div class="section-head">
             <div class="section-kicker">Core App Services</div>
-            <h2>Advice, Authentication,<br>Risk — All Three.</h2>
-            <p class="lead">One universal endpoint evaluates risk for any journey. Authentication and authenticators execute step-up when the answer is "prove you're you."</p>
+            <h2>Risk, Advice,<br>Authentication — All Three.</h2>
+            <p class="lead">In the order they run: signals are scored into a risk tier, one universal endpoint turns that into advice — ALLOW, STEP_UP, or DENY — and authentication executes the step-up when the answer is "prove you're you."</p>
         </div>
         <div class="services-grid">
             <div class="service-card">
+                <h3>Risk Intelligence</h3>
+                <p>First in the chain — the signal aggregation and policy engine behind every advice call. Ingests device, behavioral, network, and user signals; weighs them against tenant policy and resource sensitivity; returns a tier — <code>low</code>, <code>medium</code>, <code>high</code> — with a per-tier decision.</p>
+                <div class="tag-row" style="margin-top:1.25rem;">
+                    <span class="tag">Signal Aggregation</span>
+                    <span class="tag">Tenant Policy</span>
+                    <span class="tag">Risk Tiers</span>
+                    <span class="tag">Zero Trust</span>
+                </div>
+            </div>
+            <div class="service-card">
                 <h3>Universal Risk Advice</h3>
-                <p>One endpoint — <code>POST /v1/advice</code> — protects any journey. Login, checkout, transfer, profile change, sensitive read: send a <code>transaction_ctx</code> and a <code>device_ctx</code>, get back ALLOW, STEP_UP with a required ACR, or DENY. No flow-by-flow integration.</p>
+                <p>One endpoint — <code>POST /v1/advice</code> — turns the risk tier into a decision for any journey. Login, checkout, transfer, profile change, sensitive read: send a <code>transaction_ctx</code> and a <code>device_ctx</code>, get back ALLOW, STEP_UP with a required ACR, or DENY. No flow-by-flow integration.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
                     <span class="tag">/v1/advice</span>
                     <span class="tag">transaction_ctx</span>
@@ -1510,7 +1403,7 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
             </div>
             <div class="service-card">
                 <h3>Adaptive Authentication</h3>
-                <p>A full OIDC provider with risk-aware step-up. When <code>/v1/advice</code> returns STEP_UP, the authenticator service dispatches the right challenge — passkey, push, TOTP, SMS, or magic link — and the session is upgraded with the achieved ACR.</p>
+                <p>Last — execution. A full OIDC provider with risk-aware step-up: when <code>/v1/advice</code> returns STEP_UP, the authenticator service dispatches the right challenge — passkey, push, TOTP, SMS, or magic link — and the session is upgraded with the achieved ACR.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
                     <span class="tag">OIDC</span>
                     <span class="tag">Passkeys / FIDO2</span>
@@ -1518,16 +1411,6 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
                     <span class="tag">Push</span>
                     <span class="tag">SMS</span>
                     <span class="tag">Magic Link</span>
-                </div>
-            </div>
-            <div class="service-card">
-                <h3>Risk Intelligence</h3>
-                <p>Signal aggregation and policy engine behind every advice call. Ingests device, behavioral, network, and user signals; weighs them against tenant policy and resource sensitivity; returns a tier — <code>low</code>, <code>medium</code>, <code>high</code> — with a per-tier decision.</p>
-                <div class="tag-row" style="margin-top:1.25rem;">
-                    <span class="tag">Signal Aggregation</span>
-                    <span class="tag">Tenant Policy</span>
-                    <span class="tag">Risk Tiers</span>
-                    <span class="tag">Zero Trust</span>
                 </div>
             </div>
         </div>
