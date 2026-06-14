@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -27,7 +28,10 @@ import (
 )
 
 func main() {
-	logger := logx.New("authentication-service")
+	// Capture recent log events into an in-process ring buffer for the operator
+	// Monitoring console, while keeping the normal JSON-to-stdout logging.
+	events := internal.NewEventBuffer(200)
+	logger := slog.New(internal.NewBufferHandler(logx.New("authentication-service").Handler(), events))
 
 	authenticatorURL := config.Env("AUTHENTICATOR_SERVICE_URL", "http://localhost:8083")
 	issuer := config.Env("AUTH_ISSUER", "http://localhost:8082")
@@ -139,6 +143,14 @@ func main() {
 		// Break-glass root accounts (comma-separated): always allowed into the
 		// console and re-granted every staff role + reactivated on each boot.
 		RootEmails: splitNonEmpty(config.Env("ROOT_EMAILS", "")),
+		// Operator Monitoring console: recent-activity feed + a health probe of
+		// the platform services (authn itself, risk-service, authenticator-service).
+		Events: events,
+		Health: internal.NewHealthChecker([]internal.ServiceTarget{
+			{Name: "authentication-service", URL: issuer, Path: "/.well-known/openid-configuration"},
+			{Name: "risk-service", URL: internal.RiskBaseURL(config.Env("RISK_EVENTS_URL", "")), Path: "/"},
+			{Name: "authenticator-service", URL: authenticatorURL, Path: "/"},
+		}),
 		// Local-dev escape hatch: trust user_id / auto-create a dev user at
 		// /authorize. MUST be unset in production (where a real authz-session
 		// cookie is required).

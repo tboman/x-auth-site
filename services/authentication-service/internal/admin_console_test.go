@@ -233,10 +233,50 @@ func TestOperatorSeesMonitoring(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("monitoring domain: want 200, got %d", w.Code)
 	}
+	// No Health is wired (hermetic test — no live probes), so the panel renders
+	// without a service table; the recent-activity panel and chrome still render.
 	body := w.Body.String()
-	for _, want := range []string{">Monitoring<", "monitoring:read", "risk-service", "domain=monitoring"} {
+	for _, want := range []string{">Monitoring<", "monitoring:read", "Recent activity", "domain=monitoring"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("monitoring domain missing %q", want)
+		}
+	}
+}
+
+// The monitoring renderer surfaces live health probes + recent log events when
+// wired. Uses a local stub server so the probe is fast and hermetic.
+func TestMonitoringPanelsRenderLiveData(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := NewMemStorage()
+	events := NewEventBuffer(50)
+	logger = slog.New(NewBufferHandler(logger.Handler(), events))
+	logger.Info("admin_login", "email", "root@x.com") // seed one event
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+	defer up.Close()
+
+	r := Router(Deps{
+		Store: store, Logger: logger, Authenticator: &mockAuthenticator{},
+		Issuer: "http://test.local", Signer: testSigner,
+		RootEmails: []string{"root@x.com"},
+		Events:     events,
+		Health:     NewHealthChecker([]ServiceTarget{{Name: "risk-service", URL: up.URL, Path: "/"}}),
+	})
+	sess := seedAdminSession(t, store, "root@x.com")
+	cb := driveAdminCallback(t, r, sess.ID)
+	cookie := sessionCookie(cb, adminSessionCookie)
+	req := httptest.NewRequest(http.MethodGet, "/admin?domain=monitoring", nil)
+	req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("monitoring: want 200, got %d", w.Code)
+	}
+	// Service probe result (Healthy) and the seeded log event both appear.
+	for _, want := range []string{"risk-service", "Healthy", "admin_login", "email=root@x.com"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("monitoring live data missing %q:\n%s", want, body)
 		}
 	}
 }

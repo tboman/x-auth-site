@@ -48,6 +48,12 @@ type AdminConsoleHandlers struct {
 	// StepUps surfaces live in-progress step-up attempts in the per-tenant
 	// session view. Optional (nil renders an empty list).
 	StepUps *StepUpTracker
+
+	// Events is the in-process recent-activity feed; Health probes platform
+	// services. Both power the operator Monitoring domain. Optional (nil → the
+	// panel renders an empty/placeholder state).
+	Events *EventBuffer
+	Health *HealthChecker
 }
 
 func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails, rootEmails, envOrigins []string) *AdminConsoleHandlers {
@@ -235,7 +241,7 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 	case "marketing":
 		content = h.renderMarketingDomain()
 	case "monitoring":
-		content = h.renderMonitoringDomain()
+		content = h.renderMonitoringDomain(r)
 	}
 
 	h.pageSignedIn(w, http.StatusOK, "X-Auth admin", admin.User.Email, `<h1>Administration</h1>
@@ -302,30 +308,89 @@ func (h *AdminConsoleHandlers) renderMarketingDomain() string {
 </div>`
 }
 
-// renderMonitoringDomain is the operator monitoring surface (operator role,
-// monitoring:read / monitoring:view_logs). It is a scaffold: the panels — service
-// health and a live log feed — are in place, wired to placeholder content until
-// we connect real telemetry (Cloud Run metrics + log streaming).
-func (h *AdminConsoleHandlers) renderMonitoringDomain() string {
-	row := func(svc string) string {
-		return `<tr><td><code>` + svc + `</code></td><td class="muted">— pending —</td>` +
-			`<td class="num muted">—</td><td class="num muted">—</td></tr>`
+// renderMonitoringDomain is the operator Monitoring surface (operator role,
+// monitoring:read / monitoring:view_logs): a live health probe of the platform
+// services and an in-process feed of recent activity. Both data sources are
+// self-contained (see monitoring.go).
+func (h *AdminConsoleHandlers) renderMonitoringDomain(r *http.Request) string {
+	var b strings.Builder
+	b.WriteString(`<h2>Monitoring</h2>
+<p class="muted">Operator view — live service health and recent activity (<code>monitoring:read</code>).</p>`)
+
+	// Services panel — live probe.
+	b.WriteString(`<div class="panel"><h3>Services</h3>`)
+	var health []ServiceHealth
+	if h.Health != nil {
+		health = h.Health.Snapshot(r.Context())
 	}
-	return `<h2>Monitoring</h2>
-<p class="muted">Operator view — live service health and logs. Requires the <code>monitoring:read</code> permission.</p>
-<div class="panel">
-	<h3>Services</h3>
-	<p class="muted">Status, latency, and error rate per Cloud Run service. Live data is not wired up yet.</p>
-	<table>
-		<thead><tr><th>Service</th><th>Status</th><th class="num">p95 latency</th><th class="num">Errors (5m)</th></tr></thead>
-		<tbody>` + row("authentication-service") + row("risk-service") + row("authenticator-service") + `</tbody>
-	</table>
-</div>
-<div class="panel">
-	<h3>Recent activity</h3>
-	<p class="muted">A live feed of notable events — sign-ins, step-ups, CAEP deliveries, and errors — will stream here.
-	Log streaming is not connected yet; this panel is the placeholder for that feed.</p>
-</div>`
+	if len(health) == 0 {
+		b.WriteString(`<p class="muted">No service targets configured.</p>`)
+	} else {
+		b.WriteString(`<p class="muted">Live probe of each service (cached ~15s). The internal services are scale-to-zero, so the first probe after idle shows cold-start latency.</p>
+<table><thead><tr><th>Service</th><th>Status</th><th class="num">Latency</th></tr></thead><tbody>`)
+		for _, s := range health {
+			b.WriteString(`<tr><td><code>` + html.EscapeString(s.Name) + `</code></td><td>` + healthBadge(s) + `</td><td class="num">` + latencyText(s) + `</td></tr>`)
+		}
+		b.WriteString(`</tbody></table>`)
+	}
+	b.WriteString(`</div>`)
+
+	// Recent activity panel — in-process log ring buffer.
+	b.WriteString(`<div class="panel"><h3>Recent activity</h3>`)
+	var events []LogEvent
+	if h.Events != nil {
+		events = h.Events.Recent(60)
+	}
+	if len(events) == 0 {
+		b.WriteString(`<p class="muted">No events captured yet on this instance. Activity — sign-ins, step-ups, CAEP deliveries, errors — appears here as it happens.</p>`)
+	} else {
+		b.WriteString(`<p class="muted">Newest first — this instance's in-memory feed (resets on restart; single replica).</p>
+<table><thead><tr><th>Time (UTC)</th><th>Level</th><th>Event</th><th>Details</th></tr></thead><tbody>`)
+		for _, e := range events {
+			b.WriteString(`<tr><td><code>` + e.Time.UTC().Format("15:04:05") + `</code></td><td>` + levelBadge(e.Level) +
+				`</td><td><code>` + html.EscapeString(e.Msg) + `</code></td><td class="muted">` + html.EscapeString(e.Attrs) + `</td></tr>`)
+		}
+		b.WriteString(`</tbody></table>`)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// healthBadge renders a coloured status dot + label for a service probe result.
+func healthBadge(s ServiceHealth) string {
+	color, label := "var(--muted)", "Unknown"
+	switch s.Status {
+	case "up":
+		color, label = "var(--accent)", "Healthy"
+	case "errors":
+		color, label = "var(--warn)", "Errors"
+	case "down":
+		color, label = "var(--danger)", "Unreachable"
+	}
+	return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:` + color +
+		`;margin-right:7px;vertical-align:middle"></span><span style="color:` + color + `">` + label + `</span>`
+}
+
+// latencyText renders the probe round-trip, or a dash when there was no response.
+func latencyText(s ServiceHealth) string {
+	if s.Status == "down" || s.Status == "unknown" {
+		return `<span class="muted">—</span>`
+	}
+	return itoa(int(s.Latency.Milliseconds())) + ` ms`
+}
+
+// levelBadge colours a log level for the recent-activity feed.
+func levelBadge(l slog.Level) string {
+	color := "var(--muted)"
+	switch {
+	case l >= slog.LevelError:
+		color = "var(--danger)"
+	case l >= slog.LevelWarn:
+		color = "var(--warn)"
+	case l >= slog.LevelInfo:
+		color = "var(--accent)"
+	}
+	return `<span style="color:` + color + `;font-weight:600">` + html.EscapeString(l.String()) + `</span>`
 }
 
 // clientsSection renders the OIDC client-management block: the env CORS

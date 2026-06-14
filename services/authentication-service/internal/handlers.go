@@ -46,6 +46,15 @@ type Deps struct {
 	// Empty means no root account.
 	RootEmails []string
 
+	// Events is the recent-activity feed shown in the operator Monitoring domain
+	// (an in-process log ring buffer wired in cmd/main). Optional.
+	Events *EventBuffer
+
+	// Health probes the platform services for the Monitoring domain. Built in
+	// cmd/main from the service URLs. Optional (nil → the panel shows no
+	// services); tests omit it to stay hermetic.
+	Health *HealthChecker
+
 	// DevAutologin re-enables the legacy /authorize behaviour (trust a user_id
 	// parameter / auto-create a dev user) for local development and tests.
 	// OFF in production, where /authorize requires a real authz-session cookie.
@@ -119,6 +128,8 @@ func Router(d Deps) http.Handler {
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
 	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.RootEmails, d.CORSOrigins)
 	admin.StepUps = stepUps
+	admin.Events = d.Events
+	admin.Health = d.Health
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
