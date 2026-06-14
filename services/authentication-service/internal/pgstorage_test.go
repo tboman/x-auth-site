@@ -604,6 +604,60 @@ func TestPGStorageRevokeTokenFamily(t *testing.T) {
 	}
 }
 
+func TestPGStorageRevokeTokenFamiliesBySession(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	famA := "fam_" + uuid.NewString() // tied to the compromised session
+	famB := "fam_" + uuid.NewString() // a different session — must survive
+
+	put := func(name, family, session, tokenType string, revoked bool) string {
+		t.Helper()
+		hash := HashToken(name)
+		tok := Token{
+			TokenHash: hash, SessionID: session, UserID: "usr_1", TenantID: "tenant-a",
+			ClientID: DefaultClientID, FamilyID: family, TokenType: tokenType,
+			IssuedAt: now, ExpiresAt: now.Add(time.Hour),
+		}
+		if revoked {
+			rev := now.Add(-time.Minute)
+			tok.RevokedAt = &rev
+		}
+		if err := s.PutToken(tok); err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+		return hash
+	}
+	// Session ses_hot: a live access + refresh in famA, plus an already-revoked row.
+	liveAccess := put("hot-access", famA, "ses_hot", TokenTypeAccess, false)
+	liveRefresh := put("hot-refresh", famA, "ses_hot", TokenTypeRefresh, false)
+	dead := put("hot-dead", famA, "ses_hot", TokenTypeRefresh, true)
+	// A different session/family must be untouched.
+	cold := put("cold-refresh", famB, "ses_cold", TokenTypeRefresh, false)
+
+	revoked, err := s.RevokeTokenFamiliesBySession("tenant-a", "ses_hot")
+	if err != nil {
+		t.Fatalf("revoke by session: %v", err)
+	}
+	if revoked != 2 {
+		t.Fatalf("revoked = %d, want 2 (live access + refresh; pre-revoked untouched)", revoked)
+	}
+	for _, hash := range []string{liveAccess, liveRefresh} {
+		if got, err := s.GetTokenByHash(hash); err != nil || got.RevokedAt == nil {
+			t.Fatalf("ses_hot member %s should be revoked: %v %+v", hash, err, got)
+		}
+	}
+	if pre, _ := s.GetTokenByHash(dead); !pre.RevokedAt.Before(now) {
+		t.Fatalf("pre-revoked member's revoked_at was overwritten: %v", pre.RevokedAt)
+	}
+	if got, err := s.GetTokenByHash(cold); err != nil || got.RevokedAt != nil {
+		t.Fatalf("ses_cold family should be untouched: %v %+v", err, got)
+	}
+	// Empty session id is a guarded no-op.
+	if n, err := s.RevokeTokenFamiliesBySession("tenant-a", ""); err != nil || n != 0 {
+		t.Fatalf("empty session revoke: n=%d err=%v, want 0 nil", n, err)
+	}
+}
+
 func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

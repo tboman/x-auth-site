@@ -71,6 +71,7 @@ func TestCAEPAnalyzerEmits(t *testing.T) {
 	obs("u1", "sC", DeviceStageOTP, "fpX")    // known device + step-up → assurance UP
 	obs("u2", "sD", DeviceStageSocial, "fpZ") // first device for u2 → baseline
 	obs("u2", "sD", DeviceStageOTP, "fpW")    // same session, new fp → session-revoked
+	tx.Wait()                                 // recording is sync; drain async SET deliveries before asserting
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -78,19 +79,58 @@ func TestCAEPAnalyzerEmits(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3 emitted events, got %d: %+v", len(got), got)
 	}
-	if got[0].uri != CAEPAssuranceLevelChange || got[0].payload["change_direction"] != "decrease" {
-		t.Errorf("event 0: want assurance decrease, got %s %v", got[0].uri, got[0].payload["change_direction"])
+	// Deliveries are detached goroutines, so arrival order isn't guaranteed —
+	// assert the multiset instead of fixed positions.
+	var decrease, increase, revoked int
+	for _, e := range got {
+		switch {
+		case e.uri == CAEPAssuranceLevelChange && e.payload["change_direction"] == "decrease":
+			decrease++
+		case e.uri == CAEPAssuranceLevelChange && e.payload["change_direction"] == "increase":
+			increase++
+		case e.uri == CAEPSessionRevoked:
+			revoked++
+		}
 	}
-	if got[1].uri != CAEPAssuranceLevelChange || got[1].payload["change_direction"] != "increase" {
-		t.Errorf("event 1: want assurance increase, got %s %v", got[1].uri, got[1].payload["change_direction"])
-	}
-	if got[2].uri != CAEPSessionRevoked {
-		t.Errorf("event 2: want session-revoked, got %s", got[2].uri)
+	if decrease != 1 || increase != 1 || revoked != 1 {
+		t.Fatalf("want one each of decrease/increase/session-revoked, got d=%d i=%d r=%d: %+v", decrease, increase, revoked, got)
 	}
 	// The anomalous session must have been invalidated locally.
 	sess, _ := store.GetSession("ten_a", "sD")
 	if sess.InvalidatedAt == nil {
 		t.Error("session sD should be invalidated by the anomaly")
+	}
+}
+
+// TestCAEPSessionAnomalyRevokesTokenFamily: a mid-session fingerprint change is
+// a possible session replay — it must kill not just the session cookie but every
+// refresh-token family minted against that session.
+func TestCAEPSessionAnomalyRevokesTokenFamily(t *testing.T) {
+	store := NewMemStorage()
+	tx := NewCAEPTransmitter(testSigner, "http://test.local", "", "", discardLogger()) // log-only is fine
+	a := NewDeviceAnalyzer(store, discardLogger(), tx)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	now := time.Now().UTC()
+
+	_, _ = store.CreateSession(Session{ID: "sX", TenantID: "ten_a", UserID: "u9", RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)})
+	// A live access+refresh family minted against that session.
+	_ = store.PutToken(Token{TokenHash: "h_access", SessionID: "sX", UserID: "u9", TenantID: "ten_a", FamilyID: "famX", TokenType: "access", IssuedAt: now, ExpiresAt: now.Add(time.Hour)})
+	_ = store.PutToken(Token{TokenHash: "h_refresh", SessionID: "sX", UserID: "u9", TenantID: "ten_a", FamilyID: "famX", TokenType: "refresh", IssuedAt: now, ExpiresAt: now.Add(24 * time.Hour)})
+
+	a.Observe(req, "ten_a", "u9", "sX", DeviceStageSocial, "fpA") // baseline fingerprint
+	a.Observe(req, "ten_a", "u9", "sX", DeviceStageOTP, "fpB")    // same session, new fp → anomaly (sync revoke)
+
+	if sess, _ := store.GetSession("ten_a", "sX"); sess.InvalidatedAt == nil {
+		t.Error("session sX should be invalidated by the anomaly")
+	}
+	for _, h := range []string{"h_access", "h_refresh"} {
+		tok, err := store.GetTokenByHash(h)
+		if err != nil {
+			t.Fatalf("token %s: %v", h, err)
+		}
+		if tok.RevokedAt == nil {
+			t.Errorf("token %s should be revoked along with its family", h)
+		}
 	}
 }
 

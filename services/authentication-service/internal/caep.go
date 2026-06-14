@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,7 @@ type CAEPTransmitter struct {
 	InternalSecret string // X-Internal-Auth header value for transport auth
 	Logger         *slog.Logger
 	HTTP           *http.Client
+	wg             sync.WaitGroup // tracks in-flight deliveries; Wait drains them
 }
 
 // NewCAEPTransmitter builds a transmitter. A blank eventsURL yields a log-only
@@ -128,19 +130,44 @@ func (t *CAEPTransmitter) buildSET(tenantID, userID, sessionID, eventURI string,
 	})
 }
 
-// Emit builds, signs, and delivers a SET. Best-effort: a delivery failure is
-// logged, never surfaced to the login path. With no EventsURL it logs only.
-func (t *CAEPTransmitter) Emit(ctx context.Context, tenantID, userID, sessionID, eventURI string, event map[string]any) {
+// Emit signs a SET and delivers it to the receiver. Best-effort and detached:
+// the sign+POST run on a goroutine so a slow or unreachable risk-service never
+// adds latency to the login path, and a delivery failure is only logged. With no
+// EventsURL it logs only (no risk-service). Use Wait (tests / shutdown) to drain
+// in-flight deliveries.
+func (t *CAEPTransmitter) Emit(tenantID, userID, sessionID, eventURI string, event map[string]any) {
 	if t == nil || t.Signer == nil {
-		return
-	}
-	set, err := t.buildSET(tenantID, userID, sessionID, eventURI, event)
-	if err != nil {
-		t.Logger.Error("caep_set_build_failed", "err", err, "event", eventURI)
 		return
 	}
 	if t.EventsURL == "" {
 		t.Logger.Info("caep_event_logonly", "event", eventURI, "tenant_id", tenantID, "user_id", userID, "session_id", sessionID)
+		return
+	}
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		// Detached from the request: bound so a stuck receiver can't leak the
+		// goroutine (the HTTP client's own timeout is shorter still).
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		t.deliver(ctx, tenantID, userID, sessionID, eventURI, event)
+	}()
+}
+
+// Wait blocks until all in-flight SET deliveries finish. For tests and graceful
+// shutdown; the login path never calls it.
+func (t *CAEPTransmitter) Wait() {
+	if t == nil {
+		return
+	}
+	t.wg.Wait()
+}
+
+// deliver signs and POSTs one SET. Runs off the request path (see Emit).
+func (t *CAEPTransmitter) deliver(ctx context.Context, tenantID, userID, sessionID, eventURI string, event map[string]any) {
+	set, err := t.buildSET(tenantID, userID, sessionID, eventURI, event)
+	if err != nil {
+		t.Logger.Error("caep_set_build_failed", "err", err, "event", eventURI)
 		return
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.EventsURL, bytes.NewReader([]byte(set)))

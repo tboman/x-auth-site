@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -26,6 +25,13 @@ import (
 //     UP (aal1→aal2).
 //   - known device, plain login                      → no change.
 //
+// The fingerprint recording and the drift analysis (incl. the local session /
+// token-family revocation on a hard anomaly) run synchronously on the request so
+// the decision is strictly ordered against the user's history. Only the outbound
+// SET delivery to risk-service is detached from the request — see
+// CAEPTransmitter.Emit — so a slow or unreachable receiver never adds latency to
+// the login.
+//
 // visitorId-only means we can't tell minor browser drift from a major device
 // change, and we don't do device-compliance-change (tamper) here — both need
 // component-level signals (see caep.go / the foundation notes).
@@ -43,8 +49,10 @@ func NewDeviceAnalyzer(store Storage, logger *slog.Logger, caep *CAEPTransmitter
 }
 
 // Observe records the fingerprint for a validation stage and analyses drift.
-// Best-effort — never blocks the login. A nil analyzer or empty fingerprint is
-// a no-op.
+// Best-effort — failures are logged, never surfaced to the login. The history
+// read, record write, and drift decision run synchronously (local + fast); only
+// the SET delivery is detached (CAEPTransmitter.Emit). A nil analyzer or empty
+// fingerprint is a no-op.
 func (a *DeviceAnalyzer) Observe(r *http.Request, tenantID, userID, sessionID, stage, fp string) {
 	if a == nil || fp == "" {
 		return
@@ -61,10 +69,10 @@ func (a *DeviceAnalyzer) Observe(r *http.Request, tenantID, userID, sessionID, s
 	} else {
 		a.Logger.Info("device_signal", "stage", stage, "tenant_id", tenantID, "user_id", userID, "fingerprint", fp)
 	}
-	a.analyze(r.Context(), ds, priors, stage)
+	a.analyze(ds, priors, stage)
 }
 
-func (a *DeviceAnalyzer) analyze(ctx context.Context, ds DeviceSignal, priors []DeviceSignal, stage string) {
+func (a *DeviceAnalyzer) analyze(ds DeviceSignal, priors []DeviceSignal, stage string) {
 	// Hard anomaly: same session, different fingerprint than before.
 	if ds.SessionID != "" {
 		for _, p := range priors {
@@ -73,9 +81,17 @@ func (a *DeviceAnalyzer) analyze(ctx context.Context, ds DeviceSignal, priors []
 				if err := revokeSession(a.Store, ds.TenantID, ds.SessionID); err != nil && err != ErrNotFound {
 					a.Logger.Error("device_fp_revoke_failed", "err", err, "session_id", ds.SessionID)
 				}
+				// Killing the session cookie isn't enough: a replayed session may
+				// already hold a live refresh-token family. Revoke every family
+				// minted against this session (§10.1 theft response).
+				if n, err := a.Store.RevokeTokenFamiliesBySession(ds.TenantID, ds.SessionID); err != nil {
+					a.Logger.Error("device_fp_family_revoke_failed", "err", err, "session_id", ds.SessionID)
+				} else if n > 0 {
+					a.Logger.Warn("device_fp_families_revoked", "session_id", ds.SessionID, "tokens", n)
+				}
 				uri, ev := SessionRevoked(ds.TenantID, ds.UserID, ds.SessionID,
 					"device fingerprint changed within session (possible session replay)", ds.Fingerprint)
-				a.emit(ctx, ds, uri, ev)
+				a.emit(ds, uri, ev)
 				return
 			}
 		}
@@ -96,20 +112,20 @@ func (a *DeviceAnalyzer) analyze(ctx context.Context, ds DeviceSignal, priors []
 	case !known:
 		uri, ev := AssuranceLevelChange(ds.TenantID, ds.UserID, ds.SessionID,
 			AAL1, AAL2, "decrease", "new or changed device fingerprint", ds.Fingerprint)
-		a.emit(ctx, ds, uri, ev)
+		a.emit(ds, uri, ev)
 	case stepUp:
 		uri, ev := AssuranceLevelChange(ds.TenantID, ds.UserID, ds.SessionID,
 			AAL2, AAL1, "increase", "step-up validated on a known device", ds.Fingerprint)
-		a.emit(ctx, ds, uri, ev)
+		a.emit(ds, uri, ev)
 	default:
 		// known device, plain login — no assurance change.
 	}
 }
 
-func (a *DeviceAnalyzer) emit(ctx context.Context, ds DeviceSignal, uri string, ev map[string]any) {
+func (a *DeviceAnalyzer) emit(ds DeviceSignal, uri string, ev map[string]any) {
 	if a.CAEP == nil {
 		a.Logger.Info("caep_event_skipped_no_transmitter", "event", uri, "tenant_id", ds.TenantID, "user_id", ds.UserID)
 		return
 	}
-	a.CAEP.Emit(ctx, ds.TenantID, ds.UserID, ds.SessionID, uri, ev)
+	a.CAEP.Emit(ds.TenantID, ds.UserID, ds.SessionID, uri, ev)
 }

@@ -414,6 +414,29 @@ func (s *PGStorage) RevokeTokenFamily(familyID string) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
+// RevokeTokenFamiliesBySession revokes every live token whose family has issued
+// at least one token against sessionID — the response when a session is judged
+// compromised (device-fingerprint replay). Empty sessionID is a no-op.
+func (s *PGStorage) RevokeTokenFamiliesBySession(tenantID, sessionID string) (int, error) {
+	if sessionID == "" {
+		return 0, nil
+	}
+	const q = `
+		UPDATE tokens SET revoked_at = now()
+		 WHERE revoked_at IS NULL
+		   AND family_id <> ''
+		   AND family_id IN (
+		       SELECT DISTINCT family_id FROM tokens
+		        WHERE session_id = $1 AND tenant_id = $2 AND family_id <> ''
+		   )
+	`
+	tag, err := s.pool.Exec(bgCtx(), q, sessionID, tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("pgstorage revoke_token_families_by_session: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.

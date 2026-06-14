@@ -49,6 +49,12 @@ type Storage interface {
 	// refresh token is replayed. Returns the number of tokens revoked. An empty
 	// familyID is a no-op (guards legacy rows migrated without a real family).
 	RevokeTokenFamily(familyID string) (int, error)
+	// RevokeTokenFamiliesBySession revokes every token family that has issued a
+	// token against sessionID — used when a session is judged compromised (e.g.
+	// device-fingerprint replay) so its outstanding refresh families die with
+	// the session cookie. Returns the number of tokens revoked; an empty
+	// sessionID is a no-op.
+	RevokeTokenFamiliesBySession(tenantID, sessionID string) (int, error)
 
 	// Auth codes — one-shot
 	PutAuthCode(ac AuthCode) error
@@ -392,6 +398,41 @@ func (s *MemStorage) RevokeTokenFamily(familyID string) (int, error) {
 	revoked := 0
 	for hash, t := range s.tokens {
 		if t.FamilyID != familyID || t.RevokedAt != nil {
+			continue
+		}
+		t.RevokedAt = &now
+		s.tokens[hash] = t
+		revoked++
+	}
+	return revoked, nil
+}
+
+// RevokeTokenFamiliesBySession revokes every token family that has issued any
+// token against sessionID. Two passes: collect the distinct families touched by
+// the session, then stamp every live token in those families (covers tokens
+// rotated onto the same family after the session moved on).
+func (s *MemStorage) RevokeTokenFamiliesBySession(tenantID, sessionID string) (int, error) {
+	if sessionID == "" {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	families := map[string]struct{}{}
+	for _, t := range s.tokens {
+		if t.SessionID == sessionID && t.TenantID == tenantID && t.FamilyID != "" {
+			families[t.FamilyID] = struct{}{}
+		}
+	}
+	if len(families) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	revoked := 0
+	for hash, t := range s.tokens {
+		if t.FamilyID == "" || t.RevokedAt != nil {
+			continue
+		}
+		if _, ok := families[t.FamilyID]; !ok {
 			continue
 		}
 		t.RevokedAt = &now
