@@ -130,6 +130,11 @@ func Router(d Deps) http.Handler {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// X-Auth favicon for the hosted pages — /favicon.ico is the browser's
+	// automatic probe; /favicon.svg is the one the head link references.
+	mux.HandleFunc("GET /favicon.ico", Favicon)
+	mux.HandleFunc("GET /favicon.svg", Favicon)
+
 	// The public OIDC surface is CORS-enabled for configured SPA origins;
 	// fetch-able routes additionally answer OPTIONS preflights (the /userinfo
 	// Authorization header triggers one). /authorize is top-level navigation

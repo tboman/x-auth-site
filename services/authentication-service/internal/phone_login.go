@@ -575,6 +575,7 @@ func (h *PhoneLoginHandlers) page(w http.ResponseWriter, status int, title, body
 	_, _ = io.WriteString(w, `<!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>`+html.EscapeString(title)+`</title>
