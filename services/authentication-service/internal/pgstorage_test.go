@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -655,6 +655,55 @@ func TestPGStorageRevokeTokenFamiliesBySession(t *testing.T) {
 	// Empty session id is a guarded no-op.
 	if n, err := s.RevokeTokenFamiliesBySession("tenant-a", ""); err != nil || n != 0 {
 		t.Fatalf("empty session revoke: n=%d err=%v, want 0 nil", n, err)
+	}
+}
+
+// TestPGStorageStaffUsers exercises the staff-account schema (migration 000010)
+// against the queries currentAdmin() and the ADMIN_EMAILS/ROOT_EMAILS seed rely
+// on. Without the migration these all error and staff sign-in bounces.
+func TestPGStorageStaffUsers(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	u := StaffUser{ID: "stf_" + uuid.NewString(), Email: "root@example.com", DisplayName: "Root", Active: true, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutStaffUser(u); err != nil {
+		t.Fatalf("put staff: %v", err)
+	}
+	if err := s.PutStaffUser(u); err != nil { // upsert by id — idempotent
+		t.Fatalf("re-put staff: %v", err)
+	}
+	got, err := s.GetStaffUserByEmail("root@example.com")
+	if err != nil {
+		t.Fatalf("get by email: %v", err)
+	}
+	if got.ID != u.ID || !got.Active || got.DisplayName != "Root" {
+		t.Fatalf("staff round-trip mismatch: %+v", got)
+	}
+	if _, err := s.GetStaffUserByEmail("nobody@example.com"); err != ErrNotFound {
+		t.Fatalf("missing staff: want ErrNotFound, got %v", err)
+	}
+	for _, r := range []string{"administrator", "architect", "executive"} {
+		if err := s.AddStaffUserRole(u.ID, r); err != nil {
+			t.Fatalf("add role %s: %v", r, err)
+		}
+	}
+	if err := s.AddStaffUserRole(u.ID, "administrator"); err != nil { // ON CONFLICT DO NOTHING
+		t.Fatalf("re-add role: %v", err)
+	}
+	roles, err := s.GetStaffUserRoles(u.ID)
+	if err != nil {
+		t.Fatalf("get roles: %v", err)
+	}
+	if len(roles) != 3 {
+		t.Fatalf("roles = %v, want 3 distinct", roles)
+	}
+	if err := s.DeleteStaffUserRole(u.ID, "executive"); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+	if roles, _ = s.GetStaffUserRoles(u.ID); len(roles) != 2 {
+		t.Fatalf("after delete, roles = %v, want 2", roles)
+	}
+	if list, err := s.ListStaffUsers(); err != nil || len(list) == 0 {
+		t.Fatalf("list staff: err=%v n=%d", err, len(list))
 	}
 }
 
