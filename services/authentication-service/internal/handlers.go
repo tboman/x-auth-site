@@ -83,6 +83,9 @@ func Router(d Deps) http.Handler {
 	// Shared live-step-up registry: the OIDC step-up interlude records attempts
 	// here and the consoles read them for the session-management views.
 	stepUps := NewStepUpTracker(otpFlowTTL)
+	// Per-session protection-level assurance ledger (protection.go). Lives as
+	// long as a session so a satisfied level passes through for the session's life.
+	protection := NewProtectionLedger(time.Duration(SessionTTLSeconds) * time.Second)
 	oidc := &OIDCHandlers{
 		Store:         d.Store,
 		Logger:        d.Logger,
@@ -93,6 +96,7 @@ func Router(d Deps) http.Handler {
 		Authenticator: d.Authenticator,
 		DevAutologin:  d.DevAutologin,
 		StepUps:       stepUps,
+		Protection:    protection,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}

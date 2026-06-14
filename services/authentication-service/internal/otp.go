@@ -106,12 +106,14 @@ func specForMethod(method string) (stepUpSpec, bool) {
 	return stepUpSpec{}, false
 }
 
-// supportedACRValues feeds discovery's acr_values_supported.
+// supportedACRValues feeds discovery's acr_values_supported: the method-specific
+// step-up ACRs plus the protection-level ACRs (protection.go).
 func supportedACRValues() []string {
-	out := make([]string, len(stepUpSpecs))
-	for i, spec := range stepUpSpecs {
-		out[i] = spec.ACR
+	out := make([]string, 0, len(stepUpSpecs)+len(protectionLevels))
+	for _, spec := range stepUpSpecs {
+		out = append(out, spec.ACR)
 	}
+	out = append(out, protectionACRs()...)
 	return out
 }
 
@@ -132,6 +134,15 @@ type pendingAuthorize struct {
 	Prompt        string
 	Method        string // authenticator-service method; resolves the stepUpSpec on verify
 	CreatedAt     time.Time
+
+	// Protection-level fields (protection.go). When the flow was triggered by a
+	// protection-level request, TargetACR overrides the method spec's ACR on the
+	// minted token, and a successful verify records TargetRank against
+	// AuthzSessionID in the assurance ledger. Empty/zero for plain method
+	// (acr_values=urn:xauth:otp:sms) step-ups.
+	TargetACR      string
+	TargetRank     int
+	AuthzSessionID string
 }
 
 func (h *OIDCHandlers) storeFlow(id string, p pendingAuthorize) {
@@ -288,6 +299,17 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 	h.dropFlow(flowID)
 	h.Logger.Info("stepup_flow_completed", "flow_id", flowID, "challenge_id", flow.ChallengeID,
 		"user_id", flow.UserID, "tenant_id", flow.TenantID, "method", flow.Method)
+
+	// A protection-level flow stamps the requested level as the token's acr (the
+	// method's own ACR is the fallback for plain method step-ups) and records the
+	// satisfied rank so later equal-or-lower requests pass through.
+	acr := spec.ACR
+	if flow.TargetACR != "" {
+		acr = flow.TargetACR
+	}
+	if flow.TargetRank > 0 {
+		h.Protection.Record(flow.AuthzSessionID, flow.TargetRank)
+	}
 	h.mintCodeAndRedirect(w, r, AuthCode{
 		ClientID:      flow.ClientID,
 		TenantID:      flow.TenantID,
@@ -297,7 +319,7 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		State:         flow.State,
 		Nonce:         flow.Nonce,
 		CodeChallenge: flow.CodeChallenge,
-		ACR:           spec.ACR,
+		ACR:           acr,
 		AMR:           spec.AMR,
 	})
 }

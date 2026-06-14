@@ -326,9 +326,19 @@ func TestDiscoveryAdvertisesACR(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
 		t.Fatalf("discovery decode: %v", err)
 	}
-	if len(doc.ACRValuesSupported) != 2 ||
-		doc.ACRValuesSupported[0] != ACRSMSOTP || doc.ACRValuesSupported[1] != ACRFIDO2 {
-		t.Fatalf("acr_values_supported = %v, want [%s %s]", doc.ACRValuesSupported, ACRSMSOTP, ACRFIDO2)
+	// The method ACRs first, then the 8 protection-level ACRs.
+	want := append([]string{ACRSMSOTP, ACRFIDO2}, protectionACRs()...)
+	if len(doc.ACRValuesSupported) != len(want) {
+		t.Fatalf("acr_values_supported = %v, want %v", doc.ACRValuesSupported, want)
+	}
+	have := map[string]bool{}
+	for _, a := range doc.ACRValuesSupported {
+		have[a] = true
+	}
+	for _, a := range want {
+		if !have[a] {
+			t.Fatalf("acr_values_supported missing %q: %v", a, doc.ACRValuesSupported)
+		}
 	}
 }
 

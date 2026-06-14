@@ -68,6 +68,11 @@ type OIDCHandlers struct {
 	// StepUps mirrors the live subset of parked flows so the session-management
 	// consoles can show who is mid step-up. Optional (nil is a no-op).
 	StepUps *StepUpTracker
+
+	// Protection is the mocked per-session assurance ledger backing the
+	// protection-level interface (protection.go). Optional (nil never passes
+	// through, so every protection request challenges).
+	Protection *ProtectionLedger
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.
@@ -215,6 +220,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	// parameter, or auto-create a dev user) for local development and tests. It
 	// is OFF in production.
 	var user User
+	var authzSessionID string // backs the protection-level assurance ledger
 	if h.DevAutologin {
 		if userID != "" {
 			user, err = h.Store.GetUser(effectiveTenant, userID)
@@ -236,6 +242,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 			h.redirectAuthorizeError(w, r, redir, state, "login_required", "authentication required — sign in first")
 			return
 		}
+		authzSessionID = sess.ID
 		user, err = h.Store.GetUser(effectiveTenant, sess.UserID)
 		if err != nil {
 			h.redirectAuthorizeError(w, r, redir, state, "login_required", "session user no longer exists")
@@ -243,21 +250,32 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Second-factor interlude (otp.go): when the client asks for a supported
-	// authentication context (SMS OTP, FIDO2), park the request and challenge
-	// the user instead of minting a code straight away; acr_values order is
-	// client preference. /authorize/verify finishes the flow.
+	// Authentication-context interlude (otp.go / protection.go). acr_values is
+	// client preference order (OIDC Core §3.1.2.1). Two shapes are accepted:
+	//
+	//   - a PROTECTION LEVEL (urn:xauth:protect:…) — the client states the bar the
+	//     action needs; auth-service decides (mocked) whether to pass through or
+	//     challenge, and with what. This is the preferred interface.
+	//   - a specific METHOD (urn:xauth:otp:sms, urn:xauth:fido2) — the legacy
+	//     explicit-method step-up, kept for back-compat.
+	//
+	// Either way /authorize/verify finishes the flow.
+	pend := pendingAuthorize{
+		ClientID:      clientID,
+		TenantID:      effectiveTenant,
+		UserID:        user.ID,
+		RedirectURI:   redirectURI,
+		Scope:         scope,
+		State:         state,
+		Nonce:         nonce,
+		CodeChallenge: codeChallenge,
+	}
+	if lvl, ok := matchProtection(q.Get("acr_values")); ok {
+		h.handleProtection(w, r, lvl, authzSessionID, pend)
+		return
+	}
 	if spec, ok := matchStepUp(q.Get("acr_values")); ok {
-		h.startStepUpFlow(w, r, spec, pendingAuthorize{
-			ClientID:      clientID,
-			TenantID:      effectiveTenant,
-			UserID:        user.ID,
-			RedirectURI:   redirectURI,
-			Scope:         scope,
-			State:         state,
-			Nonce:         nonce,
-			CodeChallenge: codeChallenge,
-		})
+		h.startStepUpFlow(w, r, spec, pend)
 		return
 	}
 
