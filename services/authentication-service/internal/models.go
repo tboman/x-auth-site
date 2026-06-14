@@ -297,3 +297,20 @@ func ValidSocialProvider(s string) bool {
 	}
 	return false
 }
+
+// StaffUser represents a staff member with access to the internal administration console.
+type StaffUser struct {
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Active      bool      `json:"active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// StaffUserRole associates a StaffUser with an administrative role.
+type StaffUserRole struct {
+	StaffUserID string    `json:"staff_user_id"`
+	Role        string    `json:"role"`
+	CreatedAt   time.Time `json:"created_at"`
+}

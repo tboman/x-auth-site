@@ -144,6 +144,36 @@ func TestInternalAliasPolicyCRUD(t *testing.T) {
 	}
 }
 
+// With V1_INTERNAL_ONLY=true (the deployed posture: public Cloud Run ingress,
+// app-layer gating) the PLAIN /v1/* tree also demands the X-Internal-Auth
+// header — otherwise the evaluate/policy write API would be open to the
+// internet. /healthz stays unauthenticated.
+func TestV1InternalOnlyGate(t *testing.T) {
+	const secret = "test-internal-secret"
+	t.Setenv(httpx.EnvInternalAuthSecret, secret)
+	t.Setenv("V1_INTERNAL_ONLY", "true")
+	h, _ := newRouter(t, midDayClock()) // router built AFTER Setenv
+
+	// /v1/* now requires the header.
+	rec := doJSON(t, h, http.MethodPost, "/v1/evaluations", testTenant, lowRiskEvalBody())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/v1 no header with gate on: want 401, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	rec = doJSONWithHeaders(t, h, http.MethodPost, "/v1/evaluations", testTenant,
+		map[string]string{httpx.InternalAuthHeader: secret}, lowRiskEvalBody())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("/v1 with header: want 201, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	// /internal/v1/* stays gated as before.
+	if rec = doJSON(t, h, http.MethodGet, "/internal/v1/policies", testTenant, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/internal/v1 no header: want 401, got %d", rec.Code)
+	}
+	// /healthz is never gated.
+	if rec = doJSON(t, h, http.MethodGet, "/healthz", "", nil); rec.Code != http.StatusOK {
+		t.Fatalf("healthz: want 200, got %d", rec.Code)
+	}
+}
+
 // With INTERNAL_AUTH_SECRET configured, /internal/v1/* demands the
 // X-Internal-Auth header (structured 401 otherwise) while /v1/* stays open.
 func TestInternalAliasSharedSecret(t *testing.T) {

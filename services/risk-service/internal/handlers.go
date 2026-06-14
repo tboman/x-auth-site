@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -69,7 +70,16 @@ func (h *Handlers) Router() http.Handler {
 	v1.HandleFunc("PATCH /v1/policies/{id}", h.UpdatePolicy)
 	v1.HandleFunc("DELETE /v1/policies/{id}", h.DeletePolicy)
 
-	mux.Handle("/v1/", tenantx.Middleware(v1))
+	// /v1/* is tenant-scoped. risk-service is an INTERNAL service: when
+	// V1_INTERNAL_ONLY=true (the deployed posture, since Cloud Run ingress is
+	// public and gating happens at the app layer) the whole /v1 tree additionally
+	// requires the InternalAuth secret — otherwise the evaluate/policy write API
+	// would be open to the internet. Mirrors authenticator-service.
+	v1Handler := http.Handler(tenantx.Middleware(v1))
+	if strings.EqualFold(os.Getenv("V1_INTERNAL_ONLY"), "true") {
+		v1Handler = httpx.InternalAuth(h.Logger)(v1Handler)
+	}
+	mux.Handle("/v1/", v1Handler)
 
 	// Alias: /internal/v1/... → InternalAuth → strip "/internal" → the same
 	// tenant-scoped v1 mux. One registration, zero handler duplication.

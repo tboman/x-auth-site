@@ -50,13 +50,36 @@ type AdminConsoleHandlers struct {
 	StepUps *StepUpTracker
 }
 
-// NewAdminConsoleHandlers builds the handler set, normalising the allowlist to
-// lower-case for case-insensitive comparison.
 func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails, envOrigins []string) *AdminConsoleHandlers {
 	allow := make(map[string]bool, len(emails))
 	for _, e := range emails {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
 			allow[e] = true
+			
+			// Seed staff user
+			if staff, err := store.GetStaffUserByEmail(e); err == ErrNotFound {
+				id := "stf_" + randToken(16)
+				store.PutStaffUser(StaffUser{
+					ID:        id,
+					Email:     e,
+					Active:    true,
+					CreatedAt: time.Now().UTC(),
+					UpdatedAt: time.Now().UTC(),
+				})
+				store.AddStaffUserRole(id, "administrator")
+			} else if staff.Active {
+				// Ensure they have administrator role
+				roles, _ := store.GetStaffUserRoles(staff.ID)
+				hasAdmin := false
+				for _, r := range roles {
+					if r == "administrator" {
+						hasAdmin = true
+					}
+				}
+				if !hasAdmin {
+					store.AddStaffUserRole(staff.ID, "administrator")
+				}
+			}
 		}
 	}
 	return &AdminConsoleHandlers{Store: store, Logger: logger, Issuer: issuer, AllowedEmails: allow, EnvOrigins: envOrigins}
@@ -109,12 +132,64 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	domains := allowedDomains(admin.Roles)
+	if len(domains) == 0 {
+		h.page(w, http.StatusForbidden, "Access Denied", `<h1>Access Denied</h1><p class="err">No active roles.</p><form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>`)
+		return
+	}
+
+	currentDomain := r.URL.Query().Get("domain")
+	if currentDomain == "" {
+		currentDomain = domains[0]
+	}
+
+	allowed := false
+	for _, d := range domains {
+		if d == currentDomain {
+			allowed = true
+		}
+	}
+	if !allowed {
+		h.page(w, http.StatusForbidden, "Access Denied", `<h1>Access Denied</h1><p class="err">You do not have access to this domain.</p><div class="actions"><a class="btn" href="/admin">Back</a></div>`)
+		return
+	}
+
+	var nav strings.Builder
+	nav.WriteString(`<div class="actions" style="margin-bottom: 24px;">`)
+	for _, d := range domains {
+		class := "btn secondary"
+		if d == currentDomain {
+			class = "btn"
+		}
+		title := d
+		if len(title) > 0 {
+			title = strings.ToUpper(title[:1]) + title[1:]
+		}
+		nav.WriteString(`<a class="` + class + `" href="/admin?domain=` + url.QueryEscape(d) + `">` + html.EscapeString(title) + `</a>`)
+	}
+	nav.WriteString(`</div>`)
+
+	var content string
+	switch currentDomain {
+	case "tenants":
+		content = h.renderTenantsDomain(w, r)
+	case "documents":
+		content = h.renderDocumentsDomain()
+	case "marketing":
+		content = h.renderMarketingDomain()
+	}
+
+	h.page(w, http.StatusOK, "X-Auth admin", `<h1>Administration</h1>
+<p class="muted">Signed in as <strong>`+html.EscapeString(admin.User.Email)+`</strong>. Roles: `+html.EscapeString(strings.Join(admin.Roles, ", "))+`</p>
+<form method="post" action="/admin/logout" style="margin-bottom: 20px;"><button class="secondary" type="submit">Sign out</button></form>
+`+nav.String()+content)
+}
+
+func (h *AdminConsoleHandlers) renderTenantsDomain(w http.ResponseWriter, r *http.Request) string {
 	tenants, err := h.Store.ListTenants()
 	if err != nil {
 		h.Logger.Error("admin_list_tenants_failed", "err", err)
-		h.page(w, http.StatusBadGateway, "X-Auth admin", `<h1 class="err">Could not load tenants</h1>
-<p class="muted">The tenant listing is temporarily unavailable.</p>`)
-		return
+		return `<h1 class="err">Could not load tenants</h1><p class="muted">The tenant listing is temporarily unavailable.</p>`
 	}
 
 	var rows strings.Builder
@@ -133,15 +208,40 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.page(w, http.StatusOK, "X-Auth admin", `<h1>Administration</h1>
-<p class="muted">Signed in as <strong>`+html.EscapeString(admin.User.Email)+`</strong>.</p>
-<form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>
-<h2 style="margin-top:28px">Tenants</h2>
-<p class="muted">`+itoa(len(tenants))+` tenant(s). Derived from existing users and sessions — phase 1 has no tenant registry.</p>
+	return `<h2 style="margin-top:28px">Tenants</h2>
+<p class="muted">` + itoa(len(tenants)) + ` tenant(s). Derived from existing users and sessions — phase 1 has no tenant registry.</p>
 <div class="panel"><table>
 <thead><tr><th>Tenant</th><th>Users</th><th>Sessions</th><th>Last activity (UTC)</th></tr></thead>
-<tbody>`+rows.String()+`</tbody></table></div>`+
-		h.clientsSection())
+<tbody>` + rows.String() + `</tbody></table></div>` +
+		h.clientsSection()
+}
+
+func (h *AdminConsoleHandlers) renderDocumentsDomain() string {
+	return `<h2>Documents</h2>
+<p class="muted">Architecture and deployment documents. Editing requires the <code>documents:write</code> permission.</p>
+<div class="panel">
+	<ul>
+		<li>Architecture (Readiness: In Progress)</li>
+		<li>Service topology</li>
+		<li>Deployment plans</li>
+		<li>Design decisions</li>
+		<li>Compliance mappings</li>
+	</ul>
+</div>`
+}
+
+func (h *AdminConsoleHandlers) renderMarketingDomain() string {
+	return `<h2>Marketing</h2>
+<p class="muted">Sales collateral, pitch decks, and business metrics.</p>
+<div class="panel">
+	<ul>
+		<li>Slides</li>
+		<li>Sales pipeline</li>
+		<li>Customer overview</li>
+		<li>Product positioning</li>
+		<li>Growth metrics</li>
+	</ul>
+</div>`
 }
 
 // clientsSection renders the OIDC client-management block: the env CORS
@@ -212,7 +312,8 @@ To make one permanent, add it to the <code>OIDC_CLIENTS</code> env var (and orig
 // registry tenants (shows the company name) and derived/console tenants
 // (ten_admin, …, which have no registry row — the id is shown instead).
 func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.currentAdmin(w, r); !ok {
+	admin, ok := h.currentAdmin(w, r)
+	if !ok || !hasPermission(admin.Roles, "tenants:read") {
 		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
 		return
 	}
@@ -289,7 +390,8 @@ func (h *AdminConsoleHandlers) deviceSignals(tenantID string) []DeviceSignal {
 // RevokeSession handles POST /admin/sessions/revoke — staff invalidates any
 // tenant's session (sets invalidated_at).
 func (h *AdminConsoleHandlers) RevokeSession(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.currentAdmin(w, r); !ok {
+	admin, ok := h.currentAdmin(w, r)
+	if !ok || !hasPermission(admin.Roles, "tenants:manage_sessions") {
 		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
 		return
 	}
@@ -322,7 +424,8 @@ func plural(n int, singular, plural string) string {
 
 // RegisterClient handles POST /admin/clients.
 func (h *AdminConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.currentAdmin(w, r); !ok {
+	admin, ok := h.currentAdmin(w, r)
+	if !ok || !hasPermission(admin.Roles, "tenants:manage_settings") {
 		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
 		return
 	}
@@ -371,7 +474,8 @@ func (h *AdminConsoleHandlers) RegisterClient(w http.ResponseWriter, r *http.Req
 
 // DeleteClient handles POST /admin/clients/delete.
 func (h *AdminConsoleHandlers) DeleteClient(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.currentAdmin(w, r); !ok {
+	admin, ok := h.currentAdmin(w, r)
+	if !ok || !hasPermission(admin.Roles, "tenants:manage_settings") {
 		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
 		return
 	}
@@ -511,14 +615,15 @@ func (h *AdminConsoleHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 
 // adminSession is the resolved admin browser session.
 type adminSession struct {
-	Session Session
-	User    User
+	Session   Session
+	User      User
+	StaffUser StaffUser
+	Roles     []string
 }
 
 // currentAdmin returns the signed-in admin iff the cookie maps to a live
-// ten_admin session whose user is STILL on the allowlist. Re-checking the
-// allowlist on every request means de-authorising an email takes effect at
-// once, without waiting for the cookie to expire.
+// ten_admin session whose user is STILL on the allowlist, and they have an active
+// staff account with roles.
 func (h *AdminConsoleHandlers) currentAdmin(w http.ResponseWriter, r *http.Request) (adminSession, bool) {
 	c, err := r.Cookie(adminSessionCookie)
 	if err != nil || c.Value == "" {
@@ -534,7 +639,65 @@ func (h *AdminConsoleHandlers) currentAdmin(w http.ResponseWriter, r *http.Reque
 		h.clearCookie(w)
 		return adminSession{}, false
 	}
-	return adminSession{Session: sess, User: user}, true
+	staff, err := h.Store.GetStaffUserByEmail(user.Email)
+	if err != nil || !staff.Active {
+		h.clearCookie(w)
+		return adminSession{}, false
+	}
+	roles, err := h.Store.GetStaffUserRoles(staff.ID)
+	if err != nil || len(roles) == 0 {
+		h.clearCookie(w)
+		return adminSession{}, false
+	}
+	return adminSession{Session: sess, User: user, StaffUser: staff, Roles: roles}, true
+}
+
+func rolePermissions(role string) []string {
+	switch role {
+	case "administrator":
+		return []string{"tenants:read", "tenants:manage_sessions", "tenants:manage_settings"}
+	case "architect":
+		return []string{"documents:read", "documents:write"}
+	case "executive":
+		return []string{"marketing:read", "marketing:view_pipeline"}
+	}
+	return nil
+}
+
+func hasPermission(roles []string, perm string) bool {
+	for _, r := range roles {
+		for _, p := range rolePermissions(r) {
+			if p == perm {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func allowedDomains(roles []string) []string {
+	hasDomain := map[string]bool{}
+	for _, r := range roles {
+		switch r {
+		case "administrator":
+			hasDomain["tenants"] = true
+		case "architect":
+			hasDomain["documents"] = true
+		case "executive":
+			hasDomain["marketing"] = true
+		}
+	}
+	var out []string
+	if hasDomain["tenants"] {
+		out = append(out, "tenants")
+	}
+	if hasDomain["documents"] {
+		out = append(out, "documents")
+	}
+	if hasDomain["marketing"] {
+		out = append(out, "marketing")
+	}
+	return out
 }
 
 func (h *AdminConsoleHandlers) clearCookie(w http.ResponseWriter) {
