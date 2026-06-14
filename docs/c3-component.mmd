@@ -1,0 +1,32 @@
+C4Component
+    title Component Diagram (C4 L3) - Risk Service Pipeline
+    
+    Container_Boundary(riskSvc, "Risk Service") {
+        Component(signalIngest, "Signal Collection", "Go", "Ingests signals from SDK & context")
+        Component(enrichment, "Enrichment Engine", "Go", "IP->geo, Fingerprint DB")
+        
+        Component(deviceScorer, "Device Scorer", "Go", "Fingerprint, fraud history")
+        Component(behaviorScorer, "Behavior Scorer", "Go", "Typing, mouse dyn")
+        Component(networkScorer, "Network Scorer", "Go", "IP rep, VPN/Tor detect")
+        Component(userScorer, "User Scorer", "Go", "Account age, failed attempts")
+        
+        Component(aggregator, "Weighted Aggregation", "Go", "Calculates aggregate score")
+        Component(policyEngine, "Policy Application", "Go", "Applies tenant policy rules")
+        Component(sensitivity, "Resource Sensitivity", "Go", "Applies sensitivity multipliers")
+        Component(tierAssigner, "Tier Assignment", "Go", "Assigns Low/Medium/High tier")
+    }
+    
+    Rel(signalIngest, enrichment, "Passes signals")
+    Rel(enrichment, deviceScorer, "Passes enriched context")
+    Rel(enrichment, behaviorScorer, "Passes enriched context")
+    Rel(enrichment, networkScorer, "Passes enriched context")
+    Rel(enrichment, userScorer, "Passes enriched context")
+    
+    Rel(deviceScorer, aggregator, "Outputs device score (0-1)")
+    Rel(behaviorScorer, aggregator, "Outputs behavior score (0-1)")
+    Rel(networkScorer, aggregator, "Outputs network score (0-1)")
+    Rel(userScorer, aggregator, "Outputs user score (0-1)")
+    
+    Rel(aggregator, policyEngine, "Passes aggregate score")
+    Rel(policyEngine, sensitivity, "Passes weighted score")
+    Rel(sensitivity, tierAssigner, "Passes final score")

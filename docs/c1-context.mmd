@@ -1,0 +1,24 @@
+C4Context
+    title System Context (C4 L1) for X-Auth Platform
+    
+    Person(endUser, "End User", "Human authenticating via browser or mobile app")
+    System_Ext(clientApp, "Client App", "Customer's backend server calling X-Auth APIs")
+    System_Ext(adminConsole, "Admin Console", "XentraNET dashboard for tenant config")
+    System_Ext(threatIntel, "Threat Intel Feeds", "External IP reputation, fraud databases")
+    
+    System(xauth, "X-Auth Platform", "Risk-based authentication, authorization & risk intelligence")
+    
+    System_Ext(authVendors, "Auth Vendors", "Social login, SAML/OIDC enterprise IdPs")
+    System_Ext(pushNotif, "Push Notification Services", "APNs, FCM for step-up challenges")
+    System_Ext(smsEmail, "SMS/Email Providers", "Twilio, SendGrid for OTP/magic links")
+    System_Ext(fidoRP, "FIDO2/WebAuthn RP", "Relying Party Servers")
+    
+    Rel(endUser, xauth, "Authenticates via", "HTTPS")
+    Rel(clientApp, xauth, "Integrates with API", "HTTPS")
+    Rel(adminConsole, xauth, "Configures policies", "HTTPS")
+    Rel(threatIntel, xauth, "Provides risk signals", "HTTPS")
+    
+    Rel(xauth, authVendors, "Delegates login", "HTTPS")
+    Rel(xauth, pushNotif, "Sends push challenges", "HTTPS")
+    Rel(xauth, smsEmail, "Sends OTP/links", "HTTPS")
+    Rel(xauth, fidoRP, "Verifies passkeys", "HTTPS")

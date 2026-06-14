@@ -1,0 +1,45 @@
+C4Container
+    title Container Diagram (C4 L2) for X-Auth Platform
+    
+    Person(client, "External Client", "Client Apps, Browsers")
+    
+    System_Boundary(xauth, "X-Auth Platform") {
+        Container(apiGateway, "API Gateway / LB", "Nginx/Envoy", "TLS termination, rate limiting")
+        
+        Container(txnSvc, "Transaction Service", "Go", "Orchestrator, /evaluate, /step-up")
+        Container(authSvc, "Authentication Service", "Go", "OIDC provider, tokens, sessions")
+        Container(riskSvc, "Risk Service", "Go", "Risk scoring, policy engine")
+        Container(authrSvc, "Authenticator Service", "Go", "Authenticator CRUD, challenges")
+        
+        ContainerDb(redis, "Shared Redis", "Redis", "Session cache, rate limits, risk cache")
+        
+        ContainerDb(txnDb, "txn_db", "PostgreSQL", "Transaction & audit data")
+        ContainerDb(riskDb, "risk_db", "PostgreSQL", "Risk policies & evaluations")
+        ContainerDb(authDb, "auth_db", "PostgreSQL", "Users, sessions, auth flows")
+        ContainerDb(authrDb, "authr_db", "PostgreSQL", "Authenticators & challenges")
+    }
+    
+    System_Ext(extApi, "External APIs", "Twilio, SendGrid, APNs, Social IdPs")
+    
+    Rel(client, apiGateway, "Makes API requests to", "HTTPS")
+    Rel(apiGateway, txnSvc, "Routes public traffic", "HTTPS")
+    Rel(apiGateway, authSvc, "Routes OIDC traffic", "HTTPS")
+    
+    Rel(txnSvc, riskSvc, "Requests risk evaluation", "REST/JSON")
+    Rel(txnSvc, authrSvc, "Dispatches challenges", "REST/JSON")
+    Rel(txnSvc, authSvc, "Manages sessions/tokens", "REST/JSON")
+    Rel(authSvc, authrSvc, "Reads authenticators", "REST/JSON")
+    
+    Rel(txnSvc, txnDb, "Reads/Writes")
+    Rel(riskSvc, riskDb, "Reads/Writes")
+    Rel(authSvc, authDb, "Reads/Writes")
+    Rel(authrSvc, authrDb, "Reads/Writes")
+    
+    Rel(txnSvc, redis, "Uses")
+    Rel(riskSvc, redis, "Uses")
+    Rel(authSvc, redis, "Uses")
+    Rel(authrSvc, redis, "Uses")
+    
+    Rel(riskSvc, extApi, "Calls")
+    Rel(authSvc, extApi, "Calls")
+    Rel(authrSvc, extApi, "Calls")
