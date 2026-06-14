@@ -891,6 +891,91 @@ func (s *PGStorage) PurgeExpired(now time.Time) (int, error) {
 	return total, nil
 }
 
+// ---- Staff Users ----
+
+func (s *PGStorage) PutStaffUser(u StaffUser) error {
+	const q = `
+		INSERT INTO staff_users (id, email, display_name, active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (id) DO UPDATE SET
+			email = EXCLUDED.email,
+			display_name = EXCLUDED.display_name,
+			active = EXCLUDED.active,
+			updated_at = now()
+	`
+	_, err := s.pool.Exec(bgCtx(), q, u.ID, u.Email, nullable(u.DisplayName), u.Active, u.CreatedAt.UTC(), u.UpdatedAt.UTC())
+	return err
+}
+
+func (s *PGStorage) GetStaffUserByEmail(email string) (StaffUser, error) {
+	const q = `SELECT id, email, display_name, active, created_at, updated_at FROM staff_users WHERE email = $1`
+	var u StaffUser
+	var displayName *string
+	err := s.pool.QueryRow(bgCtx(), q, email).Scan(&u.ID, &u.Email, &displayName, &u.Active, &u.CreatedAt, &u.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StaffUser{}, ErrNotFound
+	}
+	if err != nil {
+		return StaffUser{}, err
+	}
+	u.DisplayName = derefString(displayName)
+	return u, nil
+}
+
+func (s *PGStorage) GetStaffUserRoles(userID string) ([]string, error) {
+	const q = `SELECT role FROM staff_user_roles WHERE staff_user_id = $1 ORDER BY created_at ASC`
+	rows, err := s.pool.Query(bgCtx(), q, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roles []string
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+	return roles, rows.Err()
+}
+
+func (s *PGStorage) AddStaffUserRole(userID, role string) error {
+	const q = `
+		INSERT INTO staff_user_roles (staff_user_id, role, created_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT DO NOTHING
+	`
+	_, err := s.pool.Exec(bgCtx(), q, userID, role)
+	return err
+}
+
+func (s *PGStorage) ListStaffUsers() ([]StaffUser, error) {
+	const q = `SELECT id, email, display_name, active, created_at, updated_at FROM staff_users ORDER BY email ASC`
+	rows, err := s.pool.Query(bgCtx(), q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StaffUser
+	for rows.Next() {
+		var u StaffUser
+		var displayName *string
+		if err := rows.Scan(&u.ID, &u.Email, &displayName, &u.Active, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		u.DisplayName = derefString(displayName)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStorage) DeleteStaffUserRole(userID, role string) error {
+	const q = `DELETE FROM staff_user_roles WHERE staff_user_id = $1 AND role = $2`
+	_, err := s.pool.Exec(bgCtx(), q, userID, role)
+	return err
+}
+
 // -----------------------------------------------------------------------------
 // helpers
 // -----------------------------------------------------------------------------
