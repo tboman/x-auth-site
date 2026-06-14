@@ -235,104 +235,12 @@
             .hero .eyebrow,
             .hero h1,
             .hero .hero-sub,
-            .hero .hero-actions,
-            .hero .code-pair {
+            .hero .hero-actions {
                 animation: hero-rise 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
             }
             .hero h1            { animation-delay: 0.07s; }
             .hero .hero-sub     { animation-delay: 0.14s; }
             .hero .hero-actions { animation-delay: 0.21s; }
-            .hero .code-pair    { animation-delay: 0.30s; }
-        }
-
-        /* Terminal */
-        .terminal-shell {
-            max-width: 760px;
-            margin: 0 auto;
-            border-radius: 12px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-            box-shadow: 0 32px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(0,224,150,0.06);
-        }
-        .term-bar {
-            background: #111116;
-            padding: 0.7rem 1rem;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            border-bottom: 1px solid var(--border);
-        }
-        .dot { width: 11px; height: 11px; border-radius: 50%; }
-        .dot-r { background: #f04040; }
-        .dot-y { background: #f0b429; }
-        .dot-g { background: #29c940; }
-        .term-label {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.7rem;
-            color: var(--muted);
-            margin-left: 0.4rem;
-        }
-        .term-body {
-            background: #0c0c10;
-            padding: 1.75rem 2rem;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.84rem;
-            line-height: 1.9;
-            color: #8888a0;
-            text-align: left;
-            overflow-x: auto;
-        }
-        .kw  { color: #c084fc; }
-        .str { color: #86efac; }
-        .fn  { color: #60a5fa; }
-        .cmt { color: #3f4555; font-style: italic; }
-
-        /* Code-sample tabs (CSS-only via radios) */
-        .code-pair {
-            max-width: 760px;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1.25rem;
-        }
-        .code-pair .terminal-shell { max-width: 100%; }
-        .code-pair > input[type="radio"] {
-            position: absolute;
-            left: -9999px;
-            opacity: 0;
-            pointer-events: none;
-        }
-        .tab-bar {
-            background: #0e0e13;
-            padding: 0 0.75rem;
-            display: flex;
-            gap: 0;
-            border-bottom: 1px solid var(--border);
-            overflow-x: auto;
-        }
-        .tab-bar label {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.72rem;
-            color: var(--muted);
-            padding: 0.8rem 1rem;
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-            margin-bottom: -1px;
-            white-space: nowrap;
-            transition: color 0.15s, border-color 0.15s;
-        }
-        .tab-bar label:hover { color: #cdd0db; }
-        .tab-panel { display: none; margin: 0; }
-        #lang-js:checked      ~ .terminal-shell .tab-panel[data-lang="js"],
-        #lang-swift:checked   ~ .terminal-shell .tab-panel[data-lang="swift"],
-        #lang-kotlin:checked  ~ .terminal-shell .tab-panel[data-lang="kotlin"],
-        #lang-angular:checked ~ .terminal-shell .tab-panel[data-lang="angular"] { display: block; }
-        #lang-js:checked      ~ .terminal-shell .tab-bar label[for="lang-js"],
-        #lang-swift:checked   ~ .terminal-shell .tab-bar label[for="lang-swift"],
-        #lang-kotlin:checked  ~ .terminal-shell .tab-bar label[for="lang-kotlin"],
-        #lang-angular:checked ~ .terminal-shell .tab-bar label[for="lang-angular"] {
-            color: var(--accent);
-            border-bottom-color: var(--accent);
         }
 
         /* ── Stats ── */
@@ -845,7 +753,7 @@
         }
         .flow-step .flow-code .kw  { color: #c084fc; }
         .flow-step .flow-code .str { color: #86efac; }
-        .flow-step .flow-code .fn  { color: #60a5fa; }
+        .flow-step .flow-code .cmt { color: #3f4555; font-style: italic; }
 
         /* ── Pricing block header (per product) ── */
         .pricing-block { margin-top: 4rem; }
