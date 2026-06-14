@@ -18,7 +18,7 @@ const OIDC = {
   scope:       'openid profile email',
   tenantId:    '{{.TenantID}}',                            // this workspace's tenant
   provider:    'google',                                   // informational; the hosted /login chooser picks the provider
-  acrValues:   '{{.AcrValues}}',                           // e.g. 'urn:xauth:otp:sms' to force SMS OTP ('' = skip)
+  acrValues:   '{{.AcrValues}}',                           // step-up: a protection level (urn:xauth:protect:high:strict … ultra:strict) or a method (urn:xauth:otp:sms / :fido2); '' = none
 };
 // discovery: {issuer}/.well-known/openid-configuration
 // flow: social authorize → callback (user_id) → authorize → callback (code) → PKCE token exchange

@@ -1092,8 +1092,35 @@
         .uc-flow li strong { color: var(--text); font-weight: 600; }
         .uc-flow li span { color: var(--muted); margin-left: 0.3rem; }
         .usecase-card .tag-row { margin-top: auto; padding-top: 1.5rem; }
+        /* Risk-based step-up card spans the full row and lists the ACR ladder. */
+        .usecase-card.uc-wide { grid-column: 1 / -1; }
+        .acr-ladder {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem 1.5rem;
+            margin: 1.4rem 0 0.4rem;
+        }
+        .acr-band { display: flex; flex-direction: column; gap: 0.4rem; }
+        .acr-band-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.66rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 0.15rem;
+        }
+        .acr-band code {
+            font-size: 0.74rem;
+            color: var(--text);
+            background: var(--accent-glow);
+            border: 1px solid var(--accent-ring);
+            border-radius: 5px;
+            padding: 0.32rem 0.55rem;
+        }
+        .acr-band code .acr-rank { color: var(--muted); margin-right: 0.45rem; }
         @media (max-width: 960px) {
             .usecase-grid { grid-template-columns: 1fr; }
+            .acr-ladder { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -1512,8 +1539,8 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
     <div class="container">
         <div class="section-head">
             <div class="section-kicker">In Production</div>
-            <h2>Two ways teams ship<br>X-Auth for Apps.</h2>
-            <p class="lead">The same OIDC provider, dropped in two ways &mdash; managed login and sessions, or login plus on-demand step-up. Both are live today on XentraNET products.</p>
+            <h2>Three ways teams ship<br>X-Auth for Apps.</h2>
+            <p class="lead">The same OIDC provider, dropped in three ways &mdash; managed login and sessions, login plus on-demand step-up, or risk-based step-up where the app names a <strong>protection level</strong> and X-Auth decides the challenge. The first two are live today on XentraNET products; risk-based step-up is rolling out on Steamparks.</p>
         </div>
         <div class="usecase-grid">
             <!-- Use case 1: Login & sessions -->
@@ -1556,6 +1583,43 @@ app.<span class="fn">post</span>(<span class="str">'/api/transfer'</span>, <span
                     <span class="tag">acr_values</span>
                     <span class="tag">Step-up</span>
                     <span class="tag">Session reuse</span>
+                </div>
+            </div>
+            <!-- Use case 3: Risk-based step-up -->
+            <div class="usecase-card uc-wide">
+                <span class="uc-num">Use case 03 &middot; Risk-based step-up</span>
+                <h3>Name the protection level &mdash; X-Auth decides if and how to challenge.</h3>
+                <p class="uc-customer">Rolling out on <a href="https://steamparks.org" target="_blank" rel="noopener">Steamparks</a> &mdash; role-based access with finance controls (in build).</p>
+                <p>Instead of asking for a specific method, the app states the <strong>assurance an action needs</strong> &mdash; one of <strong>eight protection levels</strong> &mdash; on the <code>acr_values</code> of an authenticated request. X-Auth returns the advice: <strong>pass through</strong> when the session already meets the bar, or run the <strong>right challenge</strong> when it doesn't. Levels are role- and action-aware: a routine read might sit at <code>high:protected</code>, while moving money is gated at <code>ultra:strict</code>. The session remembers the assurance it reaches, so equal-or-lower actions stay frictionless.</p>
+                <div class="acr-ladder">
+                    <div class="acr-band">
+                        <span class="acr-band-label">High&nbsp;risk &mdash; protected actions</span>
+                        <code><span class="acr-rank">1</span>urn:xauth:protect:high:protected</code>
+                        <code><span class="acr-rank">2</span>urn:xauth:protect:high:enhanced</code>
+                        <code><span class="acr-rank">3</span>urn:xauth:protect:high:restricted</code>
+                        <code><span class="acr-rank">4</span>urn:xauth:protect:high:strict</code>
+                    </div>
+                    <div class="acr-band">
+                        <span class="acr-band-label">Ultra-high&nbsp;risk &mdash; finance &amp; critical</span>
+                        <code><span class="acr-rank">5</span>urn:xauth:protect:ultra:protected</code>
+                        <code><span class="acr-rank">6</span>urn:xauth:protect:ultra:enhanced</code>
+                        <code><span class="acr-rank">7</span>urn:xauth:protect:ultra:restricted</code>
+                        <code><span class="acr-rank">8</span>urn:xauth:protect:ultra:strict</code>
+                    </div>
+                </div>
+                <ol class="uc-flow">
+                    <li><strong>Name the bar</strong> <span>&mdash; the app tags an action with a protection level via <code>acr_values</code> on <code>/authorize</code>.</span></li>
+                    <li><strong>X-Auth advises</strong> <span>&mdash; pass through if the session already satisfies the level, otherwise step-up.</span></li>
+                    <li><strong>Right challenge</strong> <span>&mdash; SMS OTP, passkey/FIDO2, escalating to the strongest for <code>ultra:strict</code>.</span></li>
+                    <li><strong>Assurance recorded</strong> <span>&mdash; the token carries the achieved <code>acr</code>; equal-or-lower actions pass through.</span></li>
+                </ol>
+                <div class="tag-row">
+                    <span class="tag">8 protection levels</span>
+                    <span class="tag">acr_values</span>
+                    <span class="tag">Risk-based</span>
+                    <span class="tag">Pass-through</span>
+                    <span class="tag">Role &amp; action aware</span>
+                    <span class="tag">Finance &rarr; ultra:strict</span>
                 </div>
             </div>
         </div>

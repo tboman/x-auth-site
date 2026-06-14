@@ -32,7 +32,12 @@ owns the method selection (and can grow new methods) without client changes.
 
 ### Step-up (reuse the session — no re-login)
 
-To raise assurance for a sensitive action, call `stepUp('urn:xauth:otp:sms')`.
+To raise assurance for a sensitive action, call `stepUp(acr)` where `acr` is a
+**protection level** — one of the eight `urn:xauth:protect:{high,ultra}:{protected,enhanced,restricted,strict}`
+values — or a legacy method (`urn:xauth:otp:sms`, `urn:xauth:fido2`). Naming a
+protection level lets X-Auth choose (and later strengthen) the challenge without
+a client change. For example, `stepUp('urn:xauth:protect:ultra:strict')` for a
+money movement, or `stepUp('urn:xauth:otp:sms')` for a quick check.
 It goes **straight to `/authorize`**, reusing the X-Auth session from the
 original login, so X-Auth shows only the OTP challenge — it does **not** send the
 user back through Google. The fresh tokens come back with `acr`/`amr` claims

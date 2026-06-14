@@ -181,6 +181,49 @@ app.listen(3000);
 All with `X-Tenant-Id: ten_cryptofreight`. Sessions live 1 hour unless
 refreshed; refresh on activity if you want sliding sessions.
 
+## Step-up & protection levels (`acr_values`)
+
+For an **authenticated** user, your app guards a sensitive action by stating the
+assurance it needs on the `acr_values` of an `/authorize` request — reusing the
+existing session, so there's no second login (see `stepUp()` in the example
+`auth.js`, or just navigate to `/authorize` directly with `acr_values` set).
+X-Auth decides: if the session already satisfies the level it **passes through**
+and mints the code immediately; otherwise it runs the matching **challenge**, and
+the resulting token carries the achieved level in its `acr` claim (`amr` holds the
+method actually used).
+
+**Preferred — protection levels.** Instead of naming a method, name the
+protection a level the action needs. Eight levels, two bands, increasing in
+strength (rank 1–8). Once a session satisfies a level, an equal-or-lower request
+passes through; a higher one re-challenges.
+
+| Rank | `acr_values` | Band |
+|---|---|---|
+| 1 | `urn:xauth:protect:high:protected`   | High risk |
+| 2 | `urn:xauth:protect:high:enhanced`    | High risk |
+| 3 | `urn:xauth:protect:high:restricted`  | High risk |
+| 4 | `urn:xauth:protect:high:strict`      | High risk |
+| 5 | `urn:xauth:protect:ultra:protected`  | Ultra-high risk |
+| 6 | `urn:xauth:protect:ultra:enhanced`   | Ultra-high risk |
+| 7 | `urn:xauth:protect:ultra:restricted` | Ultra-high risk |
+| 8 | `urn:xauth:protect:ultra:strict`     | Ultra-high risk (finance / critical) |
+
+> The mapping from level → challenge (and, later, whether the live context even
+> requires one) is owned by X-Auth and will be risk-driven; today it is a fixed
+> escalation ladder. Your app only commits to the **level**, never the method —
+> so the bar can get stronger without a client change.
+
+**Legacy — explicit methods.** You can still request a specific method; kept for
+back-compat:
+
+| `acr_values` | Challenge |
+|---|---|
+| `urn:xauth:otp:sms` | SMS one-time code |
+| `urn:xauth:fido2`   | Passkey / FIDO2 |
+
+All ten values are advertised in discovery under `acr_values_supported` at
+`/.well-known/openid-configuration`.
+
 ## Local trial (cryptofreight on your laptop)
 
 1. Run authentication-service with Google credentials (see the service
