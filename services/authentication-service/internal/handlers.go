@@ -41,6 +41,11 @@ type Deps struct {
 	// (/admin). Empty means the console denies all sign-ins (deny by default).
 	AdminEmails []string
 
+	// RootEmails are break-glass root accounts: always allowed into the console
+	// and re-granted every staff role + reactivated on every boot (ROOT_EMAILS).
+	// Empty means no root account.
+	RootEmails []string
+
 	// DevAutologin re-enables the legacy /authorize behaviour (trust a user_id
 	// parameter / auto-create a dev user) for local development and tests.
 	// OFF in production, where /authorize requires a real authz-session cookie.
@@ -112,7 +117,7 @@ func Router(d Deps) http.Handler {
 	phone := NewPhoneLoginHandlers(d.Store, d.Logger, d.Issuer)
 	phone.Analyzer = analyzer
 	dev := &DeveloperConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
-	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.CORSOrigins)
+	admin := NewAdminConsoleHandlers(d.Store, d.Logger, d.Issuer, d.AdminEmails, d.RootEmails, d.CORSOrigins)
 	admin.StepUps = stepUps
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}

@@ -50,39 +50,66 @@ type AdminConsoleHandlers struct {
 	StepUps *StepUpTracker
 }
 
-func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails, envOrigins []string) *AdminConsoleHandlers {
-	allow := make(map[string]bool, len(emails))
+func NewAdminConsoleHandlers(store Storage, logger *slog.Logger, issuer string, emails, rootEmails, envOrigins []string) *AdminConsoleHandlers {
+	allow := make(map[string]bool, len(emails)+len(rootEmails))
 	for _, e := range emails {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
 			allow[e] = true
-			
-			// Seed staff user
-			if staff, err := store.GetStaffUserByEmail(e); err == ErrNotFound {
-				id := "stf_" + randToken(16)
-				store.PutStaffUser(StaffUser{
-					ID:        id,
-					Email:     e,
-					Active:    true,
-					CreatedAt: time.Now().UTC(),
-					UpdatedAt: time.Now().UTC(),
-				})
-				store.AddStaffUserRole(id, "administrator")
-			} else if staff.Active {
-				// Ensure they have administrator role
-				roles, _ := store.GetStaffUserRoles(staff.ID)
-				hasAdmin := false
-				for _, r := range roles {
-					if r == "administrator" {
-						hasAdmin = true
-					}
-				}
-				if !hasAdmin {
-					store.AddStaffUserRole(staff.ID, "administrator")
-				}
-			}
+			// ADMIN_EMAILS members get the administrator role; an existing
+			// disabled account is left disabled (deactivation must stick).
+			ensureStaff(store, e, []string{"administrator"}, false)
+		}
+	}
+	// ROOT_EMAILS are break-glass root accounts: always allowed to sign in and
+	// re-granted EVERY staff role + reactivated on every boot, so the emergency
+	// account can't be locked out by a DB edit, a missing grant, or an accidental
+	// deactivation (ARCHITECTURE.md break-glass requirement, §A.8.2 / HIPAA).
+	for _, e := range rootEmails {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			allow[e] = true
+			ensureStaff(store, e, allStaffRoles, true)
 		}
 	}
 	return &AdminConsoleHandlers{Store: store, Logger: logger, Issuer: issuer, AllowedEmails: allow, EnvOrigins: envOrigins}
+}
+
+// ensureStaff idempotently makes email an active staff_user carrying every role
+// in roles. forceActive reactivates a disabled row (break-glass root must not be
+// lockable); without it, a disabled account is left untouched so a deliberate
+// deactivation of a normal admin sticks. Best-effort: store errors are ignored
+// (this runs at construction, mirroring the original seed).
+func ensureStaff(store Storage, email string, roles []string, forceActive bool) {
+	staff, err := store.GetStaffUserByEmail(email)
+	if err == ErrNotFound {
+		id := "stf_" + randToken(16)
+		now := time.Now().UTC()
+		store.PutStaffUser(StaffUser{ID: id, Email: email, Active: true, CreatedAt: now, UpdatedAt: now})
+		for _, r := range roles {
+			store.AddStaffUserRole(id, r)
+		}
+		return
+	}
+	if err != nil {
+		return
+	}
+	if forceActive && !staff.Active {
+		staff.Active = true
+		staff.UpdatedAt = time.Now().UTC()
+		store.PutStaffUser(staff)
+	} else if !staff.Active {
+		return
+	}
+	have := map[string]bool{}
+	if existing, err := store.GetStaffUserRoles(staff.ID); err == nil {
+		for _, r := range existing {
+			have[r] = true
+		}
+	}
+	for _, r := range roles {
+		if !have[r] {
+			store.AddStaffUserRole(staff.ID, r)
+		}
+	}
 }
 
 func (h *AdminConsoleHandlers) isAllowed(email string) bool {
@@ -651,6 +678,11 @@ func (h *AdminConsoleHandlers) currentAdmin(w http.ResponseWriter, r *http.Reque
 	}
 	return adminSession{Session: sess, User: user, StaffUser: staff, Roles: roles}, true
 }
+
+// allStaffRoles is the canonical set of staff roles a break-glass root account
+// receives. Keep it in sync with rolePermissions/allowedDomains below — every
+// role handled there must appear here so "all roles" really means all of them.
+var allStaffRoles = []string{"administrator", "architect", "executive"}
 
 func rolePermissions(role string) []string {
 	switch role {

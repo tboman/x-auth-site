@@ -29,6 +29,78 @@ func newAdminRouter(t *testing.T, adminEmails ...string) (http.Handler, Storage)
 	return r, store
 }
 
+// buildRouter constructs a router with the given admin/root allowlists, running
+// the boot seed against a fresh store (returned for inspection).
+func buildRouter(t *testing.T, adminEmails, rootEmails []string) Storage {
+	t.Helper()
+	store := NewMemStorage()
+	_ = Router(Deps{
+		Store: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: &mockAuthenticator{}, Issuer: "http://test.local", Signer: testSigner,
+		AdminEmails: adminEmails, RootEmails: rootEmails,
+	})
+	return store
+}
+
+func roleSet(t *testing.T, store Storage, email string) (StaffUser, map[string]bool) {
+	t.Helper()
+	staff, err := store.GetStaffUserByEmail(email)
+	if err != nil {
+		t.Fatalf("staff %q not seeded: %v", email, err)
+	}
+	roles, _ := store.GetStaffUserRoles(staff.ID)
+	set := map[string]bool{}
+	for _, r := range roles {
+		set[r] = true
+	}
+	return staff, set
+}
+
+// A ROOT_EMAILS account is seeded active with every staff role (break-glass).
+func TestRootEmailsSeedAllRoles(t *testing.T) {
+	store := buildRouter(t, nil, []string{" Root@Example.com "}) // mixed case + spaces → normalized
+	staff, roles := roleSet(t, store, "root@example.com")
+	if !staff.Active {
+		t.Error("root account should be active")
+	}
+	for _, want := range allStaffRoles {
+		if !roles[want] {
+			t.Errorf("root missing role %q (have %v)", want, roles)
+		}
+	}
+	if len(roles) != len(allStaffRoles) {
+		t.Errorf("root has %d roles, want exactly all %d (%v)", len(roles), len(allStaffRoles), roles)
+	}
+}
+
+// Root self-heals a disabled row (reactivate + all roles); a disabled NON-root
+// admin must stay disabled with no roles (deactivation must stick).
+func TestRootReactivatesButAdminDeactivationSticks(t *testing.T) {
+	store := NewMemStorage()
+	now := time.Now().UTC()
+	_ = store.PutStaffUser(StaffUser{ID: "stf_root", Email: "root@x.com", Active: false, CreatedAt: now, UpdatedAt: now})
+	_ = store.PutStaffUser(StaffUser{ID: "stf_adm", Email: "adm@x.com", Active: false, CreatedAt: now, UpdatedAt: now})
+	_ = Router(Deps{
+		Store: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: &mockAuthenticator{}, Issuer: "http://test.local", Signer: testSigner,
+		AdminEmails: []string{"adm@x.com"}, RootEmails: []string{"root@x.com"},
+	})
+	root, rootRoles := roleSet(t, store, "root@x.com")
+	if !root.Active {
+		t.Error("disabled root should be reactivated")
+	}
+	if len(rootRoles) != len(allStaffRoles) {
+		t.Errorf("reactivated root should get all roles, got %v", rootRoles)
+	}
+	adm, admRoles := roleSet(t, store, "adm@x.com")
+	if adm.Active {
+		t.Error("disabled admin must NOT be reactivated")
+	}
+	if len(admRoles) != 0 {
+		t.Errorf("disabled admin should get no roles, got %v", admRoles)
+	}
+}
+
 // seedAdminLogin mints a ten_admin user+session for email and returns the
 // state cookie value paired with the session, as the social leg would leave
 // them for the callback.

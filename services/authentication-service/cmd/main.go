@@ -136,6 +136,9 @@ func main() {
 		// Google-account allowlist for the /admin console (comma-separated;
 		// empty denies all admin sign-ins).
 		AdminEmails: splitNonEmpty(config.Env("ADMIN_EMAILS", "")),
+		// Break-glass root accounts (comma-separated): always allowed into the
+		// console and re-granted every staff role + reactivated on each boot.
+		RootEmails: splitNonEmpty(config.Env("ROOT_EMAILS", "")),
 		// Local-dev escape hatch: trust user_id / auto-create a dev user at
 		// /authorize. MUST be unset in production (where a real authz-session
 		// cookie is required).
