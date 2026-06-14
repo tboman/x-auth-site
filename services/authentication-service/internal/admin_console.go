@@ -116,7 +116,11 @@ func (h *AdminConsoleHandlers) isAllowed(email string) bool {
 	return h.AllowedEmails[strings.ToLower(strings.TrimSpace(email))]
 }
 
-func (h *AdminConsoleHandlers) page(w http.ResponseWriter, status int, title, body string) {
+// render writes the full HTML shell with the standard admin chrome: a sticky top
+// header carrying the X-Auth wordmark (left) and headerRight (right — e.g. the
+// signed-in email + a Sign out button) above the page <main>. page() and
+// pageSignedIn() are the two entry points.
+func (h *AdminConsoleHandlers) render(w http.ResponseWriter, status int, title, headerRight, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
@@ -130,8 +134,17 @@ func (h *AdminConsoleHandlers) page(w http.ResponseWriter, status int, title, bo
 <style>
 :root{color-scheme:dark;--bg:#09090b;--panel:#121217;--text:#dddde4;--muted:#8a8a96;--line:rgba(255,255,255,.11);--accent:#00e096;--warn:#f0b429;--danger:#f04040}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.55}
-main{width:min(980px,calc(100% - 32px));margin:44px auto 80px}
-h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.02;margin:0 0 12px;letter-spacing:-.03em}
+header.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 20px;background:rgba(9,9,11,.82);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none;color:var(--text);font-weight:800;letter-spacing:-.02em;font-size:1.02rem;min-width:0}
+.brand svg{width:24px;height:24px;display:block;flex:none}
+.brand .slash{color:var(--accent)}
+.brand .sub{color:var(--muted);font-weight:500;font-size:.78rem;letter-spacing:.02em}
+.topbar .right{display:flex;align-items:center;gap:12px;min-width:0}
+.topbar .who{color:var(--muted);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar form{margin:0}
+.topbar button{padding:7px 13px;font-size:.85rem}
+main{width:min(980px,calc(100% - 32px));margin:36px auto 80px}
+h1{font-size:clamp(1.8rem,5vw,3rem);line-height:1.02;margin:0 0 12px;letter-spacing:-.03em}
 .muted{color:var(--muted)}.err{color:#ff8e8e}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;margin-top:18px}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
@@ -146,7 +159,23 @@ table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-top:1px so
 th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
 </style>
-</head><body><main>`+body+`</main></body></html>`)
+</head><body>
+<header class="topbar"><a class="brand" href="/admin">`+xAuthFaviconSVG+`<span>X-AUTH<span class="slash">//</span></span><span class="sub">admin</span></a><div class="right">`+headerRight+`</div></header>
+<main>`+body+`</main></body></html>`)
+}
+
+// page renders a chromed page with no signed-in controls — the sign-in screen
+// and error pages.
+func (h *AdminConsoleHandlers) page(w http.ResponseWriter, status int, title, body string) {
+	h.render(w, status, title, "", body)
+}
+
+// pageSignedIn renders a chromed page whose header carries the signed-in email
+// and a Sign out button in the top-right corner.
+func (h *AdminConsoleHandlers) pageSignedIn(w http.ResponseWriter, status int, title, email, body string) {
+	right := `<span class="who">` + html.EscapeString(email) + `</span>` +
+		`<form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>`
+	h.render(w, status, title, right, body)
 }
 
 // Home renders the admin console. Signed-out (or non-allowlisted) users see the
@@ -162,7 +191,7 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 
 	domains := allowedDomains(admin.Roles)
 	if len(domains) == 0 {
-		h.page(w, http.StatusForbidden, "Access Denied", `<h1>Access Denied</h1><p class="err">No active roles.</p><form method="post" action="/admin/logout"><button class="secondary" type="submit">Sign out</button></form>`)
+		h.pageSignedIn(w, http.StatusForbidden, "Access Denied", admin.User.Email, `<h1>Access Denied</h1><p class="err">No active roles.</p>`)
 		return
 	}
 
@@ -178,7 +207,7 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !allowed {
-		h.page(w, http.StatusForbidden, "Access Denied", `<h1>Access Denied</h1><p class="err">You do not have access to this domain.</p><div class="actions"><a class="btn" href="/admin">Back</a></div>`)
+		h.pageSignedIn(w, http.StatusForbidden, "Access Denied", admin.User.Email, `<h1>Access Denied</h1><p class="err">You do not have access to this domain.</p><div class="actions"><a class="btn" href="/admin">Back</a></div>`)
 		return
 	}
 
@@ -205,11 +234,12 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		content = h.renderDocumentsDomain()
 	case "marketing":
 		content = h.renderMarketingDomain()
+	case "monitoring":
+		content = h.renderMonitoringDomain()
 	}
 
-	h.page(w, http.StatusOK, "X-Auth admin", `<h1>Administration</h1>
-<p class="muted">Signed in as <strong>`+html.EscapeString(admin.User.Email)+`</strong>. Roles: `+html.EscapeString(strings.Join(admin.Roles, ", "))+`</p>
-<form method="post" action="/admin/logout" style="margin-bottom: 20px;"><button class="secondary" type="submit">Sign out</button></form>
+	h.pageSignedIn(w, http.StatusOK, "X-Auth admin", admin.User.Email, `<h1>Administration</h1>
+<p class="muted">Roles: `+html.EscapeString(strings.Join(admin.Roles, ", "))+`</p>
 `+nav.String()+content)
 }
 
@@ -269,6 +299,32 @@ func (h *AdminConsoleHandlers) renderMarketingDomain() string {
 		<li>Product positioning</li>
 		<li>Growth metrics</li>
 	</ul>
+</div>`
+}
+
+// renderMonitoringDomain is the operator monitoring surface (operator role,
+// monitoring:read / monitoring:view_logs). It is a scaffold: the panels — service
+// health and a live log feed — are in place, wired to placeholder content until
+// we connect real telemetry (Cloud Run metrics + log streaming).
+func (h *AdminConsoleHandlers) renderMonitoringDomain() string {
+	row := func(svc string) string {
+		return `<tr><td><code>` + svc + `</code></td><td class="muted">— pending —</td>` +
+			`<td class="num muted">—</td><td class="num muted">—</td></tr>`
+	}
+	return `<h2>Monitoring</h2>
+<p class="muted">Operator view — live service health and logs. Requires the <code>monitoring:read</code> permission.</p>
+<div class="panel">
+	<h3>Services</h3>
+	<p class="muted">Status, latency, and error rate per Cloud Run service. Live data is not wired up yet.</p>
+	<table>
+		<thead><tr><th>Service</th><th>Status</th><th class="num">p95 latency</th><th class="num">Errors (5m)</th></tr></thead>
+		<tbody>` + row("authentication-service") + row("risk-service") + row("authenticator-service") + `</tbody>
+	</table>
+</div>
+<div class="panel">
+	<h3>Recent activity</h3>
+	<p class="muted">A live feed of notable events — sign-ins, step-ups, CAEP deliveries, and errors — will stream here.
+	Log streaming is not connected yet; this panel is the placeholder for that feed.</p>
 </div>`
 }
 
@@ -347,7 +403,7 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 	}
 	tenantID := r.PathValue("id")
 	if tenantID == "" {
-		h.page(w, http.StatusBadRequest, "X-Auth admin", `<h1 class="err">Missing tenant</h1>
+		h.pageSignedIn(w, http.StatusBadRequest, "X-Auth admin", admin.User.Email, `<h1 class="err">Missing tenant</h1>
 <div class="actions"><a class="btn" href="/admin">Back</a></div>`)
 		return
 	}
@@ -361,14 +417,14 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 	users, err := h.Store.ListUsers(tenantID, 0, time.Time{})
 	if err != nil {
 		h.Logger.Error("admin_tenant_users_failed", "err", err, "tenant_id", tenantID)
-		h.page(w, http.StatusBadGateway, "X-Auth admin", `<h1 class="err">Could not load identities</h1>
+		h.pageSignedIn(w, http.StatusBadGateway, "X-Auth admin", admin.User.Email, `<h1 class="err">Could not load identities</h1>
 <div class="actions"><a class="btn" href="/admin">Back</a></div>`)
 		return
 	}
 	anchors, err := h.Store.ListIdentityAnchors(tenantID)
 	if err != nil {
 		h.Logger.Error("admin_tenant_anchors_failed", "err", err, "tenant_id", tenantID)
-		h.page(w, http.StatusBadGateway, "X-Auth admin", `<h1 class="err">Could not load identities</h1>
+		h.pageSignedIn(w, http.StatusBadGateway, "X-Auth admin", admin.User.Email, `<h1 class="err">Could not load identities</h1>
 <div class="actions"><a class="btn" href="/admin">Back</a></div>`)
 		return
 	}
@@ -392,7 +448,7 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 			`<button class="danger" type="submit">Revoke</button></form>`
 	}
 
-	h.page(w, http.StatusOK, "Tenant identities", `<h1>`+html.EscapeString(name)+`</h1>
+	h.pageSignedIn(w, http.StatusOK, "Tenant identities", admin.User.Email, `<h1>`+html.EscapeString(name)+`</h1>
 <p class="muted">Tenant <code>`+html.EscapeString(tenantID)+`</code> — `+itoa(len(users))+` identit`+plural(len(users), "y", "ies")+`.</p>
 <div class="actions"><a class="btn secondary" href="/admin">← All tenants</a></div>
 <h2 style="margin-top:24px">Identities</h2>
@@ -683,7 +739,7 @@ func (h *AdminConsoleHandlers) currentAdmin(w http.ResponseWriter, r *http.Reque
 // allStaffRoles is the canonical set of staff roles a break-glass root account
 // receives. Keep it in sync with rolePermissions/allowedDomains below — every
 // role handled there must appear here so "all roles" really means all of them.
-var allStaffRoles = []string{"administrator", "architect", "executive"}
+var allStaffRoles = []string{"administrator", "architect", "executive", "operator"}
 
 func rolePermissions(role string) []string {
 	switch role {
@@ -693,6 +749,8 @@ func rolePermissions(role string) []string {
 		return []string{"documents:read", "documents:write"}
 	case "executive":
 		return []string{"marketing:read", "marketing:view_pipeline"}
+	case "operator":
+		return []string{"monitoring:read", "monitoring:view_logs"}
 	}
 	return nil
 }
@@ -718,6 +776,8 @@ func allowedDomains(roles []string) []string {
 			hasDomain["documents"] = true
 		case "executive":
 			hasDomain["marketing"] = true
+		case "operator":
+			hasDomain["monitoring"] = true
 		}
 	}
 	var out []string
@@ -729,6 +789,9 @@ func allowedDomains(roles []string) []string {
 	}
 	if hasDomain["marketing"] {
 		out = append(out, "marketing")
+	}
+	if hasDomain["monitoring"] {
+		out = append(out, "monitoring")
 	}
 	return out
 }

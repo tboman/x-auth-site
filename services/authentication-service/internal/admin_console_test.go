@@ -186,6 +186,83 @@ func TestAdminAllowedEmailSeesTenants(t *testing.T) {
 	}
 }
 
+// The signed-in staff console renders the chrome header (X-Auth brand) with the
+// signed-in email + a Sign out button in the top-right. (Signed-out /admin is the
+// separate owner/self-service surface, not this console.)
+func TestAdminHeaderAndSignOut(t *testing.T) {
+	r, store := newAdminRouter(t, "tomasboman@gmail.com")
+
+	// Signed-in: header (topbar) with the brand, email, and a Sign out form.
+	sess := seedAdminSession(t, store, "tomasboman@gmail.com")
+	cb := driveAdminCallback(t, r, sess.ID)
+	cookie := sessionCookie(cb, adminSessionCookie)
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	in := w.Body.String()
+	if !strings.Contains(in, `class="topbar"`) || !strings.Contains(in, `class="brand"`) {
+		t.Errorf("signed-in /admin missing the chrome header:\n%s", in)
+	}
+	if !strings.Contains(in, `action="/admin/logout"`) {
+		t.Errorf("signed-in /admin missing the Sign out form in the header")
+	}
+	if !strings.Contains(in, `class="who">tomasboman@gmail.com`) {
+		t.Errorf("signed-in header should show the email in the who slot")
+	}
+}
+
+// A break-glass root (all roles, incl. operator) sees the Monitoring domain.
+func TestOperatorSeesMonitoring(t *testing.T) {
+	store := NewMemStorage()
+	r := Router(Deps{
+		Store: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: &mockAuthenticator{}, Issuer: "http://test.local", Signer: testSigner,
+		RootEmails: []string{"root@x.com"}, // → all roles incl operator
+	})
+	sess := seedAdminSession(t, store, "root@x.com")
+	cb := driveAdminCallback(t, r, sess.ID)
+	cookie := sessionCookie(cb, adminSessionCookie)
+	if cookie == "" {
+		t.Fatal("root callback must set the admin cookie")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin?domain=monitoring", nil)
+	req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("monitoring domain: want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{">Monitoring<", "monitoring:read", "risk-service", "domain=monitoring"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("monitoring domain missing %q", want)
+		}
+	}
+}
+
+// operator maps to the monitoring domain only, and the allStaffRoles list stays
+// in sync with rolePermissions/allowedDomains.
+func TestOperatorRoleAndStaffRoleInvariant(t *testing.T) {
+	if d := allowedDomains([]string{"operator"}); len(d) != 1 || d[0] != "monitoring" {
+		t.Fatalf("operator domains = %v, want [monitoring]", d)
+	}
+	if !hasPermission([]string{"operator"}, "monitoring:read") {
+		t.Errorf("operator should have monitoring:read")
+	}
+	if hasPermission([]string{"operator"}, "tenants:read") {
+		t.Errorf("operator must NOT have tenants:read")
+	}
+	for _, role := range allStaffRoles {
+		if len(rolePermissions(role)) == 0 {
+			t.Errorf("role %q has no permissions — allStaffRoles/rolePermissions out of sync", role)
+		}
+		if len(allowedDomains([]string{role})) == 0 {
+			t.Errorf("role %q maps to no domain — allStaffRoles/allowedDomains out of sync", role)
+		}
+	}
+}
+
 func TestAdminDisallowedEmailRefused(t *testing.T) {
 	r, store := newAdminRouter(t, "tomasboman@gmail.com")
 	sess := seedAdminSession(t, store, "intruder@evil.test")
