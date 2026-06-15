@@ -1331,14 +1331,14 @@
         <div class="section-head">
             <div class="section-kicker">In Production</div>
             <h2>Three ways teams ship<br>X-Auth for Apps.</h2>
-            <p class="lead">The same OIDC provider, dropped in three ways &mdash; managed login and sessions, login plus on-demand step-up, or risk-based step-up where the app names a <strong>protection level</strong> and X-Auth decides the challenge. The first two are live today on XentraNET products; risk-based step-up is rolling out on Steamparks.</p>
+            <p class="lead">The same OIDC provider, dropped in three ways &mdash; managed login and sessions, login plus on-demand step-up, or risk-based step-up where the app <strong>describes a transaction</strong> and X-Auth names the <strong>protection level</strong> and decides the challenge. On-demand and risk-based step-up are live today on XentraNET products; managed login is rolling out on Steamparks.</p>
         </div>
         <div class="usecase-grid">
             <!-- Use case 1: Login & sessions -->
             <div class="usecase-card">
                 <span class="uc-num">Use case 01 &middot; Login &amp; sessions</span>
                 <h3>Managed login &mdash; social &amp; phone, sessions handled.</h3>
-                <p class="uc-customer">Live on <a href="https://unlimitedfreight.com" target="_blank" rel="noopener">Unlimited&nbsp;Freight</a> &mdash; enterprise AI agents for freight ops.</p>
+                <p class="uc-customer">Rolling out on <a href="https://steamparks.org" target="_blank" rel="noopener">Steamparks</a> &mdash; hosted login for a roles &amp; access platform (in build).</p>
                 <p>Hand X-Auth your sign-in and you're done. The hosted <code>/login</code> chooser lets users pick <strong>Google</strong> or their <strong>phone number</strong>; X-Auth verifies them, mints the session, and rotates tokens. No password store, no SMS plumbing, no session bugs to own.</p>
                 <ol class="uc-flow">
                     <li><strong>Hosted chooser</strong> <span>&mdash; user picks Google or phone at <code>/login</code>.</span></li>
@@ -1380,7 +1380,7 @@
             <div class="usecase-card uc-wide">
                 <span class="uc-num">Use case 03 &middot; Risk-based step-up</span>
                 <h3>Name the protection level &mdash; X-Auth decides if and how to challenge.</h3>
-                <p class="uc-customer">Rolling out on <a href="https://steamparks.org" target="_blank" rel="noopener">Steamparks</a> &mdash; role-based access with finance controls (in build).</p>
+                <p class="uc-customer">Live on <a href="https://unlimitedfreight.com" target="_blank" rel="noopener">Unlimited&nbsp;Freight</a> &mdash; enterprise AI agents for freight ops.</p>
                 <p>Instead of asking for a specific method, the app states the <strong>assurance an action needs</strong> &mdash; one of <strong>eight protection levels</strong> &mdash; on the <code>acr_values</code> of an authenticated request. X-Auth returns the advice: <strong>pass through</strong> when the session already meets the bar, or run the <strong>right challenge</strong> when it doesn't. Levels are role- and action-aware: a routine read might sit at <code>high:protected</code>, while moving money is gated at <code>ultra:strict</code>. The session remembers the assurance it reaches, so equal-or-lower actions stay frictionless.</p>
                 <div class="acr-ladder">
                     <div class="acr-band">
