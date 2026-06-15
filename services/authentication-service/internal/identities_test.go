@@ -160,7 +160,7 @@ func TestOwnerDashboardListsUsers(t *testing.T) {
 		t.Fatalf("seed anchor: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin?tab=users", nil)
 	req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: ownerCookie})
 	dw := httptest.NewRecorder()
 	r.ServeHTTP(dw, req)
@@ -168,7 +168,7 @@ func TestOwnerDashboardListsUsers(t *testing.T) {
 		t.Fatalf("owner dashboard: want 200, got %d", dw.Code)
 	}
 	body := dw.Body.String()
-	for _, want := range []string{">Users<", "enduser@acme.test", "+15557654321"} {
+	for _, want := range []string{"enduser@acme.test", "+15557654321"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("owner dashboard missing %q:\n%s", want, body)
 		}

@@ -109,7 +109,7 @@ func TestOwnerDashboardSessionsAndRevoke(t *testing.T) {
 	}
 
 	body := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req := httptest.NewRequest(http.MethodGet, "/admin?tab=sessions", nil)
 		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: ownerCookie})
 		dw := httptest.NewRecorder()
 		r.ServeHTTP(dw, req)

@@ -532,54 +532,126 @@ func (h *SignupConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 <p class="muted" style="margin-top:18px">XentraNET staff? <a href="/admin/login/google">Staff sign-in</a>.</p>`)
 		return
 	}
-	h.renderDashboard(w, owner)
+	h.renderDashboard(w, r, owner)
 }
 
-func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner ownerSession) {
-	var client string
-	if !owner.HasClient {
-		client = `<p class="err">No OIDC client found for this workspace.</p>`
-	} else {
-		c := owner.Client
-		public := c.ClientSecretHash == ""
-		redirects := originList(c.RedirectURIs)
-		origins := originList(c.WebOrigins)
-		notice := ""
-		if len(c.RedirectURIs) == 0 {
-			notice = `<p class="warn">⚠️ No redirect URI set yet — add your application's callback URL below before starting an OIDC flow.</p>`
-		}
-		typeLabel := "Confidential — client secret required"
-		if public {
-			typeLabel = "Public — PKCE, no client secret"
-		}
+// dashboardTabs is the owner dashboard's section list (query ?tab=key).
+var dashboardTabs = []struct{ key, label string }{
+	{"overview", "Overview"},
+	{"integration", "Integration"},
+	{"transactions", "Transaction types"},
+	{"users", "Users"},
+	{"sessions", "Sessions"},
+}
 
-		// Public client → offer the browser starter kit; let the owner mint a
-		// secret to switch to a confidential/server-side client. Confidential
-		// client → the regenerate-secret action (the starter kit is hidden,
-		// since a browser can't hold the secret).
-		quickstart := ""
-		var secretPanel string
-		if public {
-			quickstart = h.quickstartPanel(c.ClientID)
-			secretPanel = `<div class="panel">
+func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.Request, owner ownerSession) {
+	tab := r.URL.Query().Get("tab")
+	known := false
+	for _, t := range dashboardTabs {
+		if t.key == tab {
+			known = true
+		}
+	}
+	if !known {
+		tab = "overview"
+	}
+
+	var content string
+	switch tab {
+	case "integration":
+		content = h.ownerIntegration(owner)
+	case "transactions":
+		content = h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
+	case "users":
+		content = h.ownerUsers(owner)
+	case "sessions":
+		content = h.ownerSessions(owner)
+	default:
+		content = h.ownerOverview(owner)
+	}
+
+	var nav strings.Builder
+	nav.WriteString(`<div class="actions" style="margin:18px 0 6px">`)
+	for _, t := range dashboardTabs {
+		cls := "btn secondary"
+		if t.key == tab {
+			cls = "btn"
+		}
+		nav.WriteString(`<a class="` + cls + `" href="/admin?tab=` + t.key + `">` + html.EscapeString(t.label) + `</a>`)
+	}
+	nav.WriteString(`</div>`)
+
+	role := "workspace owner"
+	if owner.User.Email != owner.Tenant.OwnerEmail {
+		role = "tenant admin"
+	}
+
+	h.page(w, http.StatusOK, "Your X-Auth workspace",
+		`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+<div><h1 style="margin:0 0 4px">`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
+<p class="muted" style="margin:0">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> · `+role+`</p></div>
+<form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
+</div>`+nav.String()+content)
+}
+
+// ownerOverview is the workspace-summary tab.
+func (h *SignupConsoleHandlers) ownerOverview(owner ownerSession) string {
+	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
+	clientType := `<span class="muted">none</span>`
+	if owner.HasClient {
+		clientType = "Confidential"
+		if owner.Client.ClientSecretHash == "" {
+			clientType = "Public (PKCE)"
+		}
+	}
+	return `<div class="panel"><table>
+<tr><td>Company</td><td><strong>` + html.EscapeString(owner.Tenant.CompanyName) + `</strong></td></tr>
+<tr><td>Tenant ID</td><td><code>` + html.EscapeString(owner.Tenant.ID) + `</code></td></tr>
+<tr><td>Owner</td><td>` + html.EscapeString(owner.Tenant.OwnerEmail) + `</td></tr>
+<tr><td>OIDC client</td><td>` + clientType + `</td></tr>
+<tr><td>Users</td><td>` + itoa(len(users)) + `</td></tr>
+</table></div>`
+}
+
+// ownerIntegration is the OIDC-client tab (config, redirect/origins, secret,
+// browser quickstart).
+func (h *SignupConsoleHandlers) ownerIntegration(owner ownerSession) string {
+	if !owner.HasClient {
+		return `<p class="err">No OIDC client found for this workspace.</p>`
+	}
+	c := owner.Client
+	public := c.ClientSecretHash == ""
+	notice := ""
+	if len(c.RedirectURIs) == 0 {
+		notice = `<p class="warn">⚠️ No redirect URI set yet — add your application's callback URL below before starting an OIDC flow.</p>`
+	}
+	typeLabel := "Confidential — client secret required"
+	if public {
+		typeLabel = "Public — PKCE, no client secret"
+	}
+	// Public client → offer the browser starter kit + let the owner mint a secret
+	// to go confidential. Confidential → just the regenerate-secret action.
+	quickstart := ""
+	var secretPanel string
+	if public {
+		quickstart = h.quickstartPanel(c.ClientID)
+		secretPanel = `<div class="panel">
 <h3 style="margin:0 0 8px">Server-side app?</h3>
 <p class="muted">This client is public (PKCE). If you integrate from a backend that can keep a secret, generate one — this converts the client to confidential and the browser quickstart no longer applies.</p>
 <form method="post" action="/admin/owner/regenerate-secret" onsubmit="return confirm('Generate a client secret? The client becomes confidential.')">
 <button class="secondary" type="submit">Generate client secret</button>
 </form></div>`
-		} else {
-			secretPanel = `<div class="panel">
+	} else {
+		secretPanel = `<div class="panel">
 <form method="post" action="/admin/owner/regenerate-secret" onsubmit="return confirm('Regenerate the client secret? The current secret stops working immediately.')">
 <button class="danger" type="submit">Regenerate secret</button>
 </form></div>`
-		}
-
-		client = `<h2 style="margin-top:28px">OIDC client</h2>
-<div class="panel"><table>
+	}
+	return `<div class="panel"><table>
 <tr><td>Client ID</td><td><code>` + html.EscapeString(c.ClientID) + `</code></td></tr>
 <tr><td>Type</td><td>` + typeLabel + `</td></tr>
-<tr><td>Redirect URIs</td><td>` + redirects + `</td></tr>
-<tr><td>Web origins</td><td>` + origins + `</td></tr>
+<tr><td>Redirect URIs</td><td>` + originList(c.RedirectURIs) + `</td></tr>
+<tr><td>Web origins</td><td>` + originList(c.WebOrigins) + `</td></tr>
 </table>` + notice + `</div>` + quickstart + `
 <div class="panel">
 <h3 style="margin:0 0 8px">Update redirect URIs &amp; web origins</h3>
@@ -590,18 +662,21 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, owner own
 <textarea name="web_origins" rows="2" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com">` + html.EscapeString(strings.Join(c.WebOrigins, "\n")) + `</textarea>
 <div class="actions"><button type="submit">Save</button></div>
 </form></div>` + secretPanel
-	}
+}
 
+// ownerUsers is the users tab.
+func (h *SignupConsoleHandlers) ownerUsers(owner ownerSession) string {
 	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
 	anchors, _ := h.Store.ListIdentityAnchors(owner.Tenant.ID)
-	usersSection := `<h2 style="margin-top:28px">Users</h2>
-<p class="muted">Everyone who has signed in to your application. Each is anchored by their Google-verified
+	return `<p class="muted">Everyone who has signed in to your application. Each is anchored by their Google-verified
 email; phone and passkey anchors will appear here once those sign-in methods are available.</p>` +
 		identityTable(users, anchors)
+}
 
-	// Session management: the owner's own workspace sessions + live step-ups,
-	// with a revoke action.
+// ownerSessions is the sessions tab (active sessions + live step-ups, revocable).
+func (h *SignupConsoleHandlers) ownerSessions(owner ownerSession) string {
 	now := time.Now().UTC()
+	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
 	sessions, _ := h.Store.ListSessions(owner.Tenant.ID, 0)
 	emailByUser := emailIndex(users)
 	revoke := func(sess Session) string {
@@ -612,21 +687,8 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 			`<input type="hidden" name="session_id" value="` + html.EscapeString(sess.ID) + `">` +
 			`<button class="danger" type="submit">Revoke</button></form>`
 	}
-	sessionsSection := sessionsPanel(sessions, emailByUser, now, revoke) +
+	return sessionsPanel(sessions, emailByUser, now, revoke) +
 		stepUpsPanel(h.StepUps.ListByTenant(owner.Tenant.ID), emailByUser, now)
-
-	txnSection := h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
-
-	h.page(w, http.StatusOK, "Your X-Auth workspace", `<h1>`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
-<p class="muted">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> (workspace owner).</p>
-<form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
-<h2 style="margin-top:28px">Workspace</h2>
-<div class="panel"><table>
-<tr><td>Company</td><td><strong>`+html.EscapeString(owner.Tenant.CompanyName)+`</strong></td></tr>
-<tr><td>Tenant ID</td><td><code>`+html.EscapeString(owner.Tenant.ID)+`</code></td></tr>
-<tr><td>Owner</td><td>`+html.EscapeString(owner.Tenant.OwnerEmail)+`</td></tr>
-<tr><td>Users</td><td>`+itoa(len(users))+`</td></tr>
-</table></div>`+usersSection+txnSection+sessionsSection+client)
 }
 
 // transactionTypesSection renders the tenant's transaction-type → protection-level

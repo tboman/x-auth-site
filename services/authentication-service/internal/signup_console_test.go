@@ -327,6 +327,47 @@ func TestOwnerLoginMultiTenantPicker(t *testing.T) {
 	}
 }
 
+// The owner dashboard is tabbed: a nav with all sections, Overview by default,
+// and each tab renders only its own content.
+func TestOwnerDashboardTabs(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	cookie := sessionCookie(w, ownerSessionCookie)
+	get := func(tab string) string {
+		path := "/admin"
+		if tab != "" {
+			path += "?tab=" + tab
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("tab %q: want 200, got %d", tab, rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	// Default (no tab) = Overview: nav to every tab + the workspace summary.
+	overview := get("")
+	for _, want := range []string{"tab=overview", "tab=integration", "tab=transactions", "tab=users", "tab=sessions", "Tenant ID", "Sign out"} {
+		if !strings.Contains(overview, want) {
+			t.Errorf("overview missing %q", want)
+		}
+	}
+	// Overview must NOT inline the other tabs' bodies (e.g. the integration form).
+	if strings.Contains(overview, `action="/admin/owner/client"`) {
+		t.Error("overview should not inline the integration tab's client form")
+	}
+	// Integration tab shows the client form; transactions tab shows the advice how-to.
+	if !strings.Contains(get("integration"), `action="/admin/owner/client"`) {
+		t.Error("integration tab missing the client form")
+	}
+	if !strings.Contains(get("transactions"), "Calling the advice endpoint") {
+		t.Error("transactions tab missing the advice how-to")
+	}
+}
+
 func TestSignupReturningOwnerRoutedToWorkspace(t *testing.T) {
 	r, store := newAdminRouter(t)
 	if w := driveSignup(t, r, store, "owner@acme.test", "Acme", ""); w.Code != http.StatusOK {
@@ -391,14 +432,14 @@ func TestOwnerTransactionTypesCRUD(t *testing.T) {
 		return rec
 	}
 	dash := func() string {
-		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req := httptest.NewRequest(http.MethodGet, "/admin?tab=transactions", nil)
 		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		return rec.Body.String()
 	}
 
-	// The dashboard renders the section and the 8-level dropdown.
+	// The transactions tab renders the section and the 8-level dropdown.
 	if body := dash(); !strings.Contains(body, "Transaction types") || !strings.Contains(body, "urn:xauth:protect:ultra:strict") {
 		t.Fatalf("dashboard missing transaction-types section or level options")
 	}
