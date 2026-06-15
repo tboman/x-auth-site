@@ -226,6 +226,107 @@ func TestSignupDuplicateCompanyRejected(t *testing.T) {
 	}
 }
 
+// driveOwnerLogin runs the owner re-login callback for email (the Google leg
+// leaves a verified ten_signup session), returning the recorder.
+func driveOwnerLogin(t *testing.T, r http.Handler, store Storage, email string) *httptest.ResponseRecorder {
+	t.Helper()
+	sess := seedSignupSession(t, store, email)
+	const state = "owner-state-xyz"
+	req := httptest.NewRequest(http.MethodGet, "/admin/owner/callback?state="+state+"&session_id="+sess.ID, nil)
+	req.AddCookie(&http.Cookie{Name: ownerStateCookie, Value: state})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestTenantAdminStorageMem(t *testing.T) {
+	s := NewMemStorage()
+	now := time.Now().UTC()
+	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "ten_a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "ten_a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != ErrConflict {
+		t.Fatalf("dup: want ErrConflict, got %v", err)
+	}
+	_ = s.AddTenantAdmin(TenantAdmin{TenantID: "ten_b", UserID: "u9", Email: "x@a.test", CreatedAt: now}) // same email, other tenant
+	if byEmail, _ := s.ListTenantAdminsByEmail("x@a.test"); len(byEmail) != 2 {
+		t.Fatalf("by email (cross-tenant): want 2, got %d", len(byEmail))
+	}
+	if byTenant, _ := s.ListTenantAdmins("ten_a"); len(byTenant) != 1 {
+		t.Fatalf("by tenant: want 1, got %d", len(byTenant))
+	}
+	if err := s.DeleteTenantAdmin("ten_a", "u1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.DeleteTenantAdmin("ten_a", "u1"); err != ErrNotFound {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
+}
+
+// A staff-tagged admin (who owns nothing) signs in straight into that tenant, and
+// currentOwner accepts them on the dashboard.
+func TestTaggedAdminLogsIntoTenant(t *testing.T) {
+	r, store := newAdminRouter(t)
+	driveSignup(t, r, store, "owner@beta.test", "Beta", "")
+	now := time.Now().UTC()
+	u, _ := store.CreateUser(User{ID: "usr_ab", TenantID: "ten_beta", Email: "admin@beta.test", CreatedAt: now, UpdatedAt: now})
+	if err := store.AddTenantAdmin(TenantAdmin{TenantID: "ten_beta", UserID: u.ID, Email: "admin@beta.test", CreatedAt: now}); err != nil {
+		t.Fatalf("tag: %v", err)
+	}
+
+	w := driveOwnerLogin(t, r, store, "admin@beta.test")
+	if w.Code != http.StatusFound {
+		t.Fatalf("tagged admin login: want 302, got %d (%s)", w.Code, w.Body.String())
+	}
+	cookie := sessionCookie(w, ownerSessionCookie)
+	if !strings.HasPrefix(cookie, "ten_beta|") {
+		t.Fatalf("tagged admin cookie should be ten_beta, got %q", cookie)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+	dw := httptest.NewRecorder()
+	r.ServeHTTP(dw, req)
+	if dw.Code != http.StatusOK || !strings.Contains(dw.Body.String(), "Beta") {
+		t.Fatalf("tagged admin should see the Beta dashboard (%d):\n%s", dw.Code, dw.Body.String())
+	}
+}
+
+// An account that manages more than one workspace gets the picker, then selecting
+// one logs into it.
+func TestOwnerLoginMultiTenantPicker(t *testing.T) {
+	r, store := newAdminRouter(t)
+	driveSignup(t, r, store, "x@acme.test", "Acme", "")    // x owns Acme
+	driveSignup(t, r, store, "owner@beta.test", "Beta", "") // someone else owns Beta
+	now := time.Now().UTC()
+	u, _ := store.CreateUser(User{ID: "usr_xb", TenantID: "ten_beta", Email: "x@acme.test", CreatedAt: now, UpdatedAt: now})
+	_ = store.AddTenantAdmin(TenantAdmin{TenantID: "ten_beta", UserID: u.ID, Email: "x@acme.test", CreatedAt: now})
+
+	w := driveOwnerLogin(t, r, store, "x@acme.test")
+	if w.Code != http.StatusOK {
+		t.Fatalf("multi-tenant login: want 200 picker, got %d", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "Choose a workspace") || !strings.Contains(body, "ten_acme") || !strings.Contains(body, "ten_beta") {
+		t.Fatalf("picker missing tenants:\n%s", w.Body.String())
+	}
+	pick := sessionCookie(w, ownerPickCookie)
+	if pick == "" {
+		t.Fatal("picker must set the pick cookie")
+	}
+
+	form := url.Values{"tenant_id": {"ten_beta"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/owner/select", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: ownerPickCookie, Value: pick})
+	sw := httptest.NewRecorder()
+	r.ServeHTTP(sw, req)
+	if sw.Code != http.StatusFound {
+		t.Fatalf("select: want 302, got %d (%s)", sw.Code, sw.Body.String())
+	}
+	if c := sessionCookie(sw, ownerSessionCookie); !strings.HasPrefix(c, "ten_beta|") {
+		t.Fatalf("selected workspace cookie should be ten_beta, got %q", c)
+	}
+}
+
 func TestSignupReturningOwnerRoutedToWorkspace(t *testing.T) {
 	r, store := newAdminRouter(t)
 	if w := driveSignup(t, r, store, "owner@acme.test", "Acme", ""); w.Code != http.StatusOK {

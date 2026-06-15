@@ -281,6 +281,48 @@ func TestMonitoringPanelsRenderLiveData(t *testing.T) {
 	}
 }
 
+// Staff can tag a tenant's user as an admin (and remove them) from the tenant
+// page.
+func TestStaffTagsTenantAdmin(t *testing.T) {
+	r, store := newAdminRouter(t, "tomasboman@gmail.com")
+	now := time.Now().UTC()
+	mustUser(t, store, "usr_t", "ten_acme", "user@acme.test", now)
+	sess := seedAdminSession(t, store, "tomasboman@gmail.com")
+	cb := driveAdminCallback(t, r, sess.ID)
+	cookie := sessionCookie(cb, adminSessionCookie)
+
+	post := func(path string, form url.Values) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Tenant page shows the panel.
+	det := httptest.NewRequest(http.MethodGet, "/admin/tenants/ten_acme", nil)
+	det.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+	dw := httptest.NewRecorder()
+	r.ServeHTTP(dw, det)
+	if !strings.Contains(dw.Body.String(), "Tenant admins") {
+		t.Fatal("tenant page missing the Tenant admins panel")
+	}
+
+	if rec := post("/admin/tenants/admins/add", url.Values{"tenant_id": {"ten_acme"}, "user_id": {"usr_t"}}); rec.Code != http.StatusFound {
+		t.Fatalf("add admin: want 302, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if admins, _ := store.ListTenantAdmins("ten_acme"); len(admins) != 1 || admins[0].Email != "user@acme.test" {
+		t.Fatalf("admin not tagged: %+v", admins)
+	}
+	if rec := post("/admin/tenants/admins/remove", url.Values{"tenant_id": {"ten_acme"}, "user_id": {"usr_t"}}); rec.Code != http.StatusFound {
+		t.Fatalf("remove admin: want 302, got %d", rec.Code)
+	}
+	if admins, _ := store.ListTenantAdmins("ten_acme"); len(admins) != 0 {
+		t.Fatalf("admin not removed: %+v", admins)
+	}
+}
+
 // The administrator Advice domain lists /v1/advice history and filters by tenant
 // and user id.
 func TestAdviceDomainRendersAndFilters(t *testing.T) {

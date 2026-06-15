@@ -349,3 +349,14 @@ type AdviceCallFilter struct {
 	UserID   string
 	Limit    int
 }
+
+// TenantAdmin tags a user as an administrator of a tenant. Staff add these on the
+// tenant page; at owner login the user's Google email is matched against them (and
+// the tenant's OwnerEmail) to decide which tenants they may manage. Email is
+// denormalized for the by-email login lookup. Keyed by (TenantID, UserID).
+type TenantAdmin struct {
+	TenantID  string    `json:"tenant_id"`
+	UserID    string    `json:"user_id"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}

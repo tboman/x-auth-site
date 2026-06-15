@@ -243,6 +243,8 @@ func Router(d Deps) http.Handler {
 	// GET /admin/. Revoke invalidates any tenant's session.
 	mux.HandleFunc("GET /admin/tenants/{id}", admin.TenantDetail)
 	mux.HandleFunc("POST /admin/sessions/revoke", admin.RevokeSession)
+	mux.HandleFunc("POST /admin/tenants/admins/add", admin.AddTenantAdmin)
+	mux.HandleFunc("POST /admin/tenants/admins/remove", admin.RemoveTenantAdmin)
 
 	// Self-service signup funnel + tenant-owner dashboard endpoints. The
 	// provisioning action (/admin/signup/start) is rate-limited per IP since it
@@ -268,6 +270,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/client", signup.UpdateClient)
 	mux.HandleFunc("POST /admin/owner/transaction-types", signup.CreateTransactionType)
 	mux.HandleFunc("POST /admin/owner/transaction-types/delete", signup.DeleteTransactionType)
+	mux.HandleFunc("POST /admin/owner/select", signup.OwnerSelect)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only

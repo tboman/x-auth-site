@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types, advice_calls",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types, advice_calls, tenant_admins",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -766,6 +766,32 @@ func TestPGStorageAdviceCalls(t *testing.T) {
 	got, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "tenant-a", UserID: "u1"})
 	if len(got) != 1 || got[0].ID != "adv_a" || got[0].DeviceID != "dev" || got[0].Rank != 8 {
 		t.Fatalf("by both / round-trip: %+v", got)
+	}
+}
+
+// TestPGStorageTenantAdmins exercises the tenant_admins schema (migration 000013)
+// and the by-email login lookup.
+func TestPGStorageTenantAdmins(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != ErrConflict {
+		t.Fatalf("dup (tenant,user): want ErrConflict, got %v", err)
+	}
+	_ = s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-b", UserID: "u9", Email: "x@a.test", CreatedAt: now})
+	if got, _ := s.ListTenantAdminsByEmail("x@a.test"); len(got) != 2 {
+		t.Fatalf("by email (cross-tenant): want 2, got %d", len(got))
+	}
+	if got, _ := s.ListTenantAdmins("tenant-a"); len(got) != 1 || got[0].UserID != "u1" {
+		t.Fatalf("by tenant: %+v", got)
+	}
+	if err := s.DeleteTenantAdmin("tenant-a", "u1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.DeleteTenantAdmin("tenant-a", "u1"); err != ErrNotFound {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
 	}
 }
 

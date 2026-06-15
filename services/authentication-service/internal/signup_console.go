@@ -69,6 +69,10 @@ const (
 	signupStateCookie  = "xauth_signup_state"  // CSRF nonce for the signup leg
 	signupIntentCookie = "xauth_signup_intent" // base64 JSON {company, redirect}
 	ownerStateCookie   = "xauth_owner_state"   // CSRF nonce for owner re-login
+	// ownerPickCookie holds the verified ten_signup session id between the login
+	// callback and the workspace-picker selection (when an account manages more
+	// than one tenant). Scoped to /admin/owner; re-validated server-side.
+	ownerPickCookie = "xauth_owner_pick"
 
 	// maxSlugLen caps the slug (and thus the tenant id) length.
 	maxSlugLen = 40
@@ -378,20 +382,129 @@ func (h *SignupConsoleHandlers) OwnerCallback(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	tenant, err := h.Store.GetTenantByOwnerEmail(email)
-	if err != nil {
+	tenants := h.administeredTenants(email)
+	switch len(tenants) {
+	case 0:
 		h.page(w, http.StatusOK, "No workspace yet", `<h1>No workspace yet</h1>
-<p class="muted">The account <strong>`+html.EscapeString(email)+`</strong> doesn't own a workspace.</p>
+<p class="muted">The account <strong>`+html.EscapeString(email)+`</strong> doesn't manage any workspace.</p>
 <div class="actions"><a class="btn" href="/admin/signup">Create one</a></div>`)
+	case 1:
+		h.finishOwnerLogin(w, r, tenants[0].ID, email)
+	default:
+		// Multiple workspaces — keep the verified Google session and let them pick.
+		h.setShortCookie(w, ownerPickCookie, r.URL.Query().Get("session_id"), "/admin/owner")
+		h.renderTenantPicker(w, tenants)
+	}
+}
+
+// OwnerSelect handles POST /admin/owner/select — the workspace the user picked
+// when their account manages more than one. The verified Google email comes from
+// the ten_signup session referenced by the pick cookie (re-validated here), and
+// access to the chosen tenant is re-checked.
+func (h *SignupConsoleHandlers) OwnerSelect(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(ownerPickCookie)
+	if err != nil || c.Value == "" {
+		h.errorPage(w, http.StatusBadRequest, "Your selection expired. Sign in again.", "/admin/owner/login")
 		return
 	}
-	sess, ok := h.mintOwnerSession(tenant.ID, email)
+	sess, err := h.Store.GetSession(signupTenantID, c.Value)
+	if err != nil || sess.InvalidatedAt != nil || time.Now().UTC().After(sess.ExpiresAt) {
+		h.clearCookie(w, ownerPickCookie, "/admin/owner")
+		h.errorPage(w, http.StatusBadRequest, "Your selection expired. Sign in again.", "/admin/owner/login")
+		return
+	}
+	user, err := h.Store.GetUser(signupTenantID, sess.UserID)
+	if err != nil || user.Email == "" {
+		h.errorPage(w, http.StatusBadRequest, "Could not resolve your account.", "/admin/owner/login")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin")
+		return
+	}
+	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
+	if tenantID == "" || !h.isTenantAdmin(tenantID, user.Email) {
+		h.errorPage(w, http.StatusForbidden, "You can't manage that workspace.", "/admin/owner/login")
+		return
+	}
+	h.clearCookie(w, ownerPickCookie, "/admin/owner")
+	// Invalidate the staging session so the pick can't be replayed.
+	now := time.Now().UTC()
+	sess.InvalidatedAt = &now
+	_, _ = h.Store.UpdateSession(sess)
+	h.finishOwnerLogin(w, r, tenantID, user.Email)
+}
+
+// finishOwnerLogin mints an owner session for email in tenantID, sets the owner
+// cookie, and sends the user to their dashboard.
+func (h *SignupConsoleHandlers) finishOwnerLogin(w http.ResponseWriter, r *http.Request, tenantID, email string) {
+	sess, ok := h.mintOwnerSession(tenantID, email)
 	if !ok {
 		h.errorPage(w, http.StatusBadGateway, "Could not start your session.", "/admin/owner/login")
 		return
 	}
-	h.setOwnerCookie(w, tenant.ID, sess.ID, sess.ExpiresAt)
+	h.setOwnerCookie(w, tenantID, sess.ID, sess.ExpiresAt)
 	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// renderTenantPicker shows the workspace chooser when an account manages more
+// than one tenant.
+func (h *SignupConsoleHandlers) renderTenantPicker(w http.ResponseWriter, tenants []Tenant) {
+	var items strings.Builder
+	for _, t := range tenants {
+		items.WriteString(`<form method="post" action="/admin/owner/select" style="margin:0">` +
+			`<input type="hidden" name="tenant_id" value="` + html.EscapeString(t.ID) + `">` +
+			`<button type="submit" class="btn secondary" style="width:100%;justify-content:space-between">` +
+			html.EscapeString(t.CompanyName) + ` <span class="muted">` + html.EscapeString(t.ID) + `</span></button></form>`)
+	}
+	h.page(w, http.StatusOK, "Choose a workspace", `<h1>Choose a workspace</h1>
+<p class="muted">Your account manages more than one workspace. Pick the one to manage — you can switch by signing in again.</p>
+<div class="panel" style="display:grid;gap:10px">`+items.String()+`</div>`)
+}
+
+// administeredTenants returns the tenants a Google email may manage: the tenant it
+// owns (tenants.owner_email) plus any it has been tagged an admin of, deduped by
+// tenant id (owner first).
+func (h *SignupConsoleHandlers) administeredTenants(email string) []Tenant {
+	seen := map[string]bool{}
+	var out []Tenant
+	if owned, err := h.Store.GetTenantByOwnerEmail(email); err == nil {
+		seen[owned.ID] = true
+		out = append(out, owned)
+	}
+	admins, _ := h.Store.ListTenantAdminsByEmail(email)
+	for _, ta := range admins {
+		if seen[ta.TenantID] {
+			continue
+		}
+		if t, err := h.Store.GetTenant(ta.TenantID); err == nil {
+			seen[ta.TenantID] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// isTenantAdmin reports whether email may manage tenantID — either its owner or a
+// staff-tagged admin.
+func (h *SignupConsoleHandlers) isTenantAdmin(tenantID, email string) bool {
+	if t, err := h.Store.GetTenant(tenantID); err == nil && t.OwnerEmail == email {
+		return true
+	}
+	return h.isTaggedTenantAdmin(tenantID, email)
+}
+
+// isTaggedTenantAdmin reports whether email has been staff-tagged as an admin of
+// tenantID (excludes the owner — callers that already hold the tenant check
+// OwnerEmail directly).
+func (h *SignupConsoleHandlers) isTaggedTenantAdmin(tenantID, email string) bool {
+	admins, _ := h.Store.ListTenantAdminsByEmail(email)
+	for _, ta := range admins {
+		if ta.TenantID == tenantID {
+			return true
+		}
+	}
+	return false
 }
 
 // OwnerLogout invalidates the owner session and clears the cookie.
@@ -757,7 +870,7 @@ func (h *SignupConsoleHandlers) currentOwner(w http.ResponseWriter, r *http.Requ
 		return ownerSession{}, false
 	}
 	user, err := h.Store.GetUser(tenantID, sess.UserID)
-	if err != nil || user.Email != tenant.OwnerEmail {
+	if err != nil || (user.Email != tenant.OwnerEmail && !h.isTaggedTenantAdmin(tenantID, user.Email)) {
 		h.clearCookie(w, ownerSessionCookie, "/admin")
 		return ownerSession{}, false
 	}

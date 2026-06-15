@@ -551,6 +551,58 @@ func (s *PGStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, erro
 	return out, rows.Err()
 }
 
+// ---- Tenant admins ----
+
+func (s *PGStorage) AddTenantAdmin(ta TenantAdmin) error {
+	const q = `INSERT INTO tenant_admins (tenant_id, user_id, email, created_at) VALUES ($1, $2, $3, $4)`
+	_, err := s.pool.Exec(bgCtx(), q, ta.TenantID, ta.UserID, ta.Email, ta.CreatedAt.UTC())
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return fmt.Errorf("pgstorage add_tenant_admin: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStorage) ListTenantAdmins(tenantID string) ([]TenantAdmin, error) {
+	const q = `SELECT tenant_id, user_id, email, created_at FROM tenant_admins WHERE tenant_id = $1 ORDER BY email ASC`
+	return scanTenantAdmins(s.pool.Query(bgCtx(), q, tenantID))
+}
+
+func (s *PGStorage) ListTenantAdminsByEmail(email string) ([]TenantAdmin, error) {
+	const q = `SELECT tenant_id, user_id, email, created_at FROM tenant_admins WHERE email = $1`
+	return scanTenantAdmins(s.pool.Query(bgCtx(), q, email))
+}
+
+func (s *PGStorage) DeleteTenantAdmin(tenantID, userID string) error {
+	const q = `DELETE FROM tenant_admins WHERE tenant_id = $1 AND user_id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, userID)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_tenant_admin: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanTenantAdmins(rows pgx.Rows, err error) ([]TenantAdmin, error) {
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_tenant_admins: %w", err)
+	}
+	defer rows.Close()
+	out := make([]TenantAdmin, 0)
+	for rows.Next() {
+		var ta TenantAdmin
+		if err := rows.Scan(&ta.TenantID, &ta.UserID, &ta.Email, &ta.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ta)
+	}
+	return out, rows.Err()
+}
+
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.

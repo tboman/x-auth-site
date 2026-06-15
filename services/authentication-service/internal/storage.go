@@ -138,6 +138,16 @@ type Storage interface {
 	RecordAdviceCall(c AdviceCall) error
 	ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, error)
 
+	// Tenant admins. Staff tag a tenant's users as administrators; owner login
+	// matches a Google email against these (+ tenants.owner_email) to resolve the
+	// tenants a person may manage. AddTenantAdmin returns ErrConflict on a
+	// duplicate (tenant_id, user_id); Delete returns ErrNotFound on a miss.
+	// ListTenantAdminsByEmail spans tenants (the login lookup).
+	AddTenantAdmin(ta TenantAdmin) error
+	ListTenantAdmins(tenantID string) ([]TenantAdmin, error)
+	ListTenantAdminsByEmail(email string) ([]TenantAdmin, error)
+	DeleteTenantAdmin(tenantID, userID string) error
+
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -154,8 +164,9 @@ type MemStorage struct {
 	clients  map[string]OIDCClient     // keyed by client id
 	tenants  map[string]Tenant         // keyed by tenant id
 	anchors  map[string]IdentityAnchor // keyed by anchor id
-	devSigs   []DeviceSignal           // append-only device-signal log
-	adviceLog []AdviceCall             // append-only /v1/advice call log
+	devSigs    []DeviceSignal          // append-only device-signal log
+	adviceLog  []AdviceCall            // append-only /v1/advice call log
+	tenantAdm  map[string]TenantAdmin  // keyed by tenant_id\x00user_id
 	staffUsr map[string]StaffUser      // keyed by user id
 	staffRol map[string][]string       // keyed by user id
 	txnTypes map[string]TransactionType // keyed by tenant_id\x00name
@@ -173,8 +184,9 @@ func NewMemStorage() *MemStorage {
 		tenants:  make(map[string]Tenant),
 		anchors:  make(map[string]IdentityAnchor),
 		staffUsr: make(map[string]StaffUser),
-		staffRol: make(map[string][]string),
-		txnTypes: make(map[string]TransactionType),
+		staffRol:  make(map[string][]string),
+		txnTypes:  make(map[string]TransactionType),
+		tenantAdm: make(map[string]TenantAdmin),
 	}
 	s.seedDefaultClient()
 	return s
@@ -965,5 +977,54 @@ func (s *MemStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, err
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// ---- Tenant admins ----
+
+func (s *MemStorage) AddTenantAdmin(ta TenantAdmin) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := ttKey(ta.TenantID, ta.UserID)
+	if _, exists := s.tenantAdm[k]; exists {
+		return ErrConflict
+	}
+	s.tenantAdm[k] = ta
+	return nil
+}
+
+func (s *MemStorage) ListTenantAdmins(tenantID string) ([]TenantAdmin, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TenantAdmin, 0)
+	for _, ta := range s.tenantAdm {
+		if ta.TenantID == tenantID {
+			out = append(out, ta)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Email < out[j].Email })
+	return out, nil
+}
+
+func (s *MemStorage) ListTenantAdminsByEmail(email string) ([]TenantAdmin, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TenantAdmin, 0)
+	for _, ta := range s.tenantAdm {
+		if ta.Email == email {
+			out = append(out, ta)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemStorage) DeleteTenantAdmin(tenantID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := ttKey(tenantID, userID)
+	if _, ok := s.tenantAdm[k]; !ok {
+		return ErrNotFound
+	}
+	delete(s.tenantAdm, k)
+	return nil
 }
 
