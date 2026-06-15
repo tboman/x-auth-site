@@ -314,3 +314,14 @@ type StaffUserRole struct {
 	Role        string    `json:"role"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// TransactionType is a tenant-defined transaction category mapped (for now,
+// directly) to one of the eight protection levels by its ACR. A tenant manages
+// these in the owner dashboard; the /advice endpoint resolves a caller's
+// transaction_type to the mapped level. Keyed by (TenantID, Name).
+type TransactionType struct {
+	TenantID  string    `json:"tenant_id"`
+	Name      string    `json:"name"`
+	ACR       string    `json:"acr"` // a protection-level ACR (urn:xauth:protect:…)
+	CreatedAt time.Time `json:"created_at"`
+}

@@ -502,6 +502,8 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 	sessionsSection := sessionsPanel(sessions, emailByUser, now, revoke) +
 		stepUpsPanel(h.StepUps.ListByTenant(owner.Tenant.ID), emailByUser, now)
 
+	txnSection := h.transactionTypesSection(owner.Tenant.ID)
+
 	h.page(w, http.StatusOK, "Your X-Auth workspace", `<h1>`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
 <p class="muted">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> (workspace owner).</p>
 <form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
@@ -511,7 +513,108 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 <tr><td>Tenant ID</td><td><code>`+html.EscapeString(owner.Tenant.ID)+`</code></td></tr>
 <tr><td>Owner</td><td>`+html.EscapeString(owner.Tenant.OwnerEmail)+`</td></tr>
 <tr><td>Users</td><td>`+itoa(len(users))+`</td></tr>
-</table></div>`+usersSection+sessionsSection+client)
+</table></div>`+usersSection+txnSection+sessionsSection+client)
+}
+
+// transactionTypesSection renders the tenant's transaction-type → protection-level
+// mappings with add/delete controls. The dropdown lists all eight levels.
+func (h *SignupConsoleHandlers) transactionTypesSection(tenantID string) string {
+	types, _ := h.Store.ListTransactionTypes(tenantID)
+	var rows strings.Builder
+	if len(types) == 0 {
+		rows.WriteString(`<tr><td colspan="3" class="muted">No transaction types yet — add one below.</td></tr>`)
+	}
+	for _, tt := range types {
+		level := html.EscapeString(tt.ACR)
+		if l, ok := protectionByACR(tt.ACR); ok {
+			level = html.EscapeString(l.Band+" : "+l.Name) + ` <span class="muted">(rank ` + itoa(l.Rank) + `)</span>`
+		}
+		rows.WriteString(`<tr><td><code>` + html.EscapeString(tt.Name) + `</code></td><td>` + level + `</td><td>` +
+			`<form method="post" action="/admin/owner/transaction-types/delete" onsubmit="return confirm('Delete this transaction type?')">` +
+			`<input type="hidden" name="name" value="` + html.EscapeString(tt.Name) + `">` +
+			`<button class="danger" type="submit">Delete</button></form></td></tr>`)
+	}
+	var opts strings.Builder
+	for _, l := range protectionLevels {
+		opts.WriteString(`<option value="` + html.EscapeString(l.ACR) + `">` +
+			html.EscapeString(l.Band+" : "+l.Name) + ` — rank ` + itoa(l.Rank) + ` (` + html.EscapeString(l.ACR) + `)</option>`)
+	}
+	return `<h2 style="margin-top:28px">Transaction types</h2>
+<p class="muted">Name the transactions your app performs and map each to the assurance level it requires. Your backend
+calls <code>POST /v1/advice</code> (authenticated with your client id + secret) with a <code>transaction_type</code>
+and gets back the protection level to request at <code>/authorize</code> via <code>acr_values</code>.</p>
+<div class="panel"><table>
+<thead><tr><th>Transaction type</th><th>Protection level</th><th></th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table>
+<form method="post" action="/admin/owner/transaction-types" style="margin-top:16px">
+<label>Transaction type name</label>
+<input type="text" name="name" placeholder="payment.high" required>
+<label>Maps to protection level</label>
+<select name="acr">` + opts.String() + `</select>
+<div class="actions"><button type="submit">Add transaction type</button></div>
+</form></div>`
+}
+
+// CreateTransactionType handles POST /admin/owner/transaction-types.
+func (h *SignupConsoleHandlers) CreateTransactionType(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin")
+		return
+	}
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	acr := strings.TrimSpace(r.PostForm.Get("acr"))
+	if name == "" {
+		h.errorPage(w, http.StatusBadRequest, "A transaction type name is required.", "/admin")
+		return
+	}
+	if _, ok := protectionByACR(acr); !ok {
+		h.errorPage(w, http.StatusBadRequest, "Choose a valid protection level.", "/admin")
+		return
+	}
+	err := h.Store.CreateTransactionType(TransactionType{
+		TenantID: owner.Tenant.ID, Name: name, ACR: acr, CreatedAt: time.Now().UTC(),
+	})
+	if err == ErrConflict {
+		h.errorPage(w, http.StatusConflict, "A transaction type with that name already exists.", "/admin")
+		return
+	}
+	if err != nil {
+		h.Logger.Error("owner_create_txntype_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not save the transaction type.", "/admin")
+		return
+	}
+	h.Logger.Info("owner_txntype_created", "tenant_id", owner.Tenant.ID, "name", name, "acr", acr)
+	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// DeleteTransactionType handles POST /admin/owner/transaction-types/delete.
+func (h *SignupConsoleHandlers) DeleteTransactionType(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin")
+		return
+	}
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	if name == "" {
+		h.errorPage(w, http.StatusBadRequest, "name is required.", "/admin")
+		return
+	}
+	if err := h.Store.DeleteTransactionType(owner.Tenant.ID, name); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_delete_txntype_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not delete the transaction type.", "/admin")
+		return
+	}
+	h.Logger.Info("owner_txntype_deleted", "tenant_id", owner.Tenant.ID, "name", name)
+	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
 // RevokeSession handles POST /admin/owner/sessions/revoke — the owner

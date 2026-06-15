@@ -123,6 +123,15 @@ type Storage interface {
 	ListStaffUsers() ([]StaffUser, error)
 	DeleteStaffUserRole(userID, role string) error
 
+	// Transaction types (tenant-scoped). A tenant maps a named transaction type
+	// to a protection-level ACR (owner dashboard); the /advice endpoint reads it.
+	// CreateTransactionType returns ErrConflict on a duplicate (tenant_id, name);
+	// Get/Delete return ErrNotFound on a miss. List is name-ordered.
+	CreateTransactionType(tt TransactionType) error
+	ListTransactionTypes(tenantID string) ([]TransactionType, error)
+	GetTransactionType(tenantID, name string) (TransactionType, error)
+	DeleteTransactionType(tenantID, name string) error
+
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -142,6 +151,7 @@ type MemStorage struct {
 	devSigs  []DeviceSignal            // append-only device-signal log
 	staffUsr map[string]StaffUser      // keyed by user id
 	staffRol map[string][]string       // keyed by user id
+	txnTypes map[string]TransactionType // keyed by tenant_id\x00name
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -157,6 +167,7 @@ func NewMemStorage() *MemStorage {
 		anchors:  make(map[string]IdentityAnchor),
 		staffUsr: make(map[string]StaffUser),
 		staffRol: make(map[string][]string),
+		txnTypes: make(map[string]TransactionType),
 	}
 	s.seedDefaultClient()
 	return s
@@ -866,6 +877,55 @@ func (s *MemStorage) DeleteStaffUserRole(userID, role string) error {
 			return nil
 		}
 	}
+	return nil
+}
+
+// ---- Transaction types ----
+
+func ttKey(tenantID, name string) string { return tenantID + "\x00" + name }
+
+func (s *MemStorage) CreateTransactionType(tt TransactionType) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := ttKey(tt.TenantID, tt.Name)
+	if _, exists := s.txnTypes[k]; exists {
+		return ErrConflict
+	}
+	s.txnTypes[k] = tt
+	return nil
+}
+
+func (s *MemStorage) ListTransactionTypes(tenantID string) ([]TransactionType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TransactionType, 0)
+	for _, tt := range s.txnTypes {
+		if tt.TenantID == tenantID {
+			out = append(out, tt)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *MemStorage) GetTransactionType(tenantID, name string) (TransactionType, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tt, ok := s.txnTypes[ttKey(tenantID, name)]
+	if !ok {
+		return TransactionType{}, ErrNotFound
+	}
+	return tt, nil
+}
+
+func (s *MemStorage) DeleteTransactionType(tenantID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := ttKey(tenantID, name)
+	if _, ok := s.txnTypes[k]; !ok {
+		return ErrNotFound
+	}
+	delete(s.txnTypes, k)
 	return nil
 }
 

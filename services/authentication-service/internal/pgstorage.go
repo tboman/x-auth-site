@@ -437,6 +437,63 @@ func (s *PGStorage) RevokeTokenFamiliesBySession(tenantID, sessionID string) (in
 	return int(tag.RowsAffected()), nil
 }
 
+// ---- Transaction types ----
+
+func (s *PGStorage) CreateTransactionType(tt TransactionType) error {
+	const q = `INSERT INTO transaction_types (tenant_id, name, acr, created_at) VALUES ($1, $2, $3, $4)`
+	_, err := s.pool.Exec(bgCtx(), q, tt.TenantID, tt.Name, tt.ACR, tt.CreatedAt.UTC())
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return fmt.Errorf("pgstorage create_transaction_type: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStorage) ListTransactionTypes(tenantID string) ([]TransactionType, error) {
+	const q = `SELECT tenant_id, name, acr, created_at FROM transaction_types WHERE tenant_id = $1 ORDER BY name ASC`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_transaction_types: %w", err)
+	}
+	defer rows.Close()
+	out := make([]TransactionType, 0)
+	for rows.Next() {
+		var tt TransactionType
+		if err := rows.Scan(&tt.TenantID, &tt.Name, &tt.ACR, &tt.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, tt)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStorage) GetTransactionType(tenantID, name string) (TransactionType, error) {
+	const q = `SELECT tenant_id, name, acr, created_at FROM transaction_types WHERE tenant_id = $1 AND name = $2`
+	var tt TransactionType
+	err := s.pool.QueryRow(bgCtx(), q, tenantID, name).Scan(&tt.TenantID, &tt.Name, &tt.ACR, &tt.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TransactionType{}, ErrNotFound
+	}
+	if err != nil {
+		return TransactionType{}, fmt.Errorf("pgstorage get_transaction_type: %w", err)
+	}
+	return tt, nil
+}
+
+func (s *PGStorage) DeleteTransactionType(tenantID, name string) error {
+	const q = `DELETE FROM transaction_types WHERE tenant_id = $1 AND name = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, name)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_transaction_type: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.

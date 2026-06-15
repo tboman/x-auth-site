@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -704,6 +704,39 @@ func TestPGStorageStaffUsers(t *testing.T) {
 	}
 	if list, err := s.ListStaffUsers(); err != nil || len(list) == 0 {
 		t.Fatalf("list staff: err=%v n=%d", err, len(list))
+	}
+}
+
+// TestPGStorageTransactionTypes exercises the transaction_types schema
+// (migration 000011) against the queries the owner dashboard + /advice rely on.
+func TestPGStorageTransactionTypes(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tt := TransactionType{TenantID: "tenant-a", Name: "payment.high", ACR: "urn:xauth:protect:ultra:strict", CreatedAt: now}
+	if err := s.CreateTransactionType(tt); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.CreateTransactionType(tt); err != ErrConflict {
+		t.Fatalf("dup (tenant,name): want ErrConflict, got %v", err)
+	}
+	_ = s.CreateTransactionType(TransactionType{TenantID: "tenant-a", Name: "login", ACR: "urn:xauth:protect:high:protected", CreatedAt: now})
+	_ = s.CreateTransactionType(TransactionType{TenantID: "tenant-b", Name: "other", ACR: "urn:xauth:protect:high:strict", CreatedAt: now})
+
+	list, err := s.ListTransactionTypes("tenant-a")
+	if err != nil || len(list) != 2 || list[0].Name != "login" || list[1].Name != "payment.high" {
+		t.Fatalf("list tenant-a (name-ordered, scoped): %v %+v", err, list)
+	}
+	if got, err := s.GetTransactionType("tenant-a", "payment.high"); err != nil || got.ACR != tt.ACR {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	if _, err := s.GetTransactionType("tenant-a", "missing"); err != ErrNotFound {
+		t.Errorf("missing: want ErrNotFound, got %v", err)
+	}
+	if err := s.DeleteTransactionType("tenant-a", "payment.high"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.DeleteTransactionType("tenant-a", "payment.high"); err != ErrNotFound {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
 	}
 }
 

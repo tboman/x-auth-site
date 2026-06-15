@@ -274,6 +274,58 @@ func TestOwnerDashboardShowsOnlyOwnTenant(t *testing.T) {
 	}
 }
 
+func TestOwnerTransactionTypesCRUD(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	cookie := sessionCookie(w, ownerSessionCookie)
+	if cookie == "" {
+		t.Fatal("missing owner cookie")
+	}
+	post := func(path string, form url.Values) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	dash := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+
+	// The dashboard renders the section and the 8-level dropdown.
+	if body := dash(); !strings.Contains(body, "Transaction types") || !strings.Contains(body, "urn:xauth:protect:ultra:strict") {
+		t.Fatalf("dashboard missing transaction-types section or level options")
+	}
+
+	// Create maps a type to a level; it then shows on the dashboard.
+	if rec := post("/admin/owner/transaction-types", url.Values{"name": {"wiretransfer"}, "acr": {"urn:xauth:protect:ultra:strict"}}); rec.Code != http.StatusFound {
+		t.Fatalf("create: want 302, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(dash(), "wiretransfer") {
+		t.Fatal("created transaction type not shown on dashboard")
+	}
+	// An invalid level is rejected.
+	if rec := post("/admin/owner/transaction-types", url.Values{"name": {"x"}, "acr": {"bogus"}}); rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid acr: want 400, got %d", rec.Code)
+	}
+	// Delete removes it.
+	if rec := post("/admin/owner/transaction-types/delete", url.Values{"name": {"wiretransfer"}}); rec.Code != http.StatusFound {
+		t.Fatalf("delete: want 302, got %d", rec.Code)
+	}
+	if strings.Contains(dash(), "wiretransfer") {
+		t.Fatal("deleted transaction type still shown")
+	}
+	owner, _ := store.GetTenantByOwnerEmail("owner@acme.test")
+	if list, _ := store.ListTransactionTypes(owner.ID); len(list) != 0 {
+		t.Errorf("expected 0 types after delete, got %d", len(list))
+	}
+}
+
 func TestOwnerCannotUseStaffClientDelete(t *testing.T) {
 	r, store := newAdminRouter(t, "staff@x-auth.com")
 	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")

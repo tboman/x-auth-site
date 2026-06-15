@@ -60,6 +60,17 @@ var protectionLevels = []ProtectionLevel{
 	{ACR: "urn:xauth:protect:ultra:strict", Band: "ultra", Name: "strict", Rank: 8, Method: "fido2"},
 }
 
+// protectionByACR returns the protection level for an exact ACR (the form a
+// transaction-type mapping stores), or false if it isn't one of the eight.
+func protectionByACR(acr string) (ProtectionLevel, bool) {
+	for _, lvl := range protectionLevels {
+		if lvl.ACR == acr {
+			return lvl, true
+		}
+	}
+	return ProtectionLevel{}, false
+}
+
 // matchProtection returns the first requested acr value that is a protection
 // level. acr_values is space-delimited, client-preference ordered (OIDC Core
 // §3.1.2.1), so iteration follows the request.

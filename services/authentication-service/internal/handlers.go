@@ -133,6 +133,7 @@ func Router(d Deps) http.Handler {
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
+	advice := &AdviceHandlers{Store: d.Store, Logger: d.Logger}
 
 	mux := http.NewServeMux()
 
@@ -176,6 +177,10 @@ func Router(d Deps) http.Handler {
 	// Social login stubs — public, no tenant header (tenant_id is a query param).
 	mux.HandleFunc("GET /v1/social/{provider}/authorize", social.Authorize)
 	mux.HandleFunc("GET /v1/social/{provider}/callback", social.Callback)
+
+	// Risk advice: a tenant's backend (authenticated as its confidential OIDC
+	// client) maps a transaction_type to the protection level it requires.
+	mux.HandleFunc("POST /v1/advice", advice.Advise)
 
 	// Hosted end-user login chooser — public, top-level navigation. A tenant's
 	// app sends users here to pick a sign-in method (Google or phone). The Google
@@ -261,6 +266,8 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/regenerate-secret", signup.RegenerateSecret)
 	mux.HandleFunc("POST /admin/owner/sessions/revoke", signup.RevokeSession)
 	mux.HandleFunc("POST /admin/owner/client", signup.UpdateClient)
+	mux.HandleFunc("POST /admin/owner/transaction-types", signup.CreateTransactionType)
+	mux.HandleFunc("POST /admin/owner/transaction-types/delete", signup.DeleteTransactionType)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only
