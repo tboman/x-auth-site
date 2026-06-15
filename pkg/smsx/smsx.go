@@ -41,13 +41,16 @@ type Config struct {
 	VerifyServiceSID string // the Verify Service SID (VA...)
 }
 
-// ConfigFromEnv reads the standard TWILIO_* environment variables.
+// ConfigFromEnv reads the standard TWILIO_* environment variables. Values are
+// trimmed of surrounding whitespace: a secret stored with a trailing newline is
+// a common cause of a Twilio 401 (error 20003), and the SIDs never contain
+// whitespace, so trimming is always safe.
 func ConfigFromEnv() Config {
 	return Config{
-		AccountSID:       os.Getenv("TWILIO_ACCOUNT_SID"),
-		APIKeySID:        os.Getenv("TWILIO_API_KEY_SID"),
-		AuthSecret:       os.Getenv("TWILIO_AUTH_SECRET"),
-		VerifyServiceSID: os.Getenv("TWILIO_VERIFY_SERVICE_SID"),
+		AccountSID:       strings.TrimSpace(os.Getenv("TWILIO_ACCOUNT_SID")),
+		APIKeySID:        strings.TrimSpace(os.Getenv("TWILIO_API_KEY_SID")),
+		AuthSecret:       strings.TrimSpace(os.Getenv("TWILIO_AUTH_SECRET")),
+		VerifyServiceSID: strings.TrimSpace(os.Getenv("TWILIO_VERIFY_SERVICE_SID")),
 	}
 }
 
