@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newOTPRouter wires a router whose authenticator mock can be shaped per test.
@@ -19,6 +20,13 @@ func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage)
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
+	// Pre-seed the DevAutologin user (dev@example.com) with a verified phone
+	// anchor so SMS step-up has a real number to text — without it, SMS step-up
+	// now returns 409 no_phone_on_file. devAutoUser resolves by email, so this
+	// exact row is the one /authorize uses.
+	now := time.Now().UTC()
+	devUser, _ := store.CreateUser(User{ID: "usr_dev", TenantID: "ten_acme", Email: "dev@example.com", Name: "Dev User", CreatedAt: now, UpdatedAt: now})
+	_, _ = store.CreateIdentityAnchor(IdentityAnchor{ID: "ian_dev", UserID: devUser.ID, TenantID: "ten_acme", Type: AnchorPhone, Value: "+15551112222", VerifiedAt: &now, CreatedAt: now})
 	r := Router(Deps{
 		Store:         store,
 		Logger:        logger,

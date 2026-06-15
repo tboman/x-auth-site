@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // TestDeviceSignalStorageMem covers append + tenant-scoped newest-first listing.
@@ -68,7 +70,7 @@ func TestDeviceSignalCaptureSocial(t *testing.T) {
 func TestDeviceSignalCapturePhone(t *testing.T) {
 	r, store := phoneTestRouter(t)
 	flow := submitPhone(t, r, "+15551112222")
-	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {stubOTPCode}, "device_fp": {"fp-phone-1"}})
+	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {smsx.StubCode}, "device_fp": {"fp-phone-1"}})
 	if w.Code != http.StatusOK { // new number → link offer
 		t.Fatalf("verify: want 200 link offer, got %d", w.Code)
 	}

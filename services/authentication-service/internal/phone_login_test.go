@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // phoneTestRouter wires a router with a tenant whose client registers the test
@@ -111,7 +113,7 @@ func TestPhoneLoginKnownNumber(t *testing.T) {
 	}
 
 	flow := submitPhone(t, r, "+15551112222")
-	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {stubOTPCode}})
+	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {smsx.StubCode}})
 	if w.Code != http.StatusFound {
 		t.Fatalf("verify: want 302, got %d (%s)", w.Code, w.Body.String())
 	}
@@ -136,7 +138,7 @@ func TestPhoneLoginNewNumber(t *testing.T) {
 	const phone = "+15559998888"
 
 	flow := submitPhone(t, r, phone)
-	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {stubOTPCode}})
+	w := postForm(t, r, "/login/phone/verify", url.Values{"flow": {flow}, "code": {smsx.StubCode}})
 	if w.Code != http.StatusOK {
 		t.Fatalf("verify(new): want 200 link offer, got %d (%s)", w.Code, w.Body.String())
 	}

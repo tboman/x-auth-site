@@ -13,6 +13,19 @@ import (
 	"time"
 )
 
+// seedPhoneAnchor gives a user a verified phone anchor so SMS step-up (which now
+// requires a real number) can run in tests.
+func seedPhoneAnchor(t *testing.T, store Storage, tenantID, userID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := store.CreateIdentityAnchor(IdentityAnchor{
+		ID: "ian_" + userID, UserID: userID, TenantID: tenantID,
+		Type: AnchorPhone, Value: "+15551112222", VerifiedAt: &now, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed phone anchor: %v", err)
+	}
+}
+
 // TestProtectionLevelsTable pins the public contract: 8 monotonic levels, each
 // mapped to a real stub method.
 func TestProtectionLevelsTable(t *testing.T) {
@@ -89,8 +102,10 @@ func TestProtectionLedgerAchievedWithin(t *testing.T) {
 // window, and passes through when it's inside.
 func TestProtectionFreshnessGate(t *testing.T) {
 	led := NewProtectionLedger(time.Hour)
+	store := NewMemStorage()
+	seedPhoneAnchor(t, store, "ten_acme", "usr_1")
 	h := &OIDCHandlers{
-		Store:  NewMemStorage(),
+		Store:  store,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Issuer: "http://test.local",
 		Authenticator: &mockAuthenticator{ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
@@ -171,6 +186,7 @@ func TestProtectionChallengeStampsACR(t *testing.T) {
 // without a challenge, and a higher level re-challenges.
 func TestProtectionPassThroughAndEscalation(t *testing.T) {
 	store := NewMemStorage()
+	seedPhoneAnchor(t, store, "ten_acme", "usr_1")
 	led := NewProtectionLedger(time.Hour)
 	h := &OIDCHandlers{
 		Store:  store,

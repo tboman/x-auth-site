@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // phone_login.go implements primary login by phone number — the "Continue with
@@ -46,38 +47,44 @@ type PhoneLoginHandlers struct {
 	// phone-OTP validation.
 	Analyzer *DeviceAnalyzer
 
+	// Verifier sends + checks the SMS one-time code (Twilio Verify, or a stub when
+	// Twilio is unconfigured). Set by the constructor from TWILIO_* env.
+	Verifier smsx.Verifier
+
 	mu    sync.Mutex
 	otps  map[string]pendingPhoneOTP  // keyed by otp flow id (carried in the form)
 	links map[string]pendingPhoneLink // keyed by link id (carried in a cookie)
 }
 
-// NewPhoneLoginHandlers builds the handler set with initialised flow maps.
+// NewPhoneLoginHandlers builds the handler set with initialised flow maps and an
+// SMS verifier resolved from the environment (Twilio Verify when configured,
+// otherwise a stub that accepts smsx.StubCode).
 func NewPhoneLoginHandlers(store Storage, logger *slog.Logger, issuer string) *PhoneLoginHandlers {
 	return &PhoneLoginHandlers{
-		Store:  store,
-		Logger: logger,
-		Issuer: issuer,
-		otps:   make(map[string]pendingPhoneOTP),
-		links:  make(map[string]pendingPhoneLink),
+		Store:    store,
+		Logger:   logger,
+		Issuer:   issuer,
+		Verifier: smsx.New(smsx.ConfigFromEnv(), logger),
+		otps:     make(map[string]pendingPhoneOTP),
+		links:    make(map[string]pendingPhoneLink),
 	}
 }
 
 const (
 	phoneFlowTTL    = 10 * time.Minute
-	phoneMaxOTP     = 5        // wrong-code attempts before the flow is killed
-	stubOTPCode     = "123456" // STUB delivery — see the sendOTP note above
+	phoneMaxOTP     = 5 // wrong-code attempts before the flow is killed
 	phoneLinkCookie = "xauth_phone_link"
 	phoneLinkState  = "xauth_phone_link_state"
 )
 
 // pendingPhoneOTP parks a phone across the "code sent → code entered" round-trip.
+// The code itself is held by the verifier (Twilio Verify), not here.
 type pendingPhoneOTP struct {
 	TenantID    string
 	Phone       string
 	RedirectURI string
 	State       string
 	IsNew       bool // number unknown → create the account + offer to link Google
-	Code        string
 	Attempts    int
 	CreatedAt   time.Time
 }
@@ -161,15 +168,6 @@ func (h *PhoneLoginHandlers) gcLocked() {
 	}
 }
 
-// sendOTP "sends" a one-time code to phone and returns the code the verify step
-// will accept. STUB: no SMS provider is wired, so it returns the fixed 123456
-// (matching authenticator-service's SMS stub). Replace with a Twilio/MessageBird
-// call that generates a random code, texts it, and returns it for storage.
-func (h *PhoneLoginHandlers) sendOTP(phone string) string {
-	h.Logger.Info("phone_otp_sent_stub", "phone", phone)
-	return stubOTPCode
-}
-
 // ---- handlers ----
 
 // Start renders the phone-entry form. Required query params (tenant_id,
@@ -228,11 +226,15 @@ func (h *PhoneLoginHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code := h.sendOTP(phone)
+	if err := h.Verifier.Start(r.Context(), phone); err != nil {
+		h.Logger.Error("phone_otp_send_failed", "err", err, "tenant_id", tenantID)
+		h.errorPage(w, "Could not text your code right now. Try again.")
+		return
+	}
 	flowID := uuid.NewString()
 	h.putOTP(flowID, pendingPhoneOTP{
 		TenantID: tenantID, Phone: phone, RedirectURI: redirectURI, State: state,
-		IsNew: isNew, Code: code, CreatedAt: time.Now().UTC(),
+		IsNew: isNew, CreatedAt: time.Now().UTC(),
 	})
 	h.renderCodeForm(w, flowID, phone, "")
 }
@@ -251,7 +253,13 @@ func (h *PhoneLoginHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		h.errorPage(w, "Your code expired. Start again.")
 		return
 	}
-	if code != flow.Code {
+	valid, err := h.Verifier.Check(r.Context(), flow.Phone, code)
+	if err != nil {
+		h.Logger.Error("phone_otp_check_failed", "err", err, "tenant_id", flow.TenantID)
+		h.renderCodeForm(w, flowID, flow.Phone, "Could not verify the code right now. Try again.")
+		return
+	}
+	if !valid {
 		flow.Attempts++
 		if flow.Attempts >= phoneMaxOTP {
 			h.dropOTP(flowID)

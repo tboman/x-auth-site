@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // -----------------------------------------------------------------------------
@@ -45,7 +47,7 @@ func newTestServerWithLimits(t *testing.T, limitsFn func(now func() time.Time) L
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	registry := NewRegistry(log)
+	registry := NewRegistry(log, store, smsx.Stub{})
 	srv := httptest.NewServer(Router(log, store, registry, limitsFn(clock.now)))
 	t.Cleanup(srv.Close)
 	return srv, store, clock
@@ -127,7 +129,7 @@ func TestHandlersRejectMissingTenantContext(t *testing.T) {
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ah := NewAuthenticatorHandlers(log, store)
-	ch := NewChallengeHandlers(log, store, NewRegistry(log), Limits{})
+	ch := NewChallengeHandlers(log, store, NewRegistry(log, store, smsx.Stub{}), Limits{})
 
 	cases := []struct {
 		name    string
@@ -589,7 +591,7 @@ func newFailingServer(t *testing.T, failLists bool) (*httptest.Server, *failingS
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := &failingStore{Store: NewStore(clock.now), failLists: failLists}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(Router(log, store, NewRegistry(log), Limits{}))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}), Limits{}))
 	t.Cleanup(srv.Close)
 	return srv, store
 }
@@ -717,30 +719,43 @@ func TestStorePurgeExpired(t *testing.T) {
 
 func TestAdapterStubs(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reg := NewRegistry(log)
+	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
+	store := NewStore(clock.now)
+	// The SMS adapter reads the enrolled number off the authenticator referenced
+	// by the challenge, so seed one (the stub verifier accepts smsx.StubCode).
+	if err := store.PutAuthenticator(Authenticator{
+		ID: "authr_sms", TenantID: "ten_sms", UserID: "usr_x", Method: MethodSMS, Status: "active",
+		Metadata: map[string]any{"phone_number": "+15551112222"}, CreatedAt: clock.now(), UpdatedAt: clock.now(),
+	}); err != nil {
+		t.Fatalf("seed sms authenticator: %v", err)
+	}
+	reg := NewRegistry(log, store, smsx.Stub{})
 	ctx := context.Background()
 
 	// The expected-prompt + golden-response table pins every adapter's
-	// canned behavior, including the negative path (wrong response → false).
+	// canned behavior, including the negative path (wrong response → false). For
+	// SMS, tenantID/authID point at the seeded authenticator.
 	cases := []struct {
 		method      string
 		wantPrompt  string
+		tenantID    string
+		authID      string
 		validResp   map[string]any
 		invalidResp map[string]any
 	}{
-		{MethodFIDO2, "WebAuthn ceremony initiated (stub)",
+		{MethodFIDO2, "WebAuthn ceremony initiated (stub)", "", "",
 			map[string]any{"signature": "stub_valid_signature"},
 			map[string]any{"signature": "bogus"}},
-		{MethodTOTP, "Enter 6-digit code from your authenticator app",
+		{MethodTOTP, "Enter 6-digit code from your authenticator app", "", "",
 			map[string]any{"code": "000000"},
 			map[string]any{"code": "111111"}},
-		{MethodPush, "Push notification sent (stub)",
+		{MethodPush, "Push notification sent (stub)", "", "",
 			map[string]any{"approved": true},
 			map[string]any{"approved": false}},
-		{MethodSMS, "SMS OTP sent to +15551234 (stub)",
-			map[string]any{"code": "123456"},
+		{MethodSMS, "We texted a verification code to your phone", "ten_sms", "authr_sms",
+			map[string]any{"code": smsx.StubCode},
 			map[string]any{"code": "000000"}},
-		{MethodMagicLink, "Magic link sent to user@example.com (stub)",
+		{MethodMagicLink, "Magic link sent to user@example.com (stub)", "", "",
 			map[string]any{"token": "stub_magic_token"},
 			map[string]any{"token": "wrong"}},
 	}
@@ -751,7 +766,7 @@ func TestAdapterStubs(t *testing.T) {
 			if !ok {
 				t.Fatalf("no adapter for %s", tc.method)
 			}
-			chal := Challenge{ID: "ch_stub", Method: tc.method}
+			chal := Challenge{ID: "ch_stub", Method: tc.method, TenantID: tc.tenantID, AuthenticatorID: tc.authID}
 			prompt, err := adapter.Dispatch(ctx, chal)
 			if err != nil {
 				t.Fatalf("dispatch: %v", err)
@@ -781,7 +796,7 @@ func TestAdapterStubs(t *testing.T) {
 
 func TestRegistryUnknownMethod(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reg := NewRegistry(log)
+	reg := NewRegistry(log, nil, smsx.Stub{})
 	if _, ok := reg.Lookup("nope"); ok {
 		t.Fatal("expected Lookup of unknown method to return false")
 	}

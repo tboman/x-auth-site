@@ -19,6 +19,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/pgxdb"
 	"github.com/xentranet/x-auth/pkg/ratex"
 	"github.com/xentranet/x-auth/pkg/redisx"
+	"github.com/xentranet/x-auth/pkg/smsx"
 	"github.com/xentranet/x-auth/pkg/tlsx"
 	"github.com/xentranet/x-auth/services/authenticator-service/internal"
 )
@@ -130,7 +131,7 @@ func main() {
 		log.Warn("account_lockout_disabled")
 	}
 
-	registry := internal.NewRegistry(log)
+	registry := internal.NewRegistry(log, store, smsx.New(smsx.ConfigFromEnv(), log))
 	handler := internal.Router(log, store, registry, limits)
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS_CERT_FILE/TLS_KEY_FILE

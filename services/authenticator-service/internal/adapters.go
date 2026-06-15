@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // Adapter is the per-method vendor boundary. Phase 1 has five pure-Go stubs;
@@ -27,17 +29,19 @@ type Registry struct {
 	adapters map[string]Adapter
 }
 
-// NewRegistry wires the phase-1 stubs into a Registry. Every adapter is
-// constructed with the same logger so dispatch/verify traces appear on a
-// single stream.
-func NewRegistry(log *slog.Logger) *Registry {
+// NewRegistry wires the adapters into a Registry. Every adapter is constructed
+// with the same logger so dispatch/verify traces appear on a single stream. The
+// SMS adapter additionally gets the store (to read the enrollment's phone) and
+// an smsx.Verifier (Twilio Verify, or a stub when Twilio is unconfigured); the
+// other methods are still phase-1 stubs.
+func NewRegistry(log *slog.Logger, store Storage, verifier smsx.Verifier) *Registry {
 	return &Registry{
 		log: log,
 		adapters: map[string]Adapter{
 			MethodFIDO2:     &webauthnAdapter{log: log},
 			MethodTOTP:      &totpAdapter{log: log},
 			MethodPush:      &pushAdapter{log: log},
-			MethodSMS:       &smsAdapter{log: log},
+			MethodSMS:       &smsAdapter{log: log, store: store, verifier: verifier},
 			MethodMagicLink: &magicLinkAdapter{log: log},
 		},
 	}
@@ -153,21 +157,49 @@ func (a *pushAdapter) Verify(ctx context.Context, chal Challenge, response map[s
 // SMS
 // -----------------------------------------------------------------------------
 
-type smsAdapter struct{ log *slog.Logger }
-
-// TODO(phase-2): real vendor adapter — call Twilio Verify or MessageBird to send
-// an OTP to the phone number on the authenticator metadata.
-func (a *smsAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
-	a.log.Info("adapter_dispatch", "method", MethodSMS, "challenge_id", chal.ID)
-	return "SMS OTP sent to +15551234 (stub)", nil
+type smsAdapter struct {
+	log      *slog.Logger
+	store    Storage
+	verifier smsx.Verifier
 }
 
-// TODO(phase-2): real vendor adapter — verify against the code the vendor
-// generated, not a hard-coded literal.
+// phone reads the enrollment's verified number off the authenticator referenced
+// by the challenge (set when the step-up enrolled the SMS authenticator).
+func (a *smsAdapter) phone(chal Challenge) (string, error) {
+	authr, err := a.store.GetAuthenticator(chal.TenantID, chal.AuthenticatorID)
+	if err != nil {
+		return "", err
+	}
+	p, _ := authr.Metadata["phone_number"].(string)
+	if p == "" {
+		return "", errors.New("authenticator has no phone_number")
+	}
+	return p, nil
+}
+
+// Dispatch texts a fresh code to the enrolled number via the verifier.
+func (a *smsAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
+	a.log.Info("adapter_dispatch", "method", MethodSMS, "challenge_id", chal.ID)
+	phone, err := a.phone(chal)
+	if err != nil {
+		return "", err
+	}
+	if err := a.verifier.Start(ctx, phone); err != nil {
+		return "", err
+	}
+	return "We texted a verification code to your phone", nil
+}
+
+// Verify checks the submitted code against the verifier (Twilio Verify validates
+// it; the stub accepts smsx.StubCode).
 func (a *smsAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
 	a.log.Info("adapter_verify", "method", MethodSMS, "challenge_id", chal.ID)
+	phone, err := a.phone(chal)
+	if err != nil {
+		return false, err
+	}
 	code, _ := getString(response, "code")
-	return code == "123456", nil
+	return a.verifier.Check(ctx, phone, code)
 }
 
 // -----------------------------------------------------------------------------

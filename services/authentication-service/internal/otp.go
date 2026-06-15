@@ -63,12 +63,17 @@ type stepUpSpec struct {
 	RetryError string
 }
 
+// stepUpMethodSMS is the authenticator-service method name for SMS OTP. SMS
+// step-up sources the user's real phone anchor at enroll time, so the spec's
+// AutoEnrollMetadata phone below is only a placeholder it overrides.
+const stepUpMethodSMS = "sms"
+
 var stepUpSpecs = []stepUpSpec{
 	{
 		ACR:                ACRSMSOTP,
-		Method:             "sms",
+		Method:             stepUpMethodSMS,
 		AMR:                []string{"otp", "sms"},
-		AutoEnrollMetadata: map[string]any{"phone_number": "+15551234", "enrolled_by": "authorize-otp-stub"},
+		AutoEnrollMetadata: map[string]any{"enrolled_by": "authorize-otp"},
 		ResponseField:      "code",
 		RetryError:         "Incorrect code — try again.",
 	},
@@ -197,15 +202,39 @@ func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, s
 		httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not reach authenticator service")
 		return
 	}
+	// SMS step-up texts the user's REAL verified number — the phone identity
+	// anchor created at phone login. No anchor on file → there's nowhere to send a
+	// code, so SMS step-up isn't possible (no 123456 stub fallback).
+	enrollMeta := spec.AutoEnrollMetadata
+	wantPhone := ""
+	if spec.Method == stepUpMethodSMS {
+		phone, ok := h.userPhone(p.TenantID, p.UserID)
+		if !ok {
+			h.Logger.Warn("stepup_sms_no_phone", "user_id", p.UserID, "tenant_id", p.TenantID)
+			httpx.WriteError(w, http.StatusConflict, "no_phone_on_file",
+				"no verified phone number on file for SMS verification")
+			return
+		}
+		wantPhone = phone
+		enrollMeta = map[string]any{"phone_number": phone, "enrolled_by": "authorize-otp"}
+	}
+
+	// "Enrolled" means an authenticator for the method that can serve this
+	// challenge. For SMS that additionally requires the enrollment to carry the
+	// user's current verified number — a stale stub enrollment doesn't count.
 	enrolled := false
 	for _, a := range auths {
-		if a.Method == spec.Method && a.Status != "disabled" {
-			enrolled = true
-			break
+		if a.Method != spec.Method || a.Status == "disabled" {
+			continue
 		}
+		if spec.Method == stepUpMethodSMS && phoneOf(a) != wantPhone {
+			continue
+		}
+		enrolled = true
+		break
 	}
 	if !enrolled {
-		if _, err := h.Authenticator.EnrollAuthenticator(ctx, p.TenantID, p.UserID, spec.Method, spec.AutoEnrollMetadata); err != nil {
+		if _, err := h.Authenticator.EnrollAuthenticator(ctx, p.TenantID, p.UserID, spec.Method, enrollMeta); err != nil {
 			h.Logger.Error("stepup_auto_enroll_failed", "err", err, "user_id", p.UserID, "method", spec.Method)
 			httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not enroll "+spec.Method+" authenticator")
 			return
@@ -232,6 +261,31 @@ func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, s
 	h.Logger.Info("stepup_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
 		"user_id", p.UserID, "tenant_id", p.TenantID, "method", spec.Method)
 	h.renderOTPForm(w, http.StatusOK, otpFormData{FlowID: flowID, Prompt: chal.Prompt, Method: spec.Method})
+}
+
+// userPhone returns the user's verified phone number from their phone identity
+// anchor (created at phone login), or ("", false) if they have none on file.
+func (h *OIDCHandlers) userPhone(tenantID, userID string) (string, bool) {
+	anchors, err := h.Store.ListIdentityAnchors(tenantID)
+	if err != nil {
+		h.Logger.Error("stepup_phone_lookup_failed", "err", err, "tenant_id", tenantID)
+		return "", false
+	}
+	for _, a := range anchors {
+		if a.UserID == userID && a.Type == AnchorPhone && a.Value != "" {
+			return a.Value, true
+		}
+	}
+	return "", false
+}
+
+// phoneOf reads the phone number recorded on an authenticator's metadata.
+func phoneOf(a Authenticator) string {
+	if a.Metadata == nil {
+		return ""
+	}
+	s, _ := a.Metadata["phone_number"].(string)
+	return s
 }
 
 // AuthorizeVerify handles POST /authorize/verify — the hosted verification

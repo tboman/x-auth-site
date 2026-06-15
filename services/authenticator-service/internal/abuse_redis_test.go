@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/xentranet/x-auth/pkg/ratex"
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // newRedisLimitedServer builds one "replica": a Router over the shared store
@@ -37,7 +38,7 @@ func newRedisLimitedServer(t *testing.T, mr *miniredis.Miniredis, store *Store, 
 	if lockThreshold > 0 {
 		limits.Lockout = NewRedisLockout(lockThreshold, lockWindow, client, "rate:authr:lockout", log, clock.now)
 	}
-	srv := httptest.NewServer(Router(log, store, NewRegistry(log), limits))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}), limits))
 	t.Cleanup(srv.Close)
 	return srv
 }
