@@ -94,13 +94,19 @@ func (h *AdviceHandlers) Advise(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A unique id for this advice lifecycle. The caller carries it into /authorize
+	// (transaction_id) and gets it back on the final callback + in the id_token,
+	// so the authentication comes full circle. It's also the history record id.
+	transactionID := "txn_" + uuid.NewString()
+
 	h.Logger.Info("advice_issued",
-		"tenant_id", client.TenantID, "client_id", client.ClientID, "transaction_type", tt.Name,
-		"acr", lvl.ACR, "rank", lvl.Rank, "session_id", req.SessionID, "user_id", req.UserID, "device_id", req.DeviceID)
+		"transaction_id", transactionID, "tenant_id", client.TenantID, "client_id", client.ClientID,
+		"transaction_type", tt.Name, "acr", lvl.ACR, "rank", lvl.Rank,
+		"session_id", req.SessionID, "user_id", req.UserID, "device_id", req.DeviceID)
 
 	// Append to the advice history (staff console reads it). Best-effort.
 	if err := h.Store.RecordAdviceCall(AdviceCall{
-		ID: "adv_" + uuid.NewString(), TenantID: client.TenantID, ClientID: client.ClientID,
+		ID: transactionID, TenantID: client.TenantID, ClientID: client.ClientID,
 		UserID: req.UserID, SessionID: req.SessionID, DeviceID: req.DeviceID,
 		TransactionType: tt.Name, ACR: lvl.ACR, Rank: lvl.Rank, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -108,6 +114,7 @@ func (h *AdviceHandlers) Advise(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"transaction_id":   transactionID,
 		"tenant_id":        client.TenantID,
 		"transaction_type": tt.Name,
 		"subject": map[string]string{

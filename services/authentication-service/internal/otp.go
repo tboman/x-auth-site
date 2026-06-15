@@ -133,6 +133,7 @@ type pendingAuthorize struct {
 	ChallengeID   string
 	Prompt        string
 	Method        string // authenticator-service method; resolves the stepUpSpec on verify
+	TransactionID string // advice-lifecycle id, carried through step-up to the final code
 	CreatedAt     time.Time
 
 	// Protection-level fields (protection.go). When the flow was triggered by a
@@ -326,6 +327,7 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		CodeChallenge: flow.CodeChallenge,
 		ACR:           acr,
 		AMR:           spec.AMR,
+		TransactionID: flow.TransactionID,
 	})
 }
 
@@ -420,6 +422,11 @@ func (h *OIDCHandlers) mintCodeAndRedirect(w http.ResponseWriter, r *http.Reques
 	rq.Set("code", ac.Code)
 	if ac.State != "" {
 		rq.Set("state", ac.State)
+	}
+	// Close the advice loop: hand the transaction id back on the final callback so
+	// the caller can correlate this authentication with its earlier /v1/advice.
+	if ac.TransactionID != "" {
+		rq.Set("transaction_id", ac.TransactionID)
 	}
 	redir.RawQuery = rq.Encode()
 	http.Redirect(w, r, redir.String(), http.StatusFound)

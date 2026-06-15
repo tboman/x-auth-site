@@ -228,6 +228,11 @@ type AuthCode struct {
 	// claims into the ID token and mark the session stepped-up.
 	ACR string
 	AMR []string
+
+	// TransactionID is the advice-lifecycle id (from POST /v1/advice). When the
+	// caller carries it into /authorize it is echoed on the final redirect and
+	// stamped into the ID token, closing the loop after authentication.
+	TransactionID string
 }
 
 // OIDCClient is a registered OAuth/OIDC client. Phase 1 seeds a single dev

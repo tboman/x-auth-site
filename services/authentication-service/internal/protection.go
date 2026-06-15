@@ -165,7 +165,7 @@ func (h *OIDCHandlers) handleProtection(w http.ResponseWriter, r *http.Request, 
 		h.mintCodeAndRedirect(w, r, AuthCode{
 			ClientID: p.ClientID, TenantID: p.TenantID, UserID: p.UserID,
 			RedirectURI: p.RedirectURI, Scope: p.Scope, State: p.State, Nonce: p.Nonce,
-			CodeChallenge: p.CodeChallenge, ACR: lvl.ACR,
+			CodeChallenge: p.CodeChallenge, ACR: lvl.ACR, TransactionID: p.TransactionID,
 		})
 		return
 	}

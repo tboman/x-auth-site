@@ -68,6 +68,29 @@ func TestAdviceMapsTransactionTypeToLevel(t *testing.T) {
 	}
 }
 
+// /advice returns a unique transaction_id, which is also the history record id.
+func TestAdviceReturnsTransactionId(t *testing.T) {
+	h, clientID, secret := adviceTestSetup(t)
+	w := httptest.NewRecorder()
+	h.Advise(w, adviceReq(`{"user_id":"usr_1","transaction_type":"payment.high"}`, clientID, secret))
+	if w.Code != http.StatusOK {
+		t.Fatalf("advise: %d (%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		TransactionID string `json:"transaction_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasPrefix(resp.TransactionID, "txn_") {
+		t.Fatalf("transaction_id = %q, want txn_ prefix", resp.TransactionID)
+	}
+	calls, _ := h.Store.ListAdviceCalls(AdviceCallFilter{})
+	if len(calls) != 1 || calls[0].ID != resp.TransactionID {
+		t.Fatalf("history record id must equal transaction_id: %+v vs %q", calls, resp.TransactionID)
+	}
+}
+
 func TestAdviceUnknownType404(t *testing.T) {
 	h, clientID, secret := adviceTestSetup(t)
 	w := httptest.NewRecorder()

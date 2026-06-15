@@ -1,14 +1,89 @@
 package internal
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/xentranet/x-auth/pkg/jwtx"
 )
+
+// The transaction_id from /v1/advice, carried into /authorize, is echoed on the
+// final callback (alongside code+state) and recorded on the minted auth code.
+func TestAuthorizeEchoesTransactionId(t *testing.T) {
+	r, store := secureAuthzRouter(t)
+	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	req := authzReq(url.Values{"transaction_id": {"txn_abc123"}})
+	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	if loc.Query().Get("transaction_id") != "txn_abc123" {
+		t.Fatalf("final redirect missing transaction_id: %q", loc.String())
+	}
+	ac, err := store.ConsumeAuthCode(loc.Query().Get("code"))
+	if err != nil || ac.TransactionID != "txn_abc123" {
+		t.Fatalf("auth code missing transaction id: %+v err=%v", ac, err)
+	}
+}
+
+// The transaction_id also rides into the issued id_token as a claim.
+func TestIDTokenCarriesTransactionId(t *testing.T) {
+	r, store := secureAuthzRouter(t)
+	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	req := authzReq(url.Values{"transaction_id": {"txn_xyz"}})
+	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	code := mustQuery(t, w, "code")
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"client_id":     {"bound-web"},
+		"code_verifier": {testPKCEVerifier},
+	}
+	treq := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	treq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tw := httptest.NewRecorder()
+	r.ServeHTTP(tw, treq)
+	if tw.Code != http.StatusOK {
+		t.Fatalf("token: want 200, got %d (%s)", tw.Code, tw.Body.String())
+	}
+	var tok struct {
+		IDToken string `json:"id_token"`
+	}
+	if err := json.Unmarshal(tw.Body.Bytes(), &tok); err != nil || tok.IDToken == "" {
+		t.Fatalf("no id_token: %v (%s)", err, tw.Body.String())
+	}
+	verifier, err := jwtx.NewVerifierFromJWKS("http://test.local", testSigner.JWKS())
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	_, extra, err := verifier.Verify(tok.IDToken, time.Now())
+	if err != nil {
+		t.Fatalf("verify id_token: %v", err)
+	}
+	if extra["transaction_id"] != "txn_xyz" {
+		t.Fatalf("id_token transaction_id = %v, want txn_xyz", extra["transaction_id"])
+	}
+}
+
+func mustQuery(t *testing.T, w *httptest.ResponseRecorder, key string) string {
+	t.Helper()
+	loc, _ := url.Parse(w.Header().Get("Location"))
+	v := loc.Query().Get(key)
+	if v == "" {
+		t.Fatalf("redirect %q missing %q", loc.String(), key)
+	}
+	return v
+}
 
 // secureAuthzRouter builds a router in production mode (DevAutologin off) with
 // one tenant-bound client registered.

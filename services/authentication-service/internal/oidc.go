@@ -157,6 +157,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	userID := q.Get("user_id")
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
+	transactionID := q.Get("transaction_id") // advice-lifecycle id (optional); echoed full circle
 
 	if clientID == "" {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "client_id is required")
@@ -273,6 +274,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		Nonce:         nonce,
 		CodeChallenge: codeChallenge,
+		TransactionID: transactionID,
 	}
 	if lvl, ok := matchProtection(q.Get("acr_values")); ok {
 		h.handleProtection(w, r, lvl, authzSessionID, pend)
@@ -292,6 +294,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		Nonce:         nonce,
 		CodeChallenge: codeChallenge,
+		TransactionID: transactionID,
 	})
 }
 
@@ -486,7 +489,7 @@ func (h *OIDCHandlers) handleCodeGrant(w http.ResponseWriter, r *http.Request) {
 	// /authorize through the auth-code record into the id_token to bind the
 	// token to the client's original request (replay protection, §10.1).
 	if scopeContains(ac.Scope, "openid") {
-		idToken, err := h.issueIDToken(sess, ac.ClientID, ac.Nonce, ac.ACR, ac.AMR)
+		idToken, err := h.issueIDToken(sess, ac.ClientID, ac.Nonce, ac.ACR, ac.AMR, ac.TransactionID)
 		if err != nil {
 			h.Logger.Error("id_token_issue_failed", "err", err, "session_id", sess.ID)
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue id_token")
@@ -668,8 +671,14 @@ func (h *OIDCHandlers) issueTokenPair(sess Session, scope, clientID, familyID st
 // /authorize request and the tenant_id for multi-tenant consumers. ID tokens
 // are proof-of-authentication for the client, not API credentials — they are
 // not persisted and cannot be revoked or presented to /userinfo's deny list.
-func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce, acr string, amr []string) (string, error) {
+func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce, acr string, amr []string, transactionID string) (string, error) {
 	now := time.Now().UTC()
+	// The advice-lifecycle id rides along as an extra claim so the authenticated
+	// proof itself carries the correlation, not just the redirect query.
+	var extra map[string]any
+	if transactionID != "" {
+		extra = map[string]any{"transaction_id": transactionID}
+	}
 	return h.Signer.Sign(jwtx.Claims{
 		Sub:      sess.UserID,
 		Iss:      h.JWTIssuer,
@@ -680,7 +689,7 @@ func (h *OIDCHandlers) issueIDToken(sess Session, clientID, nonce, acr string, a
 		Nonce:    nonce,
 		ACR:      acr,
 		AMR:      amr,
-	}, nil)
+	}, extra)
 }
 
 // verifyPKCES256 reports whether the RFC 7636 S256 transformation of verifier

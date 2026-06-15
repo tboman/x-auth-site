@@ -741,13 +741,23 @@ client (HTTP Basic <code>client_id:client_secret</code>) and POST the subject id
   -H "Content-Type: application/json" \
   -d '{"session_id":"...","user_id":"...","device_id":"...","transaction_type":"payment.high"}' \
   ` + html.EscapeString(baseURL) + `/v1/advice</code></pre></div>
-<p class="muted">The response returns the mapped protection level. Request its <code>acr</code> at
-<code>/authorize</code> via <code>acr_values</code> to step the user up before the transaction:</p>
+<p class="muted">The response returns a unique <code>transaction_id</code> for this lifecycle and the mapped protection
+level:</p>
 <div class="panel"><pre style="margin:0;overflow:auto"><code>{
+  "transaction_id": "txn_…",
   "tenant_id": "` + html.EscapeString(tenantID) + `",
   "transaction_type": "payment.high",
   "advice": { "acr": "urn:xauth:protect:ultra:strict", "band": "ultra", "name": "strict", "rank": 8 }
 }</code></pre></div>
+<p class="muted">Send the user to <code>/authorize</code> requesting the advised <code>acr</code> via
+<code>acr_values</code> <strong>and the <code>transaction_id</code></strong>. After the user authenticates, the
+<code>transaction_id</code> comes back on your callback (a query parameter alongside <code>code</code>) and as a claim
+in the issued <code>id_token</code> — so you can correlate the advice with the completed authentication:</p>
+<div class="panel"><pre style="margin:0;overflow:auto"><code>` + html.EscapeString(baseURL) + `/authorize?client_id=` + html.EscapeString(cid) + `&amp;redirect_uri=…&amp;response_type=code
+  &amp;code_challenge=…&amp;code_challenge_method=S256&amp;state=…
+  &amp;acr_values=urn:xauth:protect:ultra:strict&amp;transaction_id=txn_…
+
+→ callback: …/cb?code=…&amp;state=…&amp;transaction_id=txn_…</code></pre></div>
 <p class="muted">A <strong>public</strong> client (no secret) can't call <code>/v1/advice</code> — use <strong>Regenerate
 secret</strong> in the Client section to make it confidential. The <code>session_id</code>, <code>user_id</code> and
 <code>device_id</code> you send are recorded with each call (X-Auth staff can review the advice history).</p>`
