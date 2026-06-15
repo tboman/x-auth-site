@@ -502,7 +502,7 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 	sessionsSection := sessionsPanel(sessions, emailByUser, now, revoke) +
 		stepUpsPanel(h.StepUps.ListByTenant(owner.Tenant.ID), emailByUser, now)
 
-	txnSection := h.transactionTypesSection(owner.Tenant.ID)
+	txnSection := h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
 
 	h.page(w, http.StatusOK, "Your X-Auth workspace", `<h1>`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
 <p class="muted">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> (workspace owner).</p>
@@ -518,7 +518,7 @@ email; phone and passkey anchors will appear here once those sign-in methods are
 
 // transactionTypesSection renders the tenant's transaction-type → protection-level
 // mappings with add/delete controls. The dropdown lists all eight levels.
-func (h *SignupConsoleHandlers) transactionTypesSection(tenantID string) string {
+func (h *SignupConsoleHandlers) transactionTypesSection(tenantID, clientID string) string {
 	types, _ := h.Store.ListTransactionTypes(tenantID)
 	var rows strings.Builder
 	if len(types) == 0 {
@@ -539,10 +539,13 @@ func (h *SignupConsoleHandlers) transactionTypesSection(tenantID string) string 
 		opts.WriteString(`<option value="` + html.EscapeString(l.ACR) + `">` +
 			html.EscapeString(l.Band+" : "+l.Name) + ` — rank ` + itoa(l.Rank) + ` (` + html.EscapeString(l.ACR) + `)</option>`)
 	}
+	baseURL := strings.TrimRight(h.Issuer, "/")
+	cid := clientID
+	if cid == "" {
+		cid = "YOUR_CLIENT_ID"
+	}
 	return `<h2 style="margin-top:28px">Transaction types</h2>
-<p class="muted">Name the transactions your app performs and map each to the assurance level it requires. Your backend
-calls <code>POST /v1/advice</code> (authenticated with your client id + secret) with a <code>transaction_type</code>
-and gets back the protection level to request at <code>/authorize</code> via <code>acr_values</code>.</p>
+<p class="muted">Name the transactions your app performs and map each to the assurance level it requires.</p>
 <div class="panel"><table>
 <thead><tr><th>Transaction type</th><th>Protection level</th><th></th></tr></thead>
 <tbody>` + rows.String() + `</tbody></table>
@@ -552,7 +555,27 @@ and gets back the protection level to request at <code>/authorize</code> via <co
 <label>Maps to protection level</label>
 <select name="acr">` + opts.String() + `</select>
 <div class="actions"><button type="submit">Add transaction type</button></div>
-</form></div>`
+</form></div>
+
+<h3 style="margin-top:24px">Calling the advice endpoint</h3>
+<p class="muted">Once you've <strong>created your client and generated a secret</strong> (Client section above), your
+backend asks X-Auth what assurance a transaction needs <em>before</em> it runs. Authenticate as your confidential
+client (HTTP Basic <code>client_id:client_secret</code>) and POST the subject ids plus the
+<code>transaction_type</code>:</p>
+<div class="panel"><pre style="margin:0;overflow:auto"><code>curl -u "` + html.EscapeString(cid) + `:YOUR_CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"...","user_id":"...","device_id":"...","transaction_type":"payment.high"}' \
+  ` + html.EscapeString(baseURL) + `/v1/advice</code></pre></div>
+<p class="muted">The response returns the mapped protection level. Request its <code>acr</code> at
+<code>/authorize</code> via <code>acr_values</code> to step the user up before the transaction:</p>
+<div class="panel"><pre style="margin:0;overflow:auto"><code>{
+  "tenant_id": "` + html.EscapeString(tenantID) + `",
+  "transaction_type": "payment.high",
+  "advice": { "acr": "urn:xauth:protect:ultra:strict", "band": "ultra", "name": "strict", "rank": 8 }
+}</code></pre></div>
+<p class="muted">A <strong>public</strong> client (no secret) can't call <code>/v1/advice</code> — use <strong>Regenerate
+secret</strong> in the Client section to make it confidential. The <code>session_id</code>, <code>user_id</code> and
+<code>device_id</code> you send are recorded with each call (X-Auth staff can review the advice history).</p>`
 }
 
 // CreateTransactionType handles POST /admin/owner/transaction-types.
