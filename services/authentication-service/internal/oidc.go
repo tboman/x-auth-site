@@ -77,6 +77,10 @@ type OIDCHandlers struct {
 	// Analyzer records the device fingerprint + runs CAEP drift analysis at the
 	// /authorize step-up validation.
 	Analyzer *DeviceAnalyzer
+
+	// CAEP emits a Security Event Token to risk-service when an advice-tracked
+	// transaction completes authentication (mintCodeAndRedirect). Optional.
+	CAEP *CAEPTransmitter
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.

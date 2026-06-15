@@ -89,6 +89,25 @@ func AssuranceLevelChange(tenantID, userID, sessionID, current, previous, direct
 	}
 }
 
+// TransactionCompleted builds the assurance-level-change event emitted when an
+// advice-tracked transaction finishes authentication at /authorize. It carries
+// the advice transaction_id plus the protection level (acr/rank) the user
+// satisfied, so risk-service can correlate the advice with the completed auth and
+// record the resulting assurance.
+func TransactionCompleted(tenantID, userID, sessionID, transactionID, acr string, rank int) (string, map[string]any) {
+	return CAEPAssuranceLevelChange, map[string]any{
+		"subject":           caepSubject(tenantID, userID, sessionID),
+		"current_level":     acr,
+		"change_direction":  "increase",
+		"initiating_entity": "policy",
+		"reason_admin":      "advice transaction completed authentication",
+		"transaction_id":    transactionID,
+		"acr":               acr,
+		"rank":              rank,
+		"event_timestamp":   time.Now().UTC().Unix(),
+	}
+}
+
 // SessionRevoked builds a session-revoked event payload.
 func SessionRevoked(tenantID, userID, sessionID, reason, fingerprint string) (string, map[string]any) {
 	return CAEPSessionRevoked, map[string]any{

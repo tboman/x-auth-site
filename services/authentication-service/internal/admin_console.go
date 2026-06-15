@@ -378,18 +378,23 @@ func (h *AdminConsoleHandlers) renderAdviceDomain(r *http.Request) string {
 		if tenant != "" || user != "" {
 			note = " matching the filter"
 		}
-		rows.WriteString(`<tr><td colspan="7" class="muted">No advice calls` + note + ` yet.</td></tr>`)
+		rows.WriteString(`<tr><td colspan="8" class="muted">No advice calls` + note + ` yet.</td></tr>`)
 	}
 	for _, c := range calls {
 		level := html.EscapeString(c.ACR)
 		if l, ok := protectionByACR(c.ACR); ok {
 			level = html.EscapeString(l.Band+" : "+l.Name) + ` <span class="muted">(rank ` + itoa(l.Rank) + `)</span>`
 		}
+		status := `<span class="muted">Pending</span>`
+		if c.CompletedAt != nil {
+			status = `<span style="color:var(--accent)">Completed</span> <span class="muted">` + c.CompletedAt.UTC().Format("15:04:05") + `</span>`
+		}
 		rows.WriteString(`<tr><td><code>` + c.CreatedAt.UTC().Format("2006-01-02 15:04:05") + `</code></td>` +
 			`<td>` + idCell(c.ID) + `</td>` +
 			`<td>` + idCell(c.TenantID) + `</td>` +
 			`<td><code>` + html.EscapeString(c.TransactionType) + `</code></td>` +
 			`<td>` + level + `</td>` +
+			`<td>` + status + `</td>` +
 			`<td>` + idCell(c.UserID) + `</td>` +
 			`<td>` + idCell(c.DeviceID) + `</td></tr>`)
 	}
@@ -405,7 +410,7 @@ func (h *AdminConsoleHandlers) renderAdviceDomain(r *http.Request) string {
 <div class="actions"><button type="submit">Filter</button><a class="btn secondary" href="/admin?domain=advice">Clear</a></div>
 </form>
 <div class="panel"><table>
-<thead><tr><th>Time (UTC)</th><th>Transaction ID</th><th>Tenant</th><th>Transaction</th><th>Level</th><th>User</th><th>Device</th></tr></thead>
+<thead><tr><th>Time (UTC)</th><th>Transaction ID</th><th>Tenant</th><th>Transaction</th><th>Level</th><th>Status</th><th>User</th><th>Device</th></tr></thead>
 <tbody>` + rows.String() + `</tbody></table></div>`
 }
 

@@ -345,6 +345,12 @@ type AdviceCall struct {
 	ACR             string    `json:"acr"`
 	Rank            int       `json:"rank"`
 	CreatedAt       time.Time `json:"created_at"`
+
+	// Completion: set when the transaction finished authentication at /authorize
+	// (the transaction_id came full circle). Nil CompletedAt = still pending.
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	CompletedUserID string     `json:"completed_user_id,omitempty"`
+	CompletedACR    string     `json:"completed_acr,omitempty"`
 }
 
 // AdviceCallFilter narrows the advice-history listing. Empty fields match

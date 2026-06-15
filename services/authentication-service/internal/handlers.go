@@ -120,6 +120,7 @@ func Router(d Deps) http.Handler {
 		StepUps:       stepUps,
 		Protection:    protection,
 		Analyzer:      analyzer,
+		CAEP:          caepTx,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}

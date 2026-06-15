@@ -75,6 +75,58 @@ func TestIDTokenCarriesTransactionId(t *testing.T) {
 	}
 }
 
+// On completion, the advice row is stamped completed and a CAEP SET (carrying the
+// transaction id + satisfied level) is delivered to risk-service.
+func TestAdviceCompletionRecordsAndEmitsCAEP(t *testing.T) {
+	store := NewMemStorage()
+	_ = store.RecordAdviceCall(AdviceCall{ID: "txn_done", TenantID: "ten_x", UserID: "usr_1",
+		TransactionType: "pay", ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CreatedAt: time.Now().UTC()})
+	srv, events, mu := caepCapture(t)
+	tx := NewCAEPTransmitter(testSigner, "http://test.local", srv.URL, "", discardLogger())
+	h := &OIDCHandlers{Store: store, Logger: discardLogger(), CAEP: tx}
+
+	h.completeAdviceTransaction(AuthCode{TenantID: "ten_x", UserID: "usr_1", TransactionID: "txn_done", ACR: "urn:xauth:protect:ultra:strict"})
+	tx.Wait()
+
+	calls, _ := store.ListAdviceCalls(AdviceCallFilter{})
+	if len(calls) != 1 || calls[0].CompletedAt == nil || calls[0].CompletedACR != "urn:xauth:protect:ultra:strict" {
+		t.Fatalf("completion not recorded: %+v", calls)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*events) != 1 {
+		t.Fatalf("want 1 CAEP event, got %d", len(*events))
+	}
+	if e := (*events)[0]; e.uri != CAEPAssuranceLevelChange || e.payload["transaction_id"] != "txn_done" {
+		t.Fatalf("unexpected CAEP event: %s %v", e.uri, e.payload)
+	}
+}
+
+// Driving /authorize with a known transaction_id marks the advice row completed.
+func TestAuthorizeCompletesAdviceTransaction(t *testing.T) {
+	r, store := secureAuthzRouter(t)
+	_ = store.RecordAdviceCall(AdviceCall{ID: "txn_flow", TenantID: "ten_bound", UserID: "x",
+		TransactionType: "pay", ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CreatedAt: time.Now().UTC()})
+	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	req := authzReq(url.Values{"transaction_id": {"txn_flow"}})
+	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusFound {
+		t.Fatalf("authorize: want 302, got %d (%s)", w.Code, w.Body.String())
+	}
+	calls, _ := store.ListAdviceCalls(AdviceCallFilter{TenantID: "ten_bound"})
+	var done bool
+	for _, c := range calls {
+		if c.ID == "txn_flow" && c.CompletedAt != nil {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatalf("advice transaction not marked completed: %+v", calls)
+	}
+}
+
 func mustQuery(t *testing.T, w *httptest.ResponseRecorder, key string) string {
 	t.Helper()
 	loc, _ := url.Parse(w.Header().Get("Location"))

@@ -418,6 +418,12 @@ func (h *OIDCHandlers) mintCodeAndRedirect(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// An advice-tracked transaction has now completed authentication — record it
+	// and tell risk-service. Best-effort; never blocks the redirect.
+	if ac.TransactionID != "" {
+		h.completeAdviceTransaction(ac)
+	}
+
 	rq := redir.Query()
 	rq.Set("code", ac.Code)
 	if ac.State != "" {
@@ -430,4 +436,23 @@ func (h *OIDCHandlers) mintCodeAndRedirect(w http.ResponseWriter, r *http.Reques
 	}
 	redir.RawQuery = rq.Encode()
 	http.Redirect(w, r, redir.String(), http.StatusFound)
+}
+
+// completeAdviceTransaction stamps the advice row as completed and emits a CAEP
+// assurance-level-change SET to risk-service for the satisfied protection level.
+// Best-effort: storage errors are logged, the SET delivery is already detached.
+func (h *OIDCHandlers) completeAdviceTransaction(ac AuthCode) {
+	if err := h.Store.MarkAdviceCallCompleted(ac.TenantID, ac.TransactionID, ac.UserID, ac.ACR, time.Now().UTC()); err != nil {
+		h.Logger.Error("advice_complete_record_failed", "err", err, "transaction_id", ac.TransactionID)
+	}
+	h.Logger.Info("advice_transaction_completed",
+		"transaction_id", ac.TransactionID, "tenant_id", ac.TenantID, "user_id", ac.UserID, "acr", ac.ACR)
+	if h.CAEP != nil {
+		rank := 0
+		if lvl, ok := protectionByACR(ac.ACR); ok {
+			rank = lvl.Rank
+		}
+		uri, ev := TransactionCompleted(ac.TenantID, ac.UserID, ac.SessionID, ac.TransactionID, ac.ACR, rank)
+		h.CAEP.Emit(ac.TenantID, ac.UserID, ac.SessionID, uri, ev)
+	}
 }

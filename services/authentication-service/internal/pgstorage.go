@@ -515,7 +515,8 @@ func (s *PGStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, erro
 	if limit <= 0 {
 		limit = 200
 	}
-	q := `SELECT id, tenant_id, client_id, user_id, session_id, device_id, transaction_type, acr, rank, created_at
+	q := `SELECT id, tenant_id, client_id, user_id, session_id, device_id, transaction_type, acr, rank, created_at,
+	             completed_at, completed_user_id, completed_acr
 	        FROM advice_calls WHERE 1=1`
 	args := []any{}
 	if filter.TenantID != "" {
@@ -537,18 +538,33 @@ func (s *PGStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, erro
 	out := make([]AdviceCall, 0)
 	for rows.Next() {
 		var c AdviceCall
-		var clientID, userID, sessionID, deviceID *string
+		var clientID, userID, sessionID, deviceID, completedUserID, completedACR *string
 		if err := rows.Scan(&c.ID, &c.TenantID, &clientID, &userID, &sessionID, &deviceID,
-			&c.TransactionType, &c.ACR, &c.Rank, &c.CreatedAt); err != nil {
+			&c.TransactionType, &c.ACR, &c.Rank, &c.CreatedAt,
+			&c.CompletedAt, &completedUserID, &completedACR); err != nil {
 			return nil, err
 		}
 		c.ClientID = derefString(clientID)
 		c.UserID = derefString(userID)
 		c.SessionID = derefString(sessionID)
 		c.DeviceID = derefString(deviceID)
+		c.CompletedUserID = derefString(completedUserID)
+		c.CompletedACR = derefString(completedACR)
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (s *PGStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, acr string, at time.Time) error {
+	const q = `
+		UPDATE advice_calls
+		   SET completed_at = $3, completed_user_id = $4, completed_acr = $5
+		 WHERE id = $1 AND tenant_id = $2`
+	_, err := s.pool.Exec(bgCtx(), q, transactionID, tenantID, at.UTC(), nullable(userID), nullable(acr))
+	if err != nil {
+		return fmt.Errorf("pgstorage mark_advice_call_completed: %w", err)
+	}
+	return nil
 }
 
 // ---- Tenant admins ----

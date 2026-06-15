@@ -767,6 +767,22 @@ func TestPGStorageAdviceCalls(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "adv_a" || got[0].DeviceID != "dev" || got[0].Rank != 8 {
 		t.Fatalf("by both / round-trip: %+v", got)
 	}
+	if got[0].CompletedAt != nil {
+		t.Fatalf("new advice call should be pending, got %+v", got[0].CompletedAt)
+	}
+
+	// Completion stamp (migration 000014).
+	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_a", "u1", "urn:xauth:protect:ultra:strict", base.Add(time.Minute)); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	done, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "tenant-a", UserID: "u1"})
+	if len(done) != 1 || done[0].CompletedAt == nil || done[0].CompletedACR != "urn:xauth:protect:ultra:strict" {
+		t.Fatalf("completion not persisted: %+v", done)
+	}
+	// Marking an unknown transaction id is a no-op, not an error.
+	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_missing", "u1", "x", base); err != nil {
+		t.Fatalf("mark unknown: want nil, got %v", err)
+	}
 }
 
 // TestPGStorageTenantAdmins exercises the tenant_admins schema (migration 000013)
