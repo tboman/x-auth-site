@@ -62,6 +62,43 @@ func (s *PGStorage) UpsertAssurance(a AssuranceState) error {
 	return nil
 }
 
+// RecordTransactionCompletion stores (upserts) a completed advice transaction.
+func (s *PGStorage) RecordTransactionCompletion(tc TransactionCompletion) error {
+	const q = `
+		INSERT INTO transaction_completions (transaction_id, tenant_id, user_id, acr, rank, completed_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (transaction_id) DO UPDATE SET
+			tenant_id    = EXCLUDED.tenant_id,
+			user_id      = EXCLUDED.user_id,
+			acr          = EXCLUDED.acr,
+			rank         = EXCLUDED.rank,
+			completed_at = EXCLUDED.completed_at`
+	if _, err := s.pool.Exec(context.Background(), q,
+		tc.TransactionID, tc.TenantID, tc.UserID, tc.ACR, tc.Rank, tc.CompletedAt.UTC()); err != nil {
+		return fmt.Errorf("risk pgstorage record_transaction_completion: %w", err)
+	}
+	return nil
+}
+
+// GetTransactionCompletion reads a completed transaction, ErrNotFound when none.
+func (s *PGStorage) GetTransactionCompletion(tenantID, transactionID string) (TransactionCompletion, error) {
+	const q = `
+		SELECT transaction_id, tenant_id, user_id, acr, rank, completed_at
+		  FROM transaction_completions
+		 WHERE tenant_id = $1 AND transaction_id = $2`
+	var tc TransactionCompletion
+	err := s.pool.QueryRow(context.Background(), q, tenantID, transactionID).Scan(
+		&tc.TransactionID, &tc.TenantID, &tc.UserID, &tc.ACR, &tc.Rank, &tc.CompletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TransactionCompletion{}, ErrNotFound
+	}
+	if err != nil {
+		return TransactionCompletion{}, fmt.Errorf("risk pgstorage get_transaction_completion: %w", err)
+	}
+	tc.CompletedAt = tc.CompletedAt.UTC()
+	return tc, nil
+}
+
 // GetAssurance reads the (tenant, user) posture, ErrNotFound when none.
 func (s *PGStorage) GetAssurance(tenantID, userID string) (AssuranceState, error) {
 	const q = `

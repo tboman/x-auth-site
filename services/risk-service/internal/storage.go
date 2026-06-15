@@ -41,15 +41,23 @@ type Storage interface {
 	RecordCAEPEvent(e CAEPEvent) error
 	UpsertAssurance(a AssuranceState) error
 	GetAssurance(tenantID, userID string) (AssuranceState, error)
+
+	// Transaction completions. RecordTransactionCompletion stores (upserts) an
+	// advice transaction that finished authentication — derived from a CAEP event
+	// carrying a transaction_id. GetTransactionCompletion reads it back
+	// (ErrNotFound when none).
+	RecordTransactionCompletion(tc TransactionCompletion) error
+	GetTransactionCompletion(tenantID, transactionID string) (TransactionCompletion, error)
 }
 
 // MemStorage is a thread-safe in-memory Storage implementation.
 type MemStorage struct {
 	mu          sync.RWMutex
-	evaluations map[string]RiskEvaluation // keyed by evaluation id
-	policies    map[string]Policy         // keyed by policy id
-	caepEvents  []CAEPEvent               // append-only
-	assurance   map[string]AssuranceState // keyed by tenantID|userID
+	evaluations map[string]RiskEvaluation        // keyed by evaluation id
+	policies    map[string]Policy                // keyed by policy id
+	caepEvents  []CAEPEvent                      // append-only
+	assurance   map[string]AssuranceState        // keyed by tenantID|userID
+	txnDone     map[string]TransactionCompletion // keyed by tenantID|transactionID
 }
 
 // NewMemStorage returns an initialised in-memory store.
@@ -58,6 +66,7 @@ func NewMemStorage() *MemStorage {
 		evaluations: make(map[string]RiskEvaluation),
 		policies:    make(map[string]Policy),
 		assurance:   make(map[string]AssuranceState),
+		txnDone:     make(map[string]TransactionCompletion),
 	}
 }
 
@@ -86,6 +95,25 @@ func (s *MemStorage) GetAssurance(tenantID, userID string) (AssuranceState, erro
 		return AssuranceState{}, ErrNotFound
 	}
 	return a, nil
+}
+
+// RecordTransactionCompletion stores (upserts) a completed advice transaction.
+func (s *MemStorage) RecordTransactionCompletion(tc TransactionCompletion) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.txnDone[tc.TenantID+"|"+tc.TransactionID] = tc
+	return nil
+}
+
+// GetTransactionCompletion reads a completed transaction, ErrNotFound when none.
+func (s *MemStorage) GetTransactionCompletion(tenantID, transactionID string) (TransactionCompletion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tc, ok := s.txnDone[tenantID+"|"+transactionID]
+	if !ok {
+		return TransactionCompletion{}, ErrNotFound
+	}
+	return tc, nil
 }
 
 // PutEvaluation inserts the evaluation. The caller fills ID, TenantID, and

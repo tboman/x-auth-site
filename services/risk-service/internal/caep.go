@@ -49,6 +49,20 @@ type AssuranceState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TransactionCompletion records an advice-tracked transaction that completed
+// authentication — derived from the assurance-level-change SET that carries a
+// transaction_id (authn emits it at /authorize). Stored so the advice lifecycle
+// is queryable on the risk side and a risk evaluation can see the level a recent
+// transaction satisfied. Keyed by transaction_id.
+type TransactionCompletion struct {
+	TransactionID string    `json:"transaction_id"`
+	TenantID      string    `json:"tenant_id"`
+	UserID        string    `json:"user_id"`
+	ACR           string    `json:"acr"`
+	Rank          int       `json:"rank"`
+	CompletedAt   time.Time `json:"completed_at"`
+}
+
 // ReceiveSET handles POST /internal/v1/ssf/events — a CAEP Security Event Token
 // (a signed JWT, sent as the request body) from authentication-service. It
 // verifies the signature/claims against authn's JWKS, records every carried
@@ -121,6 +135,25 @@ func (h *Handlers) applyEvent(claims jwtx.Claims, uri string, payload map[string
 		}
 		h.Logger.Info("caep_assurance_updated", "tenant_id", claims.TenantID, "user_id", claims.Sub,
 			"level", level, "direction", str("change_direction"))
+
+		// An assurance event carrying a transaction_id is an advice-tracked
+		// transaction completing authentication — store the completion.
+		if txnID := str("transaction_id"); txnID != "" {
+			rank := 0
+			if f, ok := payload["rank"].(float64); ok {
+				rank = int(f)
+			}
+			tc := TransactionCompletion{
+				TransactionID: txnID, TenantID: claims.TenantID, UserID: claims.Sub,
+				ACR: str("acr"), Rank: rank, CompletedAt: h.Clock.Now(),
+			}
+			if err := h.Store.RecordTransactionCompletion(tc); err != nil {
+				h.Logger.Error("caep_txn_completion_store_failed", "err", err, "transaction_id", txnID)
+			} else {
+				h.Logger.Info("caep_transaction_completed", "transaction_id", txnID,
+					"tenant_id", claims.TenantID, "user_id", claims.Sub, "acr", tc.ACR, "rank", rank)
+			}
+		}
 	case CAEPDeviceComplianceChange:
 		level := cur.Level
 		if level == "" {

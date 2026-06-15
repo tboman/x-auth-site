@@ -38,12 +38,39 @@ func newPGStorage(t *testing.T) *PGStorage {
 		pool.Close()
 		t.Fatalf("pool.Ping: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "TRUNCATE TABLE risk_evaluations, risk_policies"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE TABLE risk_evaluations, risk_policies, transaction_completions"); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
 	}
 	t.Cleanup(func() { pool.Close() })
 	return NewPGStorage(pool)
+}
+
+// TestPGStorageTransactionCompletions exercises the transaction_completions
+// schema (migration 000003) — upsert + tenant-scoped read.
+func TestPGStorageTransactionCompletions(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tc := TransactionCompletion{TransactionID: "txn_a", TenantID: "tenant-a", UserID: "u1",
+		ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CompletedAt: now}
+	if err := s.RecordTransactionCompletion(tc); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	// Upsert: re-record with a higher rank.
+	tc.Rank = 9
+	if err := s.RecordTransactionCompletion(tc); err != nil {
+		t.Fatalf("re-record: %v", err)
+	}
+	got, err := s.GetTransactionCompletion("tenant-a", "txn_a")
+	if err != nil || got.Rank != 9 || got.UserID != "u1" || got.ACR != tc.ACR {
+		t.Fatalf("get / upsert: %v %+v", err, got)
+	}
+	if _, err := s.GetTransactionCompletion("tenant-b", "txn_a"); err != ErrNotFound {
+		t.Errorf("cross-tenant: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.GetTransactionCompletion("tenant-a", "txn_missing"); err != ErrNotFound {
+		t.Errorf("missing: want ErrNotFound, got %v", err)
+	}
 }
 
 func TestPGStorageEvaluationRoundTrip(t *testing.T) {

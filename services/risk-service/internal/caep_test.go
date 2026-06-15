@@ -66,6 +66,57 @@ func TestCAEPReceiverAppliesAssurance(t *testing.T) {
 	}
 }
 
+// An assurance-level-change SET carrying a transaction_id stores a transaction
+// completion (and one without it does not).
+func TestCAEPReceiverStoresTransactionCompletion(t *testing.T) {
+	h := newReceiver(t)
+	set := signSET(t, setClaims(), CAEPAssuranceLevelChange, map[string]any{
+		"current_level":  "urn:xauth:protect:ultra:strict",
+		"transaction_id": "txn_abc",
+		"acr":            "urn:xauth:protect:ultra:strict",
+		"rank":           8,
+	})
+	w := httptest.NewRecorder()
+	h.ReceiveSET(w, httptest.NewRequest(http.MethodPost, "/internal/v1/ssf/events", strings.NewReader(set)))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("want 202, got %d (%s)", w.Code, w.Body.String())
+	}
+	tc, err := h.Store.GetTransactionCompletion("ten_a", "txn_abc")
+	if err != nil {
+		t.Fatalf("completion not stored: %v", err)
+	}
+	if tc.UserID != "u1" || tc.ACR != "urn:xauth:protect:ultra:strict" || tc.Rank != 8 {
+		t.Fatalf("completion wrong: %+v", tc)
+	}
+
+	// A plain assurance event (no transaction_id) must not create a completion.
+	set2 := signSET(t, setClaims(), CAEPAssuranceLevelChange, map[string]any{"current_level": "nist-aal2"})
+	w2 := httptest.NewRecorder()
+	h.ReceiveSET(w2, httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(set2)))
+	if _, err := h.Store.GetTransactionCompletion("ten_a", "no-such"); err != ErrNotFound {
+		t.Errorf("non-transaction event should not store a completion")
+	}
+}
+
+func TestTransactionCompletionStorageMem(t *testing.T) {
+	s := NewMemStorage()
+	tc := TransactionCompletion{TransactionID: "txn_1", TenantID: "ten_a", UserID: "u1",
+		ACR: "urn:xauth:protect:high:strict", Rank: 4, CompletedAt: time.Now().UTC()}
+	if err := s.RecordTransactionCompletion(tc); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	got, err := s.GetTransactionCompletion("ten_a", "txn_1")
+	if err != nil || got.Rank != 4 || got.UserID != "u1" {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	if _, err := s.GetTransactionCompletion("ten_b", "txn_1"); err != ErrNotFound {
+		t.Errorf("cross-tenant read should be ErrNotFound")
+	}
+	if _, err := s.GetTransactionCompletion("ten_a", "txn_x"); err != ErrNotFound {
+		t.Errorf("missing read should be ErrNotFound")
+	}
+}
+
 func TestCAEPReceiverRejectsInvalid(t *testing.T) {
 	h := newReceiver(t)
 	w := httptest.NewRecorder()
