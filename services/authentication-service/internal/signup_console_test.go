@@ -339,6 +339,60 @@ func TestOwnerLoginMultiTenantPicker(t *testing.T) {
 	}
 }
 
+// A signed-in owner who manages more than one workspace sees an in-dashboard
+// switcher and can switch the active workspace without signing in again; a
+// workspace they don't own is rejected.
+func TestOwnerSwitchWorkspace(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "x@acme.test", "Acme", "") // x owns Acme, owner cookie set
+	cookie := sessionCookie(w, ownerSessionCookie)
+	driveSignup(t, r, store, "owner@beta.test", "Beta", "") // someone else owns Beta
+	if err := store.SetTenantOwner("ten_beta", "x@acme.test"); err != nil {
+		t.Fatalf("assign beta to x: %v", err)
+	}
+
+	dash := func(c string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: c})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+	switchTo := func(c, tenantID string) *httptest.ResponseRecorder {
+		form := url.Values{"tenant_id": {tenantID}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/owner/switch", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: c})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Owning two workspaces → the dashboard shows the switcher.
+	if body := dash(cookie).Body.String(); !strings.Contains(body, "/admin/owner/switch") || !strings.Contains(body, "ten_beta") {
+		t.Fatalf("dashboard missing workspace switcher:\n%s", body)
+	}
+
+	// Switch to Beta → new owner cookie + Beta dashboard.
+	sw := switchTo(cookie, "ten_beta")
+	if sw.Code != http.StatusFound {
+		t.Fatalf("switch: want 302, got %d (%s)", sw.Code, sw.Body.String())
+	}
+	newCookie := sessionCookie(sw, ownerSessionCookie)
+	if !strings.HasPrefix(newCookie, "ten_beta|") {
+		t.Fatalf("switched cookie should be ten_beta, got %q", newCookie)
+	}
+	if body := dash(newCookie).Body.String(); !strings.Contains(body, "Beta") {
+		t.Fatalf("after switch should see the Beta dashboard:\n%s", body)
+	}
+
+	// A workspace the owner does not own is rejected.
+	driveSignup(t, r, store, "gamma@g.test", "Gamma", "")
+	if sw := switchTo(newCookie, "ten_gamma"); sw.Code != http.StatusForbidden {
+		t.Fatalf("switch to unowned workspace: want 403, got %d", sw.Code)
+	}
+}
+
 // The owner dashboard is tabbed: a nav with all sections, Overview by default,
 // and each tab renders only its own content.
 func TestOwnerDashboardTabs(t *testing.T) {

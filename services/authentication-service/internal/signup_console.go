@@ -437,6 +437,36 @@ func (h *SignupConsoleHandlers) OwnerSelect(w http.ResponseWriter, r *http.Reque
 	h.finishOwnerLogin(w, r, tenantID, user.Email)
 }
 
+// OwnerSwitch handles POST /admin/owner/switch — a signed-in owner who manages
+// more than one workspace switches the active one without signing in again. The
+// target must be owned by the same verified account; the current owner session
+// is invalidated and a fresh one minted for the target so the old workspace's
+// cookie can't be reused.
+func (h *SignupConsoleHandlers) OwnerSwitch(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin")
+		return
+	}
+	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
+	if tenantID == "" || tenantID == owner.Tenant.ID {
+		http.Redirect(w, r, "/admin", http.StatusFound)
+		return
+	}
+	if !h.isWorkspaceOwner(tenantID, owner.User.Email) {
+		h.errorPage(w, http.StatusForbidden, "You can't manage that workspace.", "/admin")
+		return
+	}
+	now := time.Now().UTC()
+	owner.Session.InvalidatedAt = &now
+	_, _ = h.Store.UpdateSession(owner.Session)
+	h.finishOwnerLogin(w, r, tenantID, owner.User.Email)
+}
+
 // finishOwnerLogin mints an owner session for email in tenantID, sets the owner
 // cookie, and sends the user to their dashboard.
 func (h *SignupConsoleHandlers) finishOwnerLogin(w http.ResponseWriter, r *http.Request, tenantID, email string) {
@@ -558,8 +588,34 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 		`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
 <div><h1 style="margin:0 0 4px">`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
 <p class="muted" style="margin:0">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> · `+role+`</p></div>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">`+h.workspaceSwitcher(owner)+`
 <form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
+</div>
 </div>`+nav.String()+content)
+}
+
+// workspaceSwitcher renders an inline workspace chooser for an owner who manages
+// more than one workspace, so they can switch without signing in again. Empty
+// when the account owns a single workspace.
+func (h *SignupConsoleHandlers) workspaceSwitcher(owner ownerSession) string {
+	owned := h.ownedTenants(owner.User.Email)
+	if len(owned) <= 1 {
+		return ""
+	}
+	var opts strings.Builder
+	for _, t := range owned {
+		sel := ""
+		if t.ID == owner.Tenant.ID {
+			sel = " selected"
+		}
+		opts.WriteString(`<option value="` + html.EscapeString(t.ID) + `"` + sel + `>` +
+			html.EscapeString(t.CompanyName) + `</option>`)
+	}
+	return `<form method="post" action="/admin/owner/switch" style="display:flex;gap:8px;align-items:center;margin:0">
+<label style="margin:0;color:var(--muted)">Workspace</label>
+<select name="tenant_id" onchange="this.form.submit()" style="padding:8px 10px;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;font:inherit">` + opts.String() + `</select>
+<button class="secondary" type="submit">Switch</button>
+</form>`
 }
 
 // ownerOverview is the workspace-summary tab.
