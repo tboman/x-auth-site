@@ -567,58 +567,6 @@ func (s *PGStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, acr
 	return nil
 }
 
-// ---- Tenant admins ----
-
-func (s *PGStorage) AddTenantAdmin(ta TenantAdmin) error {
-	const q = `INSERT INTO tenant_admins (tenant_id, user_id, email, created_at) VALUES ($1, $2, $3, $4)`
-	_, err := s.pool.Exec(bgCtx(), q, ta.TenantID, ta.UserID, ta.Email, ta.CreatedAt.UTC())
-	if isUniqueViolation(err) {
-		return ErrConflict
-	}
-	if err != nil {
-		return fmt.Errorf("pgstorage add_tenant_admin: %w", err)
-	}
-	return nil
-}
-
-func (s *PGStorage) ListTenantAdmins(tenantID string) ([]TenantAdmin, error) {
-	const q = `SELECT tenant_id, user_id, email, created_at FROM tenant_admins WHERE tenant_id = $1 ORDER BY email ASC`
-	return scanTenantAdmins(s.pool.Query(bgCtx(), q, tenantID))
-}
-
-func (s *PGStorage) ListTenantAdminsByEmail(email string) ([]TenantAdmin, error) {
-	const q = `SELECT tenant_id, user_id, email, created_at FROM tenant_admins WHERE email = $1`
-	return scanTenantAdmins(s.pool.Query(bgCtx(), q, email))
-}
-
-func (s *PGStorage) DeleteTenantAdmin(tenantID, userID string) error {
-	const q = `DELETE FROM tenant_admins WHERE tenant_id = $1 AND user_id = $2`
-	tag, err := s.pool.Exec(bgCtx(), q, tenantID, userID)
-	if err != nil {
-		return fmt.Errorf("pgstorage delete_tenant_admin: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func scanTenantAdmins(rows pgx.Rows, err error) ([]TenantAdmin, error) {
-	if err != nil {
-		return nil, fmt.Errorf("pgstorage list_tenant_admins: %w", err)
-	}
-	defer rows.Close()
-	out := make([]TenantAdmin, 0)
-	for rows.Next() {
-		var ta TenantAdmin
-		if err := rows.Scan(&ta.TenantID, &ta.UserID, &ta.Email, &ta.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, ta)
-	}
-	return out, rows.Err()
-}
-
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.
@@ -889,6 +837,46 @@ func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 	}
 	t.CreatedAt = t.CreatedAt.UTC()
 	return t, nil
+}
+
+// ListTenantsByOwnerEmail returns every workspace owned by email, slug-ordered.
+// Owner email is no longer unique (a Google account may own several workspaces),
+// so login uses this to drive the workspace picker.
+func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
+	const q = `SELECT id, company_name, slug, owner_email, created_at
+		FROM tenants WHERE owner_email = $1 ORDER BY slug`
+	rows, err := s.pool.Query(bgCtx(), q, email)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_tenants_by_owner: %w", err)
+	}
+	defer rows.Close()
+	var out []Tenant
+	for rows.Next() {
+		var t Tenant
+		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("pgstorage list_tenants_by_owner scan: %w", err)
+		}
+		t.CreatedAt = t.CreatedAt.UTC()
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pgstorage list_tenants_by_owner rows: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateTenantOwner reassigns a workspace to a new owner email. Staff use this to
+// hand a workspace to a Google account; ErrNotFound if the tenant is unknown.
+func (s *PGStorage) UpdateTenantOwner(tenantID, email string) error {
+	tag, err := s.pool.Exec(bgCtx(),
+		`UPDATE tenants SET owner_email = $2 WHERE id = $1`, tenantID, email)
+	if err != nil {
+		return fmt.Errorf("pgstorage update_tenant_owner: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---- Identity anchors ----

@@ -75,14 +75,19 @@ type Storage interface {
 	// surfaces every tenant, including registry-less ones (ten_admin, …).
 	ListTenants() ([]TenantSummary, error)
 
-	// Tenant registry (self-service signup). A registry row carries the
-	// company name and owner. CreateTenant returns ErrConflict if the slug OR
-	// the owner email is already taken. The Get* lookups return ErrNotFound on
-	// a miss.
+	// Tenant registry (self-service signup). A registry row carries the company
+	// name and owner. CreateTenant returns ErrConflict if the slug is taken. An
+	// owner email may own MORE THAN one workspace, so it is not unique:
+	// ListTenantsByOwnerEmail returns every workspace an account owns (login picks
+	// among them) and GetTenantByOwnerEmail returns any one (signup convenience).
+	// UpdateTenantOwner reassigns a tenant's workspace owner (staff). The Get*
+	// lookups return ErrNotFound on a miss.
 	CreateTenant(t Tenant) (Tenant, error)
 	GetTenant(id string) (Tenant, error)
 	GetTenantBySlug(slug string) (Tenant, error)
 	GetTenantByOwnerEmail(email string) (Tenant, error)
+	ListTenantsByOwnerEmail(email string) ([]Tenant, error)
+	UpdateTenantOwner(tenantID, email string) error
 
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
@@ -142,16 +147,6 @@ type Storage interface {
 	// such row exists — the caller may pass a transaction_id we never issued.
 	MarkAdviceCallCompleted(tenantID, transactionID, userID, acr string, at time.Time) error
 
-	// Tenant admins. Staff tag a tenant's users as administrators; owner login
-	// matches a Google email against these (+ tenants.owner_email) to resolve the
-	// tenants a person may manage. AddTenantAdmin returns ErrConflict on a
-	// duplicate (tenant_id, user_id); Delete returns ErrNotFound on a miss.
-	// ListTenantAdminsByEmail spans tenants (the login lookup).
-	AddTenantAdmin(ta TenantAdmin) error
-	ListTenantAdmins(tenantID string) ([]TenantAdmin, error)
-	ListTenantAdminsByEmail(email string) ([]TenantAdmin, error)
-	DeleteTenantAdmin(tenantID, userID string) error
-
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -160,20 +155,19 @@ type Storage interface {
 
 // MemStorage is an in-memory, thread-safe Storage implementation.
 type MemStorage struct {
-	mu       sync.RWMutex
-	users    map[string]User           // keyed by user id
-	sessions map[string]Session        // keyed by session id
-	tokens   map[string]Token          // keyed by token_hash
-	codes    map[string]AuthCode       // keyed by authorization code
-	clients  map[string]OIDCClient     // keyed by client id
-	tenants  map[string]Tenant         // keyed by tenant id
-	anchors  map[string]IdentityAnchor // keyed by anchor id
-	devSigs    []DeviceSignal          // append-only device-signal log
-	adviceLog  []AdviceCall            // append-only /v1/advice call log
-	tenantAdm  map[string]TenantAdmin  // keyed by tenant_id\x00user_id
-	staffUsr map[string]StaffUser      // keyed by user id
-	staffRol map[string][]string       // keyed by user id
-	txnTypes map[string]TransactionType // keyed by tenant_id\x00name
+	mu        sync.RWMutex
+	users     map[string]User            // keyed by user id
+	sessions  map[string]Session         // keyed by session id
+	tokens    map[string]Token           // keyed by token_hash
+	codes     map[string]AuthCode        // keyed by authorization code
+	clients   map[string]OIDCClient      // keyed by client id
+	tenants   map[string]Tenant          // keyed by tenant id
+	anchors   map[string]IdentityAnchor  // keyed by anchor id
+	devSigs   []DeviceSignal             // append-only device-signal log
+	adviceLog []AdviceCall               // append-only /v1/advice call log
+	staffUsr  map[string]StaffUser       // keyed by user id
+	staffRol  map[string][]string        // keyed by user id
+	txnTypes  map[string]TransactionType // keyed by tenant_id\x00name
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -188,9 +182,8 @@ func NewMemStorage() *MemStorage {
 		tenants:  make(map[string]Tenant),
 		anchors:  make(map[string]IdentityAnchor),
 		staffUsr: make(map[string]StaffUser),
-		staffRol:  make(map[string][]string),
-		txnTypes:  make(map[string]TransactionType),
-		tenantAdm: make(map[string]TenantAdmin),
+		staffRol: make(map[string][]string),
+		txnTypes: make(map[string]TransactionType),
 	}
 	s.seedDefaultClient()
 	return s
@@ -602,14 +595,14 @@ func (s *MemStorage) ListTenants() ([]TenantSummary, error) {
 
 // ---- Tenant registry ----
 
-// CreateTenant inserts a registry row. Returns ErrConflict if the slug or the
-// owner email is already taken (mirrors the unique constraints in the PG
-// schema so behaviour doesn't drift between stores).
+// CreateTenant inserts a registry row. Returns ErrConflict if the slug is taken
+// (mirrors the PG unique constraint). An owner email is NOT unique — a user can
+// own multiple workspaces.
 func (s *MemStorage) CreateTenant(t Tenant) (Tenant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.tenants {
-		if existing.Slug == t.Slug || existing.OwnerEmail == t.OwnerEmail {
+		if existing.Slug == t.Slug {
 			return Tenant{}, ErrConflict
 		}
 	}
@@ -641,8 +634,8 @@ func (s *MemStorage) GetTenantBySlug(slug string) (Tenant, error) {
 	return Tenant{}, ErrNotFound
 }
 
-// GetTenantByOwnerEmail returns the registry row owned by email, or
-// ErrNotFound. Used to route a returning owner back to their workspace.
+// GetTenantByOwnerEmail returns any registry row owned by email, or ErrNotFound.
+// A convenience for signup; login uses ListTenantsByOwnerEmail to see all.
 func (s *MemStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -654,6 +647,34 @@ func (s *MemStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 	return Tenant{}, ErrNotFound
 }
 
+// ListTenantsByOwnerEmail returns every workspace owned by email, slug-ordered.
+func (s *MemStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Tenant, 0)
+	for _, t := range s.tenants {
+		if t.OwnerEmail == email {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out, nil
+}
+
+// UpdateTenantOwner reassigns a tenant's workspace owner. ErrNotFound if the
+// tenant has no registry row.
+func (s *MemStorage) UpdateTenantOwner(tenantID, email string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.OwnerEmail = email
+	s.tenants[tenantID] = t
+	return nil
+}
+
 // ProvisionTenant writes the tenant, owner, session, and client under one lock.
 // All conflict checks run before any write, so a rejected provision leaves the
 // store untouched — the in-memory analogue of the PGStorage transaction.
@@ -661,7 +682,7 @@ func (s *MemStorage) ProvisionTenant(t Tenant, owner User, sess Session, client 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.tenants {
-		if existing.Slug == t.Slug || existing.OwnerEmail == t.OwnerEmail {
+		if existing.Slug == t.Slug {
 			return ErrConflict
 		}
 	}
@@ -997,53 +1018,3 @@ func (s *MemStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, ac
 	}
 	return nil // unknown transaction_id — no-op
 }
-
-// ---- Tenant admins ----
-
-func (s *MemStorage) AddTenantAdmin(ta TenantAdmin) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := ttKey(ta.TenantID, ta.UserID)
-	if _, exists := s.tenantAdm[k]; exists {
-		return ErrConflict
-	}
-	s.tenantAdm[k] = ta
-	return nil
-}
-
-func (s *MemStorage) ListTenantAdmins(tenantID string) ([]TenantAdmin, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]TenantAdmin, 0)
-	for _, ta := range s.tenantAdm {
-		if ta.TenantID == tenantID {
-			out = append(out, ta)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Email < out[j].Email })
-	return out, nil
-}
-
-func (s *MemStorage) ListTenantAdminsByEmail(email string) ([]TenantAdmin, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]TenantAdmin, 0)
-	for _, ta := range s.tenantAdm {
-		if ta.Email == email {
-			out = append(out, ta)
-		}
-	}
-	return out, nil
-}
-
-func (s *MemStorage) DeleteTenantAdmin(tenantID, userID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := ttKey(tenantID, userID)
-	if _, ok := s.tenantAdm[k]; !ok {
-		return ErrNotFound
-	}
-	delete(s.tenantAdm, k)
-	return nil
-}
-

@@ -283,10 +283,12 @@ func TestMonitoringPanelsRenderLiveData(t *testing.T) {
 
 // Staff can tag a tenant's user as an admin (and remove them) from the tenant
 // page.
-func TestStaffTagsTenantAdmin(t *testing.T) {
+func TestStaffSetsWorkspaceOwner(t *testing.T) {
 	r, store := newAdminRouter(t, "tomasboman@gmail.com")
 	now := time.Now().UTC()
-	mustUser(t, store, "usr_t", "ten_acme", "user@acme.test", now)
+	if _, err := store.CreateTenant(Tenant{ID: "ten_acme", CompanyName: "Acme", Slug: "acme", OwnerEmail: "old@acme.test", CreatedAt: now}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 	sess := seedAdminSession(t, store, "tomasboman@gmail.com")
 	cb := driveAdminCallback(t, r, sess.ID)
 	cookie := sessionCookie(cb, adminSessionCookie)
@@ -300,26 +302,20 @@ func TestStaffTagsTenantAdmin(t *testing.T) {
 		return rec
 	}
 
-	// Tenant page shows the panel.
+	// Tenant page shows the panel with the current owner.
 	det := httptest.NewRequest(http.MethodGet, "/admin/tenants/ten_acme", nil)
 	det.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
 	dw := httptest.NewRecorder()
 	r.ServeHTTP(dw, det)
-	if !strings.Contains(dw.Body.String(), "Tenant admins") {
-		t.Fatal("tenant page missing the Tenant admins panel")
+	if !strings.Contains(dw.Body.String(), "Workspace owner") || !strings.Contains(dw.Body.String(), "old@acme.test") {
+		t.Fatal("tenant page missing the Workspace owner panel / current owner")
 	}
 
-	if rec := post("/admin/tenants/admins/add", url.Values{"tenant_id": {"ten_acme"}, "user_id": {"usr_t"}}); rec.Code != http.StatusFound {
-		t.Fatalf("add admin: want 302, got %d (%s)", rec.Code, rec.Body.String())
+	if rec := post("/admin/tenants/owner", url.Values{"tenant_id": {"ten_acme"}, "email": {"New@Acme.test"}}); rec.Code != http.StatusFound {
+		t.Fatalf("set owner: want 302, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	if admins, _ := store.ListTenantAdmins("ten_acme"); len(admins) != 1 || admins[0].Email != "user@acme.test" {
-		t.Fatalf("admin not tagged: %+v", admins)
-	}
-	if rec := post("/admin/tenants/admins/remove", url.Values{"tenant_id": {"ten_acme"}, "user_id": {"usr_t"}}); rec.Code != http.StatusFound {
-		t.Fatalf("remove admin: want 302, got %d", rec.Code)
-	}
-	if admins, _ := store.ListTenantAdmins("ten_acme"); len(admins) != 0 {
-		t.Fatalf("admin not removed: %+v", admins)
+	if tn, _ := store.GetTenant("ten_acme"); tn.OwnerEmail != "new@acme.test" {
+		t.Fatalf("owner not reassigned (and lowercased): %q", tn.OwnerEmail)
 	}
 }
 

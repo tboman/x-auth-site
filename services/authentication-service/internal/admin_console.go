@@ -578,7 +578,7 @@ func (h *AdminConsoleHandlers) TenantDetail(w http.ResponseWriter, r *http.Reque
 <p class="muted">Every identity is anchored by its Google-verified email. Phone and passkey are additional
 anchor types: the store is ready for them, and they will appear here once the validation flows are built.</p>`+
 		identityTable(users, anchors)+
-		h.tenantAdminsPanel(tenantID, users)+
+		h.workspaceOwnerPanel(tenantID)+
 		sessionsPanel(sessions, emailByUser, now, revoke)+
 		stepUpsPanel(h.StepUps.ListByTenant(tenantID), emailByUser, now)+
 		deviceSignalsPanel(h.deviceSignals(tenantID), emailByUser))
@@ -595,49 +595,32 @@ func (h *AdminConsoleHandlers) deviceSignals(tenantID string) []DeviceSignal {
 	return sigs
 }
 
-// tenantAdminsPanel lists a tenant's tagged admins (the workspace owner always
-// has access) with remove controls + a form to tag one of the tenant's users.
-func (h *AdminConsoleHandlers) tenantAdminsPanel(tenantID string, users []User) string {
-	admins, _ := h.Store.ListTenantAdmins(tenantID)
-	var rows strings.Builder
-	if len(admins) == 0 {
-		rows.WriteString(`<tr><td colspan="2" class="muted">No additional admins — only the workspace owner.</td></tr>`)
+// workspaceOwnerPanel shows the tenant's single workspace owner and a form to
+// reassign it to another Google account. The new owner signs in at
+// <code>/admin/owner</code>; one account may own several workspaces and picks
+// which to manage at login.
+func (h *AdminConsoleHandlers) workspaceOwnerPanel(tenantID string) string {
+	owner := `<span class="muted">none set</span>`
+	if t, err := h.Store.GetTenant(tenantID); err == nil && t.OwnerEmail != "" {
+		owner = `<code>` + html.EscapeString(t.OwnerEmail) + `</code>`
 	}
-	for _, a := range admins {
-		rows.WriteString(`<tr><td><code>` + html.EscapeString(a.Email) + `</code></td><td>` +
-			`<form method="post" action="/admin/tenants/admins/remove" onsubmit="return confirm('Remove this admin?')">` +
-			`<input type="hidden" name="tenant_id" value="` + html.EscapeString(tenantID) + `">` +
-			`<input type="hidden" name="user_id" value="` + html.EscapeString(a.UserID) + `">` +
-			`<button class="danger" type="submit">Remove</button></form></td></tr>`)
-	}
-	addForm := `<p class="muted" style="margin-top:12px">No users in this tenant yet to tag.</p>`
-	if len(users) > 0 {
-		var opts strings.Builder
-		for _, u := range users {
-			label := u.Email
-			if label == "" {
-				label = u.ID
-			}
-			opts.WriteString(`<option value="` + html.EscapeString(u.ID) + `">` + html.EscapeString(label) + `</option>`)
-		}
-		addForm = `<form method="post" action="/admin/tenants/admins/add" style="margin-top:16px">
-<input type="hidden" name="tenant_id" value="` + html.EscapeString(tenantID) + `">
-<label>Tag a user as tenant admin</label>
-<select name="user_id">` + opts.String() + `</select>
-<div class="actions"><button type="submit">Add admin</button></div>
-</form>`
-	}
-	return `<h2 style="margin-top:24px">Tenant admins</h2>
-<p class="muted">Tagged users can sign in at <code>/admin/owner</code> and manage this workspace (the owner always can).
-A user managing more than one workspace picks which at login.</p>
+	return `<h2 style="margin-top:24px">Workspace owner</h2>
+<p class="muted">The owner manages this workspace at <code>/admin/owner</code>. Reassigning hands the workspace to a
+different Google account; an account may own more than one workspace and picks which to manage at login.</p>
 <div class="panel"><table>
-<thead><tr><th>Admin</th><th></th></tr></thead>
-<tbody>` + rows.String() + `</tbody></table>` + addForm + `</div>`
+<thead><tr><th>Current owner</th></tr></thead>
+<tbody><tr><td>` + owner + `</td></tr></tbody></table>
+<form method="post" action="/admin/tenants/owner" style="margin-top:16px" onsubmit="return confirm('Reassign this workspace to the entered account?')">
+<input type="hidden" name="tenant_id" value="` + html.EscapeString(tenantID) + `">
+<label>Reassign owner (Google account email)</label>
+<input type="email" name="email" placeholder="owner@example.com" required>
+<div class="actions"><button type="submit">Set owner</button></div>
+</form></div>`
 }
 
-// AddTenantAdmin handles POST /admin/tenants/admins/add — staff tags a tenant
-// user as an admin.
-func (h *AdminConsoleHandlers) AddTenantAdmin(w http.ResponseWriter, r *http.Request) {
+// SetWorkspaceOwner handles POST /admin/tenants/owner — staff reassigns a
+// workspace to a Google account by email.
+func (h *AdminConsoleHandlers) SetWorkspaceOwner(w http.ResponseWriter, r *http.Request) {
 	admin, ok := h.currentAdmin(w, r)
 	if !ok || !hasPermission(admin.Roles, "tenants:manage_settings") {
 		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
@@ -648,49 +631,21 @@ func (h *AdminConsoleHandlers) AddTenantAdmin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
-	userID := strings.TrimSpace(r.PostForm.Get("user_id"))
-	if tenantID == "" || userID == "" {
-		h.loginError(w, "tenant_id and user_id are required.")
+	email := strings.ToLower(strings.TrimSpace(r.PostForm.Get("email")))
+	if tenantID == "" || email == "" {
+		h.loginError(w, "tenant_id and email are required.")
 		return
 	}
-	user, err := h.Store.GetUser(tenantID, userID)
-	if err != nil {
-		h.loginErrorStatus(w, http.StatusBadRequest, "That user is not in this tenant.")
+	if err := h.Store.UpdateTenantOwner(tenantID, email); err != nil {
+		if err == ErrNotFound {
+			h.loginErrorStatus(w, http.StatusBadRequest, "That tenant does not exist.")
+			return
+		}
+		h.Logger.Error("admin_set_workspace_owner_failed", "err", err, "tenant_id", tenantID)
+		h.loginErrorStatus(w, http.StatusBadGateway, "Could not set the owner.")
 		return
 	}
-	err = h.Store.AddTenantAdmin(TenantAdmin{TenantID: tenantID, UserID: userID, Email: user.Email, CreatedAt: time.Now().UTC()})
-	if err != nil && err != ErrConflict {
-		h.Logger.Error("admin_add_tenant_admin_failed", "err", err, "tenant_id", tenantID)
-		h.loginErrorStatus(w, http.StatusBadGateway, "Could not add the admin.")
-		return
-	}
-	h.Logger.Info("tenant_admin_added", "tenant_id", tenantID, "user_id", userID, "email", user.Email, "by", admin.User.Email)
-	http.Redirect(w, r, "/admin/tenants/"+url.PathEscape(tenantID), http.StatusFound)
-}
-
-// RemoveTenantAdmin handles POST /admin/tenants/admins/remove.
-func (h *AdminConsoleHandlers) RemoveTenantAdmin(w http.ResponseWriter, r *http.Request) {
-	admin, ok := h.currentAdmin(w, r)
-	if !ok || !hasPermission(admin.Roles, "tenants:manage_settings") {
-		h.loginErrorStatus(w, http.StatusForbidden, "Sign in as an administrator first.")
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		h.loginError(w, "Could not parse the form.")
-		return
-	}
-	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
-	userID := strings.TrimSpace(r.PostForm.Get("user_id"))
-	if tenantID == "" || userID == "" {
-		h.loginError(w, "tenant_id and user_id are required.")
-		return
-	}
-	if err := h.Store.DeleteTenantAdmin(tenantID, userID); err != nil && err != ErrNotFound {
-		h.Logger.Error("admin_remove_tenant_admin_failed", "err", err, "tenant_id", tenantID)
-		h.loginErrorStatus(w, http.StatusBadGateway, "Could not remove the admin.")
-		return
-	}
-	h.Logger.Info("tenant_admin_removed", "tenant_id", tenantID, "user_id", userID, "by", admin.User.Email)
+	h.Logger.Info("workspace_owner_set", "tenant_id", tenantID, "email", email, "by", admin.User.Email)
 	http.Redirect(w, r, "/admin/tenants/"+url.PathEscape(tenantID), http.StatusFound)
 }
 

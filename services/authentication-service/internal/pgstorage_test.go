@@ -785,29 +785,26 @@ func TestPGStorageAdviceCalls(t *testing.T) {
 	}
 }
 
-// TestPGStorageTenantAdmins exercises the tenant_admins schema (migration 000013)
-// and the by-email login lookup.
-func TestPGStorageTenantAdmins(t *testing.T) {
+// TestPGStorageTenantOwnerReassign exercises owner reassignment and the
+// multi-ownership login lookup (migration 000015 dropped owner_email uniqueness).
+func TestPGStorageTenantOwnerReassign(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != nil {
-		t.Fatalf("add: %v", err)
+	if _, err := s.CreateTenant(Tenant{ID: "ten_a", CompanyName: "A", Slug: "owner-a", OwnerEmail: "x@a.test", CreatedAt: now}); err != nil {
+		t.Fatalf("create a: %v", err)
 	}
-	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != ErrConflict {
-		t.Fatalf("dup (tenant,user): want ErrConflict, got %v", err)
+	if _, err := s.CreateTenant(Tenant{ID: "ten_b", CompanyName: "B", Slug: "owner-b", OwnerEmail: "other@b.test", CreatedAt: now}); err != nil {
+		t.Fatalf("create b: %v", err)
 	}
-	_ = s.AddTenantAdmin(TenantAdmin{TenantID: "tenant-b", UserID: "u9", Email: "x@a.test", CreatedAt: now})
-	if got, _ := s.ListTenantAdminsByEmail("x@a.test"); len(got) != 2 {
-		t.Fatalf("by email (cross-tenant): want 2, got %d", len(got))
+	if err := s.UpdateTenantOwner("ten_b", "x@a.test"); err != nil {
+		t.Fatalf("reassign: %v", err)
 	}
-	if got, _ := s.ListTenantAdmins("tenant-a"); len(got) != 1 || got[0].UserID != "u1" {
-		t.Fatalf("by tenant: %+v", got)
+	owned, _ := s.ListTenantsByOwnerEmail("x@a.test")
+	if len(owned) != 2 || owned[0].ID != "ten_a" || owned[1].ID != "ten_b" {
+		t.Fatalf("owned by x (slug-ordered): want [ten_a ten_b], got %+v", owned)
 	}
-	if err := s.DeleteTenantAdmin("tenant-a", "u1"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if err := s.DeleteTenantAdmin("tenant-a", "u1"); err != ErrNotFound {
-		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	if err := s.UpdateTenantOwner("ten_missing", "x@a.test"); err != ErrNotFound {
+		t.Errorf("reassign missing: want ErrNotFound, got %v", err)
 	}
 }
 

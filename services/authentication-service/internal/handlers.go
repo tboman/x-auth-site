@@ -114,15 +114,15 @@ func Router(d Deps) http.Handler {
 		os.Getenv(httpx.EnvInternalAuthSecret), d.Logger)
 	analyzer := NewDeviceAnalyzer(d.Store, d.Logger, caepTx)
 	oidc := &OIDCHandlers{
-		Store:         d.Store,
-		Logger:        d.Logger,
-		Issuer:        d.Issuer,
-		Signer:        d.Signer,
-		Verifier:      verifier,
-		JWTIssuer:     jwtIssuer,
-		Authenticator: d.Authenticator,
-		DevAutologin:  d.DevAutologin,
-		StepUps:       stepUps,
+		Store:           d.Store,
+		Logger:          d.Logger,
+		Issuer:          d.Issuer,
+		Signer:          d.Signer,
+		Verifier:        verifier,
+		JWTIssuer:       jwtIssuer,
+		Authenticator:   d.Authenticator,
+		DevAutologin:    d.DevAutologin,
+		StepUps:         stepUps,
 		Protection:      protection,
 		Analyzer:        analyzer,
 		CAEP:            caepTx,
@@ -250,8 +250,7 @@ func Router(d Deps) http.Handler {
 	// GET /admin/. Revoke invalidates any tenant's session.
 	mux.HandleFunc("GET /admin/tenants/{id}", admin.TenantDetail)
 	mux.HandleFunc("POST /admin/sessions/revoke", admin.RevokeSession)
-	mux.HandleFunc("POST /admin/tenants/admins/add", admin.AddTenantAdmin)
-	mux.HandleFunc("POST /admin/tenants/admins/remove", admin.RemoveTenantAdmin)
+	mux.HandleFunc("POST /admin/tenants/owner", admin.SetWorkspaceOwner)
 
 	// Self-service signup funnel + tenant-owner dashboard endpoints. The
 	// provisioning action (/admin/signup/start) is rate-limited per IP since it

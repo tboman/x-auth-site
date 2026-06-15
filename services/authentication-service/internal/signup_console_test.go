@@ -39,9 +39,12 @@ func TestTenantRegistryMem(t *testing.T) {
 	if _, err := store.CreateTenant(Tenant{ID: "ten_acme2", CompanyName: "Acme Two", Slug: "acme", OwnerEmail: "other@x.test", CreatedAt: now}); err != ErrConflict {
 		t.Fatalf("dup slug: want ErrConflict, got %v", err)
 	}
-	// Duplicate owner email → conflict.
-	if _, err := store.CreateTenant(Tenant{ID: "ten_acme3", CompanyName: "Acme Three", Slug: "acme3", OwnerEmail: "o@acme.test", CreatedAt: now}); err != ErrConflict {
-		t.Fatalf("dup owner: want ErrConflict, got %v", err)
+	// Owner email is no longer unique — one account may own several workspaces.
+	if _, err := store.CreateTenant(Tenant{ID: "ten_acme3", CompanyName: "Acme Three", Slug: "acme3", OwnerEmail: "o@acme.test", CreatedAt: now}); err != nil {
+		t.Fatalf("second workspace for same owner: %v", err)
+	}
+	if owned, _ := store.ListTenantsByOwnerEmail("o@acme.test"); len(owned) != 2 {
+		t.Fatalf("owner should now own 2 workspaces, got %d", len(owned))
 	}
 }
 
@@ -63,8 +66,12 @@ func TestProvisionTenantMemAtomic(t *testing.T) {
 		t.Fatalf("first provision: %v", err)
 	}
 
-	// Reuses the owner email (UNIQUE) → conflict; the beta rows must NOT persist.
-	ten2, o2, s2, c2 := mk("2", "beta", "o@acme.test")
+	// A slug collision is rejected before any write — the beta rows must NOT
+	// persist. (Owner email is no longer unique, so slug is the conflict axis.)
+	ten2 := Tenant{ID: "ten_beta", CompanyName: "beta", Slug: "acme", OwnerEmail: "other@beta.test", CreatedAt: now}
+	o2 := User{ID: "usr_2", TenantID: "ten_beta", Email: "other@beta.test", CreatedAt: now, UpdatedAt: now}
+	s2 := Session{ID: "ses_2", TenantID: "ten_beta", UserID: "usr_2", RiskLevel: RiskLow, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	c2 := OIDCClient{ClientID: "cli_2", ClientSecretHash: "h", TenantID: "ten_beta", CreatedAt: now}
 	if err := store.ProvisionTenant(ten2, o2, s2, c2); err != ErrConflict {
 		t.Fatalf("conflicting provision: want ErrConflict, got %v", err)
 	}
@@ -239,67 +246,64 @@ func driveOwnerLogin(t *testing.T, r http.Handler, store Storage, email string) 
 	return w
 }
 
-func TestTenantAdminStorageMem(t *testing.T) {
+func TestTenantOwnerStorageMem(t *testing.T) {
 	s := NewMemStorage()
 	now := time.Now().UTC()
-	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "ten_a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != nil {
-		t.Fatalf("add: %v", err)
+	if _, err := s.CreateTenant(Tenant{ID: "ten_a", CompanyName: "A", Slug: "a", OwnerEmail: "x@a.test", CreatedAt: now}); err != nil {
+		t.Fatalf("create a: %v", err)
 	}
-	if err := s.AddTenantAdmin(TenantAdmin{TenantID: "ten_a", UserID: "u1", Email: "x@a.test", CreatedAt: now}); err != ErrConflict {
-		t.Fatalf("dup: want ErrConflict, got %v", err)
+	if _, err := s.CreateTenant(Tenant{ID: "ten_b", CompanyName: "B", Slug: "b", OwnerEmail: "other@b.test", CreatedAt: now}); err != nil {
+		t.Fatalf("create b: %v", err)
 	}
-	_ = s.AddTenantAdmin(TenantAdmin{TenantID: "ten_b", UserID: "u9", Email: "x@a.test", CreatedAt: now}) // same email, other tenant
-	if byEmail, _ := s.ListTenantAdminsByEmail("x@a.test"); len(byEmail) != 2 {
-		t.Fatalf("by email (cross-tenant): want 2, got %d", len(byEmail))
+	// Reassign ten_b to x → an account may now own more than one workspace.
+	if err := s.UpdateTenantOwner("ten_b", "x@a.test"); err != nil {
+		t.Fatalf("reassign: %v", err)
 	}
-	if byTenant, _ := s.ListTenantAdmins("ten_a"); len(byTenant) != 1 {
-		t.Fatalf("by tenant: want 1, got %d", len(byTenant))
+	owned, _ := s.ListTenantsByOwnerEmail("x@a.test")
+	if len(owned) != 2 || owned[0].ID != "ten_a" || owned[1].ID != "ten_b" {
+		t.Fatalf("owned by x (slug-ordered): want [ten_a ten_b], got %+v", owned)
 	}
-	if err := s.DeleteTenantAdmin("ten_a", "u1"); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if err := s.DeleteTenantAdmin("ten_a", "u1"); err != ErrNotFound {
-		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	if err := s.UpdateTenantOwner("ten_missing", "x@a.test"); err != ErrNotFound {
+		t.Errorf("reassign missing: want ErrNotFound, got %v", err)
 	}
 }
 
-// A staff-tagged admin (who owns nothing) signs in straight into that tenant, and
-// currentOwner accepts them on the dashboard.
-func TestTaggedAdminLogsIntoTenant(t *testing.T) {
+// A workspace reassigned to a different account by staff lets that account sign in
+// straight into the tenant, and currentOwner accepts them on the dashboard.
+func TestReassignedOwnerLogsIntoTenant(t *testing.T) {
 	r, store := newAdminRouter(t)
 	driveSignup(t, r, store, "owner@beta.test", "Beta", "")
-	now := time.Now().UTC()
-	u, _ := store.CreateUser(User{ID: "usr_ab", TenantID: "ten_beta", Email: "admin@beta.test", CreatedAt: now, UpdatedAt: now})
-	if err := store.AddTenantAdmin(TenantAdmin{TenantID: "ten_beta", UserID: u.ID, Email: "admin@beta.test", CreatedAt: now}); err != nil {
-		t.Fatalf("tag: %v", err)
+	if err := store.UpdateTenantOwner("ten_beta", "new@beta.test"); err != nil {
+		t.Fatalf("reassign: %v", err)
 	}
 
-	w := driveOwnerLogin(t, r, store, "admin@beta.test")
+	w := driveOwnerLogin(t, r, store, "new@beta.test")
 	if w.Code != http.StatusFound {
-		t.Fatalf("tagged admin login: want 302, got %d (%s)", w.Code, w.Body.String())
+		t.Fatalf("reassigned owner login: want 302, got %d (%s)", w.Code, w.Body.String())
 	}
 	cookie := sessionCookie(w, ownerSessionCookie)
 	if !strings.HasPrefix(cookie, "ten_beta|") {
-		t.Fatalf("tagged admin cookie should be ten_beta, got %q", cookie)
+		t.Fatalf("reassigned owner cookie should be ten_beta, got %q", cookie)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
 	req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
 	dw := httptest.NewRecorder()
 	r.ServeHTTP(dw, req)
 	if dw.Code != http.StatusOK || !strings.Contains(dw.Body.String(), "Beta") {
-		t.Fatalf("tagged admin should see the Beta dashboard (%d):\n%s", dw.Code, dw.Body.String())
+		t.Fatalf("reassigned owner should see the Beta dashboard (%d):\n%s", dw.Code, dw.Body.String())
 	}
 }
 
-// An account that manages more than one workspace gets the picker, then selecting
+// An account that owns more than one workspace gets the picker, then selecting
 // one logs into it.
 func TestOwnerLoginMultiTenantPicker(t *testing.T) {
 	r, store := newAdminRouter(t)
-	driveSignup(t, r, store, "x@acme.test", "Acme", "")    // x owns Acme
+	driveSignup(t, r, store, "x@acme.test", "Acme", "")     // x owns Acme
 	driveSignup(t, r, store, "owner@beta.test", "Beta", "") // someone else owns Beta
-	now := time.Now().UTC()
-	u, _ := store.CreateUser(User{ID: "usr_xb", TenantID: "ten_beta", Email: "x@acme.test", CreatedAt: now, UpdatedAt: now})
-	_ = store.AddTenantAdmin(TenantAdmin{TenantID: "ten_beta", UserID: u.ID, Email: "x@acme.test", CreatedAt: now})
+	// Staff reassigns Beta to x → x now owns both Acme and Beta.
+	if err := store.UpdateTenantOwner("ten_beta", "x@acme.test"); err != nil {
+		t.Fatalf("reassign: %v", err)
+	}
 
 	w := driveOwnerLogin(t, r, store, "x@acme.test")
 	if w.Code != http.StatusOK {
@@ -373,14 +377,12 @@ func TestSignupReturningOwnerRoutedToWorkspace(t *testing.T) {
 	if w := driveSignup(t, r, store, "owner@acme.test", "Acme", ""); w.Code != http.StatusOK {
 		t.Fatalf("first signup: want 200, got %d", w.Code)
 	}
-	// Same owner signs up again (even with a different name) → routed to existing
-	// workspace, no second tenant.
-	w := driveSignup(t, r, store, "owner@acme.test", "Totally Different", "")
+	// Same owner re-runs signup for the SAME workspace name → routed straight to
+	// the existing workspace, no duplicate tenant. (A different name now creates a
+	// second workspace, since an account may own more than one.)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
 	if w.Code != http.StatusFound {
 		t.Fatalf("returning owner: want 302, got %d (%s)", w.Code, w.Body.String())
-	}
-	if _, err := store.GetTenantBySlug("totally-different"); err != ErrNotFound {
-		t.Fatal("returning owner must not create a second tenant")
 	}
 	cookie := sessionCookie(w, ownerSessionCookie)
 	if !strings.HasPrefix(cookie, "ten_acme|") {

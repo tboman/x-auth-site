@@ -193,22 +193,25 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 		_ = json.Unmarshal(raw, &intent)
 	}
 
-	// A returning owner who lands back in signup (e.g. used the marketing CTA
-	// again) is sent to their existing workspace rather than told their email is
-	// "taken" — owner_email is unique, so they can only have one.
-	if existing, err := h.Store.GetTenantByOwnerEmail(email); err == nil {
-		if sess, ok := h.mintOwnerSession(existing.ID, email); ok {
-			h.setOwnerCookie(w, existing.ID, sess.ID, sess.ExpiresAt)
-			http.Redirect(w, r, "/admin", http.StatusFound)
-			return
-		}
-	}
-
 	slug := slugify(intent.Company)
 	if slug == "" {
 		h.errorPage(w, http.StatusBadRequest, "That company name can't be turned into a workspace id. Try another.", "/admin/signup")
 		return
 	}
+
+	// A returning owner who re-runs signup for a workspace they already own is sent
+	// straight there rather than hitting a slug conflict. Owners may now hold more
+	// than one workspace, so we match on the requested slug — not just "any owned".
+	for _, t := range h.ownedTenants(email) {
+		if t.Slug == slug {
+			if sess, ok := h.mintOwnerSession(t.ID, email); ok {
+				h.setOwnerCookie(w, t.ID, sess.ID, sess.ExpiresAt)
+				http.Redirect(w, r, "/admin", http.StatusFound)
+				return
+			}
+		}
+	}
+
 	if _, err := h.Store.GetTenantBySlug(slug); err == nil {
 		h.errorPage(w, http.StatusConflict,
 			`The name "`+intent.Company+`" is already taken. Please choose another.`, "/admin/signup")
@@ -224,9 +227,8 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 
 	// Build the whole workspace up front, then commit it in one atomic unit:
 	// tenant registry row, owner user, owner session, and the confidential OIDC
-	// client. Provisioning these separately could orphan a tenant (and burn the
-	// owner's email, which is UNIQUE) if a later step failed — see the
-	// redirect_uris regression that motivated ProvisionTenant.
+	// client. Provisioning these separately could orphan a tenant if a later step
+	// failed — see the redirect_uris regression that motivated ProvisionTenant.
 	owner := User{
 		ID: "usr_" + uuid.NewString(), TenantID: tenantID, Email: email, CreatedAt: now, UpdatedAt: now,
 	}
@@ -382,7 +384,7 @@ func (h *SignupConsoleHandlers) OwnerCallback(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	tenants := h.administeredTenants(email)
+	tenants := h.ownedTenants(email)
 	switch len(tenants) {
 	case 0:
 		h.page(w, http.StatusOK, "No workspace yet", `<h1>No workspace yet</h1>
@@ -423,7 +425,7 @@ func (h *SignupConsoleHandlers) OwnerSelect(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	tenantID := strings.TrimSpace(r.PostForm.Get("tenant_id"))
-	if tenantID == "" || !h.isTenantAdmin(tenantID, user.Email) {
+	if tenantID == "" || !h.isWorkspaceOwner(tenantID, user.Email) {
 		h.errorPage(w, http.StatusForbidden, "You can't manage that workspace.", "/admin/owner/login")
 		return
 	}
@@ -462,49 +464,18 @@ func (h *SignupConsoleHandlers) renderTenantPicker(w http.ResponseWriter, tenant
 <div class="panel" style="display:grid;gap:10px">`+items.String()+`</div>`)
 }
 
-// administeredTenants returns the tenants a Google email may manage: the tenant it
-// owns (tenants.owner_email) plus any it has been tagged an admin of, deduped by
-// tenant id (owner first).
-func (h *SignupConsoleHandlers) administeredTenants(email string) []Tenant {
-	seen := map[string]bool{}
-	var out []Tenant
-	if owned, err := h.Store.GetTenantByOwnerEmail(email); err == nil {
-		seen[owned.ID] = true
-		out = append(out, owned)
-	}
-	admins, _ := h.Store.ListTenantAdminsByEmail(email)
-	for _, ta := range admins {
-		if seen[ta.TenantID] {
-			continue
-		}
-		if t, err := h.Store.GetTenant(ta.TenantID); err == nil {
-			seen[ta.TenantID] = true
-			out = append(out, t)
-		}
-	}
-	return out
+// ownedTenants returns every workspace a Google email owns, slug-ordered. A
+// single account may own more than one (staff can assign it), which is what
+// drives the login workspace picker.
+func (h *SignupConsoleHandlers) ownedTenants(email string) []Tenant {
+	tenants, _ := h.Store.ListTenantsByOwnerEmail(email)
+	return tenants
 }
 
-// isTenantAdmin reports whether email may manage tenantID — either its owner or a
-// staff-tagged admin.
-func (h *SignupConsoleHandlers) isTenantAdmin(tenantID, email string) bool {
-	if t, err := h.Store.GetTenant(tenantID); err == nil && t.OwnerEmail == email {
-		return true
-	}
-	return h.isTaggedTenantAdmin(tenantID, email)
-}
-
-// isTaggedTenantAdmin reports whether email has been staff-tagged as an admin of
-// tenantID (excludes the owner — callers that already hold the tenant check
-// OwnerEmail directly).
-func (h *SignupConsoleHandlers) isTaggedTenantAdmin(tenantID, email string) bool {
-	admins, _ := h.Store.ListTenantAdminsByEmail(email)
-	for _, ta := range admins {
-		if ta.TenantID == tenantID {
-			return true
-		}
-	}
-	return false
+// isWorkspaceOwner reports whether email owns tenantID.
+func (h *SignupConsoleHandlers) isWorkspaceOwner(tenantID, email string) bool {
+	t, err := h.Store.GetTenant(tenantID)
+	return err == nil && t.OwnerEmail == email
 }
 
 // OwnerLogout invalidates the owner session and clears the cookie.
@@ -581,10 +552,7 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 	}
 	nav.WriteString(`</div>`)
 
-	role := "workspace owner"
-	if owner.User.Email != owner.Tenant.OwnerEmail {
-		role = "tenant admin"
-	}
+	const role = "workspace owner"
 
 	h.page(w, http.StatusOK, "Your X-Auth workspace",
 		`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
@@ -942,7 +910,7 @@ func (h *SignupConsoleHandlers) currentOwner(w http.ResponseWriter, r *http.Requ
 		return ownerSession{}, false
 	}
 	user, err := h.Store.GetUser(tenantID, sess.UserID)
-	if err != nil || (user.Email != tenant.OwnerEmail && !h.isTaggedTenantAdmin(tenantID, user.Email)) {
+	if err != nil || user.Email != tenant.OwnerEmail {
 		h.clearCookie(w, ownerSessionCookie, "/admin")
 		return ownerSession{}, false
 	}
