@@ -93,6 +93,9 @@ type Storage interface {
 	GetTenantByOwnerEmail(email string) (Tenant, error)
 	ListTenantsByOwnerEmail(email string) ([]Tenant, error)
 	SetTenantOwner(tenantID, email string) error
+	// SetTenantPhoneLogin toggles the per-tenant SMS-OTP opt-in (migration
+	// 000016). ErrNotFound if the tenant has no registry row.
+	SetTenantPhoneLogin(tenantID string, enabled bool) error
 
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
@@ -681,6 +684,20 @@ func (s *MemStorage) SetTenantOwner(tenantID, email string) error {
 	s.tenants[tenantID] = Tenant{
 		ID: tenantID, CompanyName: company, Slug: slug, OwnerEmail: email, CreatedAt: time.Now().UTC(),
 	}
+	return nil
+}
+
+// SetTenantPhoneLogin toggles the tenant's SMS-OTP opt-in. ErrNotFound if the
+// tenant has no registry row.
+func (s *MemStorage) SetTenantPhoneLogin(tenantID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.PhoneLoginEnabled = enabled
+	s.tenants[tenantID] = t
 	return nil
 }
 

@@ -11,8 +11,8 @@ import (
 
 // TestLoginChooserRendersMethods pins the hosted /login chooser: a working
 // "Continue with Google" link that forwards to the social leg with the caller's
-// params, and a disabled phone option. The workspace name is shown when the
-// tenant is registered.
+// params. Phone is hidden until the tenant opts in. The workspace name is shown
+// when the tenant is registered.
 func TestLoginChooserRendersMethods(t *testing.T) {
 	r, store := newAdminRouter(t)
 	if _, err := store.CreateTenant(Tenant{
@@ -57,10 +57,22 @@ func TestLoginChooserRendersMethods(t *testing.T) {
 			t.Errorf("chooser missing %q:\n%s", want, body)
 		}
 	}
-	// Phone is now a live option linking to the hosted phone flow with the same
-	// params passed through.
-	if !strings.Contains(body, "/login/phone?") || !strings.Contains(body, "Continue with phone") {
-		t.Errorf("chooser must offer phone sign-in:\n%s", body)
+	// Phone is per-tenant opt-in (migration 000016) and this tenant has NOT opted
+	// in → it must not appear on the chooser.
+	if strings.Contains(body, "/login/phone?") || strings.Contains(body, "Continue with phone") {
+		t.Errorf("chooser must hide phone sign-in until the tenant opts in:\n%s", body)
+	}
+
+	// Opt the tenant in → phone now appears, carrying the same params through.
+	if err := store.SetTenantPhoneLogin("ten_acme", true); err != nil {
+		t.Fatalf("enable phone: %v", err)
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/login?"+q.Encode(), nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	body2 := w2.Body.String()
+	if !strings.Contains(body2, "/login/phone?") || !strings.Contains(body2, "Continue with phone") {
+		t.Errorf("opted-in chooser must offer phone sign-in:\n%s", body2)
 	}
 }
 

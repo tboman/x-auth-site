@@ -467,6 +467,28 @@ func (h *SignupConsoleHandlers) OwnerSwitch(w http.ResponseWriter, r *http.Reque
 	h.finishOwnerLogin(w, r, tenantID, owner.User.Email)
 }
 
+// SetPhoneLogin handles POST /admin/owner/phone-login — the owner toggles the
+// per-tenant SMS-OTP option shown on their hosted /login chooser.
+func (h *SignupConsoleHandlers) SetPhoneLogin(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=integration")
+		return
+	}
+	enabled := r.PostForm.Get("enabled") == "true"
+	if err := h.Store.SetTenantPhoneLogin(owner.Tenant.ID, enabled); err != nil {
+		h.Logger.Error("owner_set_phone_login_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not update sign-in methods.", "/admin?tab=integration")
+		return
+	}
+	h.Logger.Info("phone_login_toggled", "tenant_id", owner.Tenant.ID, "enabled", enabled, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
+}
+
 // finishOwnerLogin mints an owner session for email in tenantID, sets the owner
 // cookie, and sends the user to their dashboard.
 func (h *SignupConsoleHandlers) finishOwnerLogin(w http.ResponseWriter, r *http.Request, tenantID, email string) {
@@ -685,7 +707,27 @@ func (h *SignupConsoleHandlers) ownerIntegration(owner ownerSession) string {
 <label>Web origins (one per line, for browser CORS)</label>
 <textarea name="web_origins" rows="2" placeholder="https://app.` + html.EscapeString(owner.Tenant.Slug) + `.com">` + html.EscapeString(strings.Join(c.WebOrigins, "\n")) + `</textarea>
 <div class="actions"><button type="submit">Save</button></div>
-</form></div>` + secretPanel
+</form></div>` + secretPanel + h.signInMethodsPanel(owner)
+}
+
+// signInMethodsPanel lets the owner toggle which methods appear on their hosted
+// /login chooser. Google is always on; phone (SMS OTP) is opt-in and OFF by
+// default because SMS delivery is still a stub.
+func (h *SignupConsoleHandlers) signInMethodsPanel(owner ownerSession) string {
+	checked := ""
+	if owner.Tenant.PhoneLoginEnabled {
+		checked = " checked"
+	}
+	return `<div class="panel">
+<h3 style="margin:0 0 8px">Sign-in methods</h3>
+<p class="muted">Google is always available on your hosted <code>/login</code> page. Phone (SMS one-time code) is optional.
+⚠️ SMS delivery is not live yet — codes are <strong>not</strong> actually texted (the verification code is a fixed test value),
+so leave phone off for real end users until it's announced.</p>
+<form method="post" action="/admin/owner/phone-login">
+<label style="display:flex;align-items:center;gap:8px;color:var(--text)">
+<input type="checkbox" name="enabled" value="true"` + checked + ` style="width:auto"> Enable phone (SMS OTP) sign-in</label>
+<div class="actions"><button type="submit">Save sign-in methods</button></div>
+</form></div>`
 }
 
 // ownerUsers is the users tab.

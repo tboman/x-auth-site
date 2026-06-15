@@ -820,6 +820,28 @@ func TestPGStorageTenantOwnerReassign(t *testing.T) {
 	}
 }
 
+// TestPGStorageTenantPhoneLogin exercises the per-tenant SMS-OTP opt-in column
+// (migration 000016): default false, toggleable, ErrNotFound on a miss.
+func TestPGStorageTenantPhoneLogin(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := s.CreateTenant(Tenant{ID: "ten_p", CompanyName: "P", Slug: "phone-p", OwnerEmail: "p@p.test", CreatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if tn, _ := s.GetTenant("ten_p"); tn.PhoneLoginEnabled {
+		t.Fatal("phone_login_enabled should default false")
+	}
+	if err := s.SetTenantPhoneLogin("ten_p", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if tn, _ := s.GetTenant("ten_p"); !tn.PhoneLoginEnabled {
+		t.Fatal("phone_login_enabled should be true after enable")
+	}
+	if err := s.SetTenantPhoneLogin("ten_missing", true); err != ErrNotFound {
+		t.Errorf("missing tenant: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestPGStorageAuthCodeOneShot(t *testing.T) {
 	s := newPGStorage(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)

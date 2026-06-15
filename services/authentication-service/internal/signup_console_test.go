@@ -393,6 +393,54 @@ func TestOwnerSwitchWorkspace(t *testing.T) {
 	}
 }
 
+// An owner toggles the per-tenant phone (SMS OTP) sign-in option from the
+// Integration tab; the flag flips and the /login chooser follows it.
+func TestOwnerTogglesPhoneLogin(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	cookie := sessionCookie(w, ownerSessionCookie)
+
+	get := func(tab string) string {
+		req := httptest.NewRequest(http.MethodGet, "/admin?tab="+tab, nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+	post := func(form url.Values) int {
+		req := httptest.NewRequest(http.MethodPost, "/admin/owner/phone-login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Default off: the Integration tab shows the toggle, unchecked.
+	if body := get("integration"); !strings.Contains(body, "Enable phone (SMS OTP) sign-in") {
+		t.Fatalf("integration tab missing phone toggle:\n%s", body)
+	}
+
+	// Enable → flag set + toggle renders checked.
+	if code := post(url.Values{"enabled": {"true"}}); code != http.StatusFound {
+		t.Fatalf("enable: want 302, got %d", code)
+	}
+	if tn, _ := store.GetTenant("ten_acme"); !tn.PhoneLoginEnabled {
+		t.Fatal("phone login not enabled after toggle on")
+	}
+	if body := get("integration"); !strings.Contains(body, `value="true" checked`) {
+		t.Errorf("toggle should render checked when enabled:\n%s", body)
+	}
+
+	// Disable (checkbox absent in the post) → flag cleared.
+	if code := post(url.Values{}); code != http.StatusFound {
+		t.Fatalf("disable: want 302, got %d", code)
+	}
+	if tn, _ := store.GetTenant("ten_acme"); tn.PhoneLoginEnabled {
+		t.Fatal("phone login still enabled after toggle off")
+	}
+}
+
 // The owner dashboard is tabbed: a nav with all sections, Overview by default,
 // and each tab renders only its own content.
 func TestOwnerDashboardTabs(t *testing.T) {

@@ -537,6 +537,12 @@ func (h *PhoneLoginHandlers) validEntry(w http.ResponseWriter, tenantID, redirec
 		h.errorPage(w, "This redirect URL isn't registered for this workspace.")
 		return false
 	}
+	// Phone login is per-tenant opt-in (migration 000016). Guard the flow itself,
+	// not just the /login chooser, so a direct hit on /login/phone can't bypass it.
+	if t, err := h.Store.GetTenant(tenantID); err != nil || !t.PhoneLoginEnabled {
+		h.errorPage(w, "Phone sign-in isn't enabled for this workspace.")
+		return false
+	}
 	return true
 }
 

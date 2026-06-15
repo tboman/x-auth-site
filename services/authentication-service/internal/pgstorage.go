@@ -824,10 +824,10 @@ func (s *PGStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 
 // getTenant runs the shared SELECT with a caller-supplied single-arg WHERE.
 func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
-	q := `SELECT id, company_name, slug, owner_email, created_at FROM tenants ` + where
+	q := `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled FROM tenants ` + where
 	var t Tenant
 	err := s.pool.QueryRow(bgCtx(), q, arg).Scan(
-		&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt,
+		&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
@@ -843,7 +843,7 @@ func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 // Owner email is no longer unique (a Google account may own several workspaces),
 // so login uses this to drive the workspace picker.
 func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
-	const q = `SELECT id, company_name, slug, owner_email, created_at
+	const q = `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled
 		FROM tenants WHERE owner_email = $1 ORDER BY slug`
 	rows, err := s.pool.Query(bgCtx(), q, email)
 	if err != nil {
@@ -853,7 +853,7 @@ func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	var out []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled); err != nil {
 			return nil, fmt.Errorf("pgstorage list_tenants_by_owner scan: %w", err)
 		}
 		t.CreatedAt = t.CreatedAt.UTC()
@@ -879,6 +879,20 @@ func (s *PGStorage) SetTenantOwner(tenantID, email string) error {
 		tenantID, company, slug, email)
 	if err != nil {
 		return fmt.Errorf("pgstorage set_tenant_owner: %w", err)
+	}
+	return nil
+}
+
+// SetTenantPhoneLogin toggles the tenant's SMS-OTP opt-in. ErrNotFound if the
+// tenant has no registry row.
+func (s *PGStorage) SetTenantPhoneLogin(tenantID string, enabled bool) error {
+	tag, err := s.pool.Exec(bgCtx(),
+		`UPDATE tenants SET phone_login_enabled = $2 WHERE id = $1`, tenantID, enabled)
+	if err != nil {
+		return fmt.Errorf("pgstorage set_tenant_phone_login: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

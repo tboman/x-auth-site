@@ -22,6 +22,14 @@ func phoneTestRouter(t *testing.T) (http.Handler, Storage) {
 	}); err != nil {
 		t.Fatalf("seed client: %v", err)
 	}
+	// Phone login is per-tenant opt-in (migration 000016) — the tenant must have a
+	// registry row with it enabled for the flow to run.
+	if _, err := store.CreateTenant(Tenant{
+		ID: "ten_acme", CompanyName: "Acme", Slug: "acme",
+		CreatedAt: time.Now().UTC(), PhoneLoginEnabled: true,
+	}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 	return r, store
 }
 

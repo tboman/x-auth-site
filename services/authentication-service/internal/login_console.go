@@ -13,10 +13,11 @@ import (
 // GET /login — the page a tenant's app sends users to so they can pick a
 // sign-in method. It is public: the user is not authenticated yet.
 //
-// Today the only working method is Google. Phone (SMS OTP) is shown but
-// disabled — the primary-login OTP flow is not built yet (identity_anchors is
-// in place for it; see migration 000007). When phone login lands it slots in
-// here next to Google with no change to integrators.
+// Google is always offered. Phone (SMS OTP) is per-tenant opt-in (migration
+// 000016, owner-dashboard toggle): it appears next to Google only when the
+// workspace owner enabled it, and is hidden otherwise — SMS delivery is still a
+// stub (fixed code 123456), so it must not be exposed to a tenant's end users
+// until that workspace deliberately turns it on.
 //
 // For Google the page simply forwards to the existing social-login leg
 // (/v1/social/{provider}/authorize), passing the caller's tenant_id,
@@ -92,11 +93,16 @@ func (h *LoginHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort workspace name for the heading. Derived/console tenants (no
-	// registry row) just get the generic title.
+	// Best-effort workspace name for the heading + the phone-login opt-in.
+	// Derived/console tenants (no registry row) get the generic title and, since
+	// they can't have opted in, no phone option.
 	heading := "Sign in"
-	if t, err := h.Store.GetTenant(tenantID); err == nil && t.CompanyName != "" {
-		heading = "Sign in to " + t.CompanyName
+	phoneEnabled := false
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		if t.CompanyName != "" {
+			heading = "Sign in to " + t.CompanyName
+		}
+		phoneEnabled = t.PhoneLoginEnabled
 	}
 
 	// Google button → the existing social leg with the caller's params passed
@@ -108,15 +114,22 @@ func (h *LoginHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		gv.Set("state", state)
 	}
 	googleHref := "/v1/social/" + loginGoogleProvider + "/authorize?" + gv.Encode()
-	// Phone sign-in carries the same params to the hosted phone flow.
-	phoneHref := "/login/phone?" + gv.Encode()
+
+	// Phone sign-in is per-tenant opt-in (migration 000016): only shown when the
+	// workspace owner enabled it. SMS delivery is still a stub, so it stays off by
+	// default and is hidden — not greyed — for tenants that haven't opted in.
+	phoneBlock := ""
+	if phoneEnabled {
+		phoneHref := "/login/phone?" + gv.Encode()
+		phoneBlock = `<div class="sep">or</div>
+<a class="btn secondary" href="` + html.EscapeString(phoneHref) + `">Continue with phone</a>`
+	}
 
 	h.page(w, http.StatusOK, "Sign in", `<h1>`+html.EscapeString(heading)+`</h1>
 <p class="muted">Choose how you'd like to continue.</p>
 <div class="panel">
 <a class="btn" href="`+html.EscapeString(googleHref)+`" data-device-fp>Continue with Google</a>
-<div class="sep">or</div>
-<a class="btn secondary" href="`+html.EscapeString(phoneHref)+`">Continue with phone</a>
+`+phoneBlock+`
 </div>`+deviceFPScript)
 }
 
