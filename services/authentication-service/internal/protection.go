@@ -95,6 +95,11 @@ func protectionACRs() []string {
 	return out
 }
 
+// defaultStepUpFreshness is how recently a successful step-up must have happened
+// for an equal-or-lower /authorize protection request to pass through without
+// re-challenging. Override with AUTHORIZE_STEPUP_FRESHNESS (a Go duration).
+const defaultStepUpFreshness = 5 * time.Minute
+
 // ---- per-session assurance ledger (mock) ----
 
 // ProtectionLedger remembers the highest protection rank a session has
@@ -131,7 +136,9 @@ func (l *ProtectionLedger) Record(sessionID string, rank int) {
 	if rank > cur.rank {
 		cur.rank = rank
 	}
-	cur.at = time.Now().UTC()
+	// Keep the monotonic clock reading (don't .UTC()) — `at` is internal and only
+	// used for duration math, so monotonic gives reliable, jump-proof freshness.
+	cur.at = time.Now()
 	l.m[sessionID] = cur
 }
 
@@ -146,10 +153,27 @@ func (l *ProtectionLedger) Achieved(sessionID string) int {
 	return l.m[sessionID].rank
 }
 
+// AchievedWithin returns the highest rank the session satisfied iff its most
+// recent step-up was no older than `within` — the freshness check behind "don't
+// re-challenge if the user authenticated recently". Returns 0 when the last
+// step-up is stale (or none), so /authorize challenges again.
+func (l *ProtectionLedger) AchievedWithin(sessionID string, within time.Duration) int {
+	if l == nil || sessionID == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gcLocked()
+	e, ok := l.m[sessionID]
+	if !ok || within <= 0 || time.Since(e.at) > within {
+		return 0
+	}
+	return e.rank
+}
+
 func (l *ProtectionLedger) gcLocked() {
-	cutoff := time.Now().UTC().Add(-l.ttl)
 	for k, e := range l.m {
-		if e.at.Before(cutoff) {
+		if time.Since(e.at) > l.ttl {
 			delete(l.m, k)
 		}
 	}
@@ -160,8 +184,13 @@ func (l *ProtectionLedger) gcLocked() {
 // challenge with the level's mapped method (stamping the token acr with the
 // protection level, not the method).
 func (h *OIDCHandlers) handleProtection(w http.ResponseWriter, r *http.Request, lvl ProtectionLevel, sessionID string, p pendingAuthorize) {
-	if sessionID != "" && h.Protection.Achieved(sessionID) >= lvl.Rank {
-		h.Logger.Info("protection_passthrough", "acr", lvl.ACR, "rank", lvl.Rank, "user_id", p.UserID, "tenant_id", p.TenantID)
+	fresh := h.StepUpFreshness
+	if fresh <= 0 {
+		fresh = defaultStepUpFreshness
+	}
+	if sessionID != "" && h.Protection.AchievedWithin(sessionID, fresh) >= lvl.Rank {
+		h.Logger.Info("protection_passthrough", "acr", lvl.ACR, "rank", lvl.Rank,
+			"user_id", p.UserID, "tenant_id", p.TenantID, "freshness", fresh.String())
 		h.mintCodeAndRedirect(w, r, AuthCode{
 			ClientID: p.ClientID, TenantID: p.TenantID, UserID: p.UserID,
 			RedirectURI: p.RedirectURI, Scope: p.Scope, State: p.State, Nonce: p.Nonce,

@@ -155,6 +155,9 @@ func main() {
 		// /authorize. MUST be unset in production (where a real authz-session
 		// cookie is required).
 		DevAutologin: config.Env("AUTHORIZE_DEV_AUTOLOGIN", "") == "true",
+		// A protection-level /authorize request passes through (no re-challenge)
+		// when the user stepped up at >= that level within this window. Default 5m.
+		StepUpFreshness: parseDurationEnv(logger, "AUTHORIZE_STEPUP_FRESHNESS"),
 	})
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the
@@ -171,6 +174,21 @@ func main() {
 		logger.Error("server_exited_with_error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// parseDurationEnv reads key as a Go duration (e.g. "5m"); empty or invalid
+// returns 0, letting the consumer fall back to its default.
+func parseDurationEnv(logger *slog.Logger, key string) time.Duration {
+	v := config.Env(key, "")
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		logger.Warn("invalid_duration_env", "key", key, "value", v, "err", err)
+		return 0
+	}
+	return d
 }
 
 // splitNonEmpty splits a comma-separated env value, dropping empty segments.

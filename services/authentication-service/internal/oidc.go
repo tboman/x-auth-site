@@ -74,6 +74,11 @@ type OIDCHandlers struct {
 	// through, so every protection request challenges).
 	Protection *ProtectionLedger
 
+	// StepUpFreshness is how recently a successful step-up must have happened for
+	// a protection-level /authorize request to pass through without re-challenging
+	// (AUTHORIZE_STEPUP_FRESHNESS). 0 → defaultStepUpFreshness.
+	StepUpFreshness time.Duration
+
 	// Analyzer records the device fingerprint + runs CAEP drift analysis at the
 	// /authorize step-up validation.
 	Analyzer *DeviceAnalyzer

@@ -59,6 +59,11 @@ type Deps struct {
 	// parameter / auto-create a dev user) for local development and tests.
 	// OFF in production, where /authorize requires a real authz-session cookie.
 	DevAutologin bool
+
+	// StepUpFreshness: a protection-level /authorize request passes through
+	// without re-challenging if the user stepped up at >= that level within this
+	// window (AUTHORIZE_STEPUP_FRESHNESS). 0 → defaultStepUpFreshness (5m).
+	StepUpFreshness time.Duration
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -118,9 +123,10 @@ func Router(d Deps) http.Handler {
 		Authenticator: d.Authenticator,
 		DevAutologin:  d.DevAutologin,
 		StepUps:       stepUps,
-		Protection:    protection,
-		Analyzer:      analyzer,
-		CAEP:          caepTx,
+		Protection:      protection,
+		Analyzer:        analyzer,
+		CAEP:            caepTx,
+		StepUpFreshness: d.StepUpFreshness,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}

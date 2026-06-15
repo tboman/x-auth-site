@@ -61,6 +61,67 @@ func TestProtectionLedger(t *testing.T) {
 	}
 }
 
+// AchievedWithin honours the recency window: a recent step-up counts, a stale
+// one (or a zero window) does not.
+func TestProtectionLedgerAchievedWithin(t *testing.T) {
+	l := NewProtectionLedger(time.Hour)
+	l.Record("ses_1", 5)
+	if l.AchievedWithin("ses_1", time.Hour) != 5 {
+		t.Fatalf("a just-recorded step-up should be within an hour")
+	}
+	time.Sleep(3 * time.Millisecond)
+	if l.AchievedWithin("ses_1", time.Millisecond) != 0 {
+		t.Fatalf("a step-up older than the window must be stale")
+	}
+	if l.AchievedWithin("ses_1", 0) != 0 {
+		t.Errorf("zero window → 0")
+	}
+	if l.AchievedWithin("missing", time.Hour) != 0 {
+		t.Errorf("unknown session → 0")
+	}
+	var nilL *ProtectionLedger
+	if nilL.AchievedWithin("x", time.Hour) != 0 {
+		t.Errorf("nil ledger → 0")
+	}
+}
+
+// handleProtection re-challenges when the recent step-up is outside the freshness
+// window, and passes through when it's inside.
+func TestProtectionFreshnessGate(t *testing.T) {
+	led := NewProtectionLedger(time.Hour)
+	h := &OIDCHandlers{
+		Store:  NewMemStorage(),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Issuer: "http://test.local",
+		Authenticator: &mockAuthenticator{ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
+			return []Authenticator{{ID: "atr", Method: "fido2", Status: "active"}}, nil
+		}},
+		Protection: led,
+	}
+	pend := pendingAuthorize{ClientID: DefaultClientID, TenantID: "ten_acme", UserID: "usr_1",
+		RedirectURI: "http://localhost:3000/callback", CodeChallenge: testPKCEChallenge}
+	lvl, _ := matchProtection("urn:xauth:protect:high:protected") // rank 1 ≤ 8 achieved
+
+	// Rank 8 achieved, but it's older than the freshness window → re-challenge.
+	led.Record("ses_stale", 8)
+	time.Sleep(3 * time.Millisecond)
+	h.StepUpFreshness = time.Millisecond
+	w := httptest.NewRecorder()
+	h.handleProtection(w, httptest.NewRequest(http.MethodGet, "/authorize", nil), lvl, "ses_stale", pend)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/authorize/verify") {
+		t.Fatalf("stale step-up should re-challenge, got %d", w.Code)
+	}
+
+	// A generous freshness lets the same recent step-up pass through to callback.
+	led.Record("ses_fresh", 8)
+	h.StepUpFreshness = time.Hour
+	w2 := httptest.NewRecorder()
+	h.handleProtection(w2, httptest.NewRequest(http.MethodGet, "/authorize", nil), lvl, "ses_fresh", pend)
+	if w2.Code != http.StatusFound {
+		t.Fatalf("fresh step-up should pass through (302), got %d (%s)", w2.Code, w2.Body.String())
+	}
+}
+
 // TestProtectionChallengeStampsACR: a protection-level request challenges with
 // the mapped method, and the minted token's acr is the PROTECTION LEVEL (not the
 // method), with amr carrying the method actually used.

@@ -446,6 +446,7 @@ The `/v1/sessions` routes stay as-is for back-compat with phase-1 callers.
 | `ROOT_EMAILS` | _(unset)_ | Comma-separated **break-glass root** accounts. On every boot they are allowed into `/admin` and re-granted **every** staff role (`administrator`, `architect`, `executive`) and reactivated if disabled — so an emergency account can't be locked out by a DB edit or accidental deactivation (ARCHITECTURE.md §A.8.2 break-glass). Use sparingly; their access is audited like any staff sign-in. |
 | `SIGNUP_RATE` | `10/1h` | Per-IP rate limit (`N/duration`, e.g. `5/30m`) on the self-service signup action `GET /admin/signup/start`. Malformed values log a warning and keep the default. |
 | `AUTHORIZE_DEV_AUTOLOGIN` | _(unset)_ | `true` re-enables the legacy `/authorize` behaviour (trust a `user_id` param / auto-create a dev user) for local dev. **Must be unset in production**, where `/authorize` requires a real `xauth_authz_session` cookie. |
+| `AUTHORIZE_STEPUP_FRESHNESS` | `5m` | A Go duration (e.g. `10m`, `1h`). A protection-level `/authorize` request passes straight through to the callback — no re-challenge — when the session stepped up at **≥** the requested level within this window; otherwise it re-challenges. Anchored to the most recent step-up. |
 
 ## Run locally
 
