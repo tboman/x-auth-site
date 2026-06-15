@@ -605,14 +605,15 @@ func (h *AdminConsoleHandlers) workspaceOwnerPanel(tenantID string) string {
 		owner = `<code>` + html.EscapeString(t.OwnerEmail) + `</code>`
 	}
 	return `<h2 style="margin-top:24px">Workspace owner</h2>
-<p class="muted">The owner manages this workspace at <code>/admin/owner</code>. Reassigning hands the workspace to a
-different Google account; an account may own more than one workspace and picks which to manage at login.</p>
+<p class="muted">The owner manages this workspace at <code>/admin/owner</code>. Assigning hands it to a Google account
+(works even for a tenant that was never self-service-provisioned); an account may own more than one workspace and
+picks which to manage at login.</p>
 <div class="panel"><table>
 <thead><tr><th>Current owner</th></tr></thead>
 <tbody><tr><td>` + owner + `</td></tr></tbody></table>
-<form method="post" action="/admin/tenants/owner" style="margin-top:16px" onsubmit="return confirm('Reassign this workspace to the entered account?')">
+<form method="post" action="/admin/tenants/owner" style="margin-top:16px" onsubmit="return confirm('Assign this workspace to the entered account?')">
 <input type="hidden" name="tenant_id" value="` + html.EscapeString(tenantID) + `">
-<label>Reassign owner (Google account email)</label>
+<label>Assign owner (Google account email)</label>
 <input type="email" name="email" placeholder="owner@example.com" required>
 <div class="actions"><button type="submit">Set owner</button></div>
 </form></div>`
@@ -636,11 +637,7 @@ func (h *AdminConsoleHandlers) SetWorkspaceOwner(w http.ResponseWriter, r *http.
 		h.loginError(w, "tenant_id and email are required.")
 		return
 	}
-	if err := h.Store.UpdateTenantOwner(tenantID, email); err != nil {
-		if err == ErrNotFound {
-			h.loginErrorStatus(w, http.StatusBadRequest, "That tenant does not exist.")
-			return
-		}
+	if err := h.Store.SetTenantOwner(tenantID, email); err != nil {
 		h.Logger.Error("admin_set_workspace_owner_failed", "err", err, "tenant_id", tenantID)
 		h.loginErrorStatus(w, http.StatusBadGateway, "Could not set the owner.")
 		return

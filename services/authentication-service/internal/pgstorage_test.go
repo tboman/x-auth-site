@@ -796,15 +796,27 @@ func TestPGStorageTenantOwnerReassign(t *testing.T) {
 	if _, err := s.CreateTenant(Tenant{ID: "ten_b", CompanyName: "B", Slug: "owner-b", OwnerEmail: "other@b.test", CreatedAt: now}); err != nil {
 		t.Fatalf("create b: %v", err)
 	}
-	if err := s.UpdateTenantOwner("ten_b", "x@a.test"); err != nil {
+	if err := s.SetTenantOwner("ten_b", "x@a.test"); err != nil {
 		t.Fatalf("reassign: %v", err)
 	}
 	owned, _ := s.ListTenantsByOwnerEmail("x@a.test")
 	if len(owned) != 2 || owned[0].ID != "ten_a" || owned[1].ID != "ten_b" {
 		t.Fatalf("owned by x (slug-ordered): want [ten_a ten_b], got %+v", owned)
 	}
-	if err := s.UpdateTenantOwner("ten_missing", "x@a.test"); err != ErrNotFound {
-		t.Errorf("reassign missing: want ErrNotFound, got %v", err)
+	// A tenant with no registry row (listed only via users/sessions) is synthesized
+	// on assignment via INSERT ... ON CONFLICT, so staff can promote it.
+	if err := s.SetTenantOwner("ten_orphan", "x@a.test"); err != nil {
+		t.Fatalf("assign orphan: %v", err)
+	}
+	if tn, err := s.GetTenant("ten_orphan"); err != nil || tn.OwnerEmail != "x@a.test" {
+		t.Fatalf("orphan registry row not created: %+v err=%v", tn, err)
+	}
+	// Re-assigning the now-existing row updates in place (no duplicate / no error).
+	if err := s.SetTenantOwner("ten_orphan", "y@a.test"); err != nil {
+		t.Fatalf("re-assign orphan: %v", err)
+	}
+	if tn, _ := s.GetTenant("ten_orphan"); tn.OwnerEmail != "y@a.test" {
+		t.Fatalf("orphan owner not updated, got %q", tn.OwnerEmail)
 	}
 }
 

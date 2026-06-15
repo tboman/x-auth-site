@@ -317,6 +317,22 @@ func TestStaffSetsWorkspaceOwner(t *testing.T) {
 	if tn, _ := store.GetTenant("ten_acme"); tn.OwnerEmail != "new@acme.test" {
 		t.Fatalf("owner not reassigned (and lowercased): %q", tn.OwnerEmail)
 	}
+
+	// Regression: assigning an owner to a tenant that exists only via users/sessions
+	// (no registry row — env-configured client, staging) must succeed, not 400
+	// "tenant does not exist". The registry row is synthesized.
+	if _, err := store.CreateUser(User{ID: "usr_orph", TenantID: "ten_orphan", Email: "u@orphan.test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed orphan user: %v", err)
+	}
+	if _, err := store.GetTenant("ten_orphan"); err != ErrNotFound {
+		t.Fatalf("precondition: ten_orphan should have no registry row, got %v", err)
+	}
+	if rec := post("/admin/tenants/owner", url.Values{"tenant_id": {"ten_orphan"}, "email": {"owner@orphan.test"}}); rec.Code != http.StatusFound {
+		t.Fatalf("assign orphan owner: want 302, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if tn, err := store.GetTenant("ten_orphan"); err != nil || tn.OwnerEmail != "owner@orphan.test" {
+		t.Fatalf("orphan registry row not created: %+v err=%v", tn, err)
+	}
 }
 
 // The administrator Advice domain lists /v1/advice history and filters by tenant

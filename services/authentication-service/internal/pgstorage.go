@@ -865,16 +865,20 @@ func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	return out, nil
 }
 
-// UpdateTenantOwner reassigns a workspace to a new owner email. Staff use this to
-// hand a workspace to a Google account; ErrNotFound if the tenant is unknown.
-func (s *PGStorage) UpdateTenantOwner(tenantID, email string) error {
-	tag, err := s.pool.Exec(bgCtx(),
-		`UPDATE tenants SET owner_email = $2 WHERE id = $1`, tenantID, email)
+// SetTenantOwner assigns a workspace owner, creating the registry row if absent.
+// Staff use this to hand a tenant to a Google account — including a tenant that
+// exists only via users/sessions (env-configured client, staging) and so has no
+// registry row yet. UPSERT on the id PK: an existing row just gets its
+// owner_email updated; a missing one is synthesized (see synthTenantIdentity).
+func (s *PGStorage) SetTenantOwner(tenantID, email string) error {
+	company, slug := synthTenantIdentity(tenantID)
+	_, err := s.pool.Exec(bgCtx(), `
+		INSERT INTO tenants (id, company_name, slug, owner_email, created_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (id) DO UPDATE SET owner_email = EXCLUDED.owner_email`,
+		tenantID, company, slug, email)
 	if err != nil {
-		return fmt.Errorf("pgstorage update_tenant_owner: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return fmt.Errorf("pgstorage set_tenant_owner: %w", err)
 	}
 	return nil
 }

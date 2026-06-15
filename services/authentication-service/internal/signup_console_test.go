@@ -256,15 +256,23 @@ func TestTenantOwnerStorageMem(t *testing.T) {
 		t.Fatalf("create b: %v", err)
 	}
 	// Reassign ten_b to x → an account may now own more than one workspace.
-	if err := s.UpdateTenantOwner("ten_b", "x@a.test"); err != nil {
+	if err := s.SetTenantOwner("ten_b", "x@a.test"); err != nil {
 		t.Fatalf("reassign: %v", err)
 	}
 	owned, _ := s.ListTenantsByOwnerEmail("x@a.test")
 	if len(owned) != 2 || owned[0].ID != "ten_a" || owned[1].ID != "ten_b" {
 		t.Fatalf("owned by x (slug-ordered): want [ten_a ten_b], got %+v", owned)
 	}
-	if err := s.UpdateTenantOwner("ten_missing", "x@a.test"); err != ErrNotFound {
-		t.Errorf("reassign missing: want ErrNotFound, got %v", err)
+	// Assigning an owner to a tenant with no registry row synthesizes one (a tenant
+	// listed only via users/sessions), so staff can promote it.
+	if err := s.SetTenantOwner("ten_orphan", "x@a.test"); err != nil {
+		t.Fatalf("assign orphan: %v", err)
+	}
+	if tn, err := s.GetTenant("ten_orphan"); err != nil || tn.OwnerEmail != "x@a.test" {
+		t.Fatalf("orphan registry row not created: %+v err=%v", tn, err)
+	}
+	if owned, _ := s.ListTenantsByOwnerEmail("x@a.test"); len(owned) != 3 {
+		t.Fatalf("x should own 3 workspaces now, got %d", len(owned))
 	}
 }
 
@@ -273,7 +281,7 @@ func TestTenantOwnerStorageMem(t *testing.T) {
 func TestReassignedOwnerLogsIntoTenant(t *testing.T) {
 	r, store := newAdminRouter(t)
 	driveSignup(t, r, store, "owner@beta.test", "Beta", "")
-	if err := store.UpdateTenantOwner("ten_beta", "new@beta.test"); err != nil {
+	if err := store.SetTenantOwner("ten_beta", "new@beta.test"); err != nil {
 		t.Fatalf("reassign: %v", err)
 	}
 
@@ -301,7 +309,7 @@ func TestOwnerLoginMultiTenantPicker(t *testing.T) {
 	driveSignup(t, r, store, "x@acme.test", "Acme", "")     // x owns Acme
 	driveSignup(t, r, store, "owner@beta.test", "Beta", "") // someone else owns Beta
 	// Staff reassigns Beta to x → x now owns both Acme and Beta.
-	if err := store.UpdateTenantOwner("ten_beta", "x@acme.test"); err != nil {
+	if err := store.SetTenantOwner("ten_beta", "x@acme.test"); err != nil {
 		t.Fatalf("reassign: %v", err)
 	}
 

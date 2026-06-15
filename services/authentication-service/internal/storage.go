@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -80,14 +81,18 @@ type Storage interface {
 	// owner email may own MORE THAN one workspace, so it is not unique:
 	// ListTenantsByOwnerEmail returns every workspace an account owns (login picks
 	// among them) and GetTenantByOwnerEmail returns any one (signup convenience).
-	// UpdateTenantOwner reassigns a tenant's workspace owner (staff). The Get*
-	// lookups return ErrNotFound on a miss.
+	// SetTenantOwner assigns a tenant's workspace owner (staff). It UPSERTS: if
+	// the tenant has no registry row yet — e.g. a tenant that exists only via
+	// users/sessions (env-configured OIDC client, staging) and so is listed by
+	// ListTenants but was never self-service-provisioned — a registry row is
+	// created so the account can manage it at /admin/owner. The Get* lookups
+	// return ErrNotFound on a miss.
 	CreateTenant(t Tenant) (Tenant, error)
 	GetTenant(id string) (Tenant, error)
 	GetTenantBySlug(slug string) (Tenant, error)
 	GetTenantByOwnerEmail(email string) (Tenant, error)
 	ListTenantsByOwnerEmail(email string) ([]Tenant, error)
-	UpdateTenantOwner(tenantID, email string) error
+	SetTenantOwner(tenantID, email string) error
 
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
@@ -661,18 +666,34 @@ func (s *MemStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	return out, nil
 }
 
-// UpdateTenantOwner reassigns a tenant's workspace owner. ErrNotFound if the
-// tenant has no registry row.
-func (s *MemStorage) UpdateTenantOwner(tenantID, email string) error {
+// SetTenantOwner assigns a tenant's workspace owner, creating a registry row if
+// the tenant has none yet (a tenant listed only via users/sessions). See the
+// Storage interface for why this upserts rather than failing on a miss.
+func (s *MemStorage) SetTenantOwner(tenantID, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, ok := s.tenants[tenantID]
-	if !ok {
-		return ErrNotFound
+	if t, ok := s.tenants[tenantID]; ok {
+		t.OwnerEmail = email
+		s.tenants[tenantID] = t
+		return nil
 	}
-	t.OwnerEmail = email
-	s.tenants[tenantID] = t
+	company, slug := synthTenantIdentity(tenantID)
+	s.tenants[tenantID] = Tenant{
+		ID: tenantID, CompanyName: company, Slug: slug, OwnerEmail: email, CreatedAt: time.Now().UTC(),
+	}
 	return nil
+}
+
+// synthTenantIdentity derives a company name + slug for a registry row
+// synthesized when staff assigns an owner to a tenant that was never
+// self-service-provisioned. The slug is the tenant id itself (already unique, so
+// it can't collide with a real slug and won't block a future signup's name).
+func synthTenantIdentity(tenantID string) (company, slug string) {
+	company = strings.TrimPrefix(tenantID, "ten_")
+	if company == "" {
+		company = tenantID
+	}
+	return company, tenantID
 }
 
 // ProvisionTenant writes the tenant, owner, session, and client under one lock.
