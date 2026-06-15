@@ -441,6 +441,64 @@ func TestOwnerTogglesPhoneLogin(t *testing.T) {
 	}
 }
 
+// The owner can set, replace, and remove a user's phone number from the Users
+// tab; a set number becomes a verified phone anchor.
+func TestOwnerManagesUserPhone(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	cookie := sessionCookie(w, ownerSessionCookie)
+	now := time.Now().UTC()
+	if _, err := store.CreateUser(User{ID: "usr_a", TenantID: "ten_acme", Email: "a@acme.test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	get := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/admin?tab=users", nil)
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+	post := func(path string, form url.Values) int {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(&http.Cookie{Name: ownerSessionCookie, Value: cookie})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if body := get(); !strings.Contains(body, "/admin/owner/identities/phone") || !strings.Contains(body, "a@acme.test") {
+		t.Fatalf("users tab missing identity management:\n%s", body)
+	}
+
+	// Set a phone (with messy formatting) → normalized, verified anchor.
+	if code := post("/admin/owner/identities/phone", url.Values{"user_id": {"usr_a"}, "phone": {"+1 555 111 2222"}}); code != http.StatusFound {
+		t.Fatalf("set phone: want 302, got %d", code)
+	}
+	a, err := store.GetIdentityAnchorByValue("ten_acme", AnchorPhone, "+15551112222")
+	if err != nil || a.UserID != "usr_a" || a.VerifiedAt == nil {
+		t.Fatalf("phone anchor wrong: %+v err=%v", a, err)
+	}
+
+	// Setting a different number replaces the old one.
+	if code := post("/admin/owner/identities/phone", url.Values{"user_id": {"usr_a"}, "phone": {"+15553334444"}}); code != http.StatusFound {
+		t.Fatalf("replace phone: want 302, got %d", code)
+	}
+	if _, err := store.GetIdentityAnchorByValue("ten_acme", AnchorPhone, "+15551112222"); err != ErrNotFound {
+		t.Fatal("old number must be removed on replace")
+	}
+	newA, _ := store.GetIdentityAnchorByValue("ten_acme", AnchorPhone, "+15553334444")
+
+	// Remove it.
+	if code := post("/admin/owner/identities/remove", url.Values{"anchor_id": {newA.ID}}); code != http.StatusFound {
+		t.Fatalf("remove: want 302, got %d", code)
+	}
+	if _, err := store.GetIdentityAnchorByValue("ten_acme", AnchorPhone, "+15553334444"); err != ErrNotFound {
+		t.Fatal("anchor must be gone after remove")
+	}
+}
+
 // The owner dashboard is tabbed: a nav with all sections, Overview by default,
 // and each tab renders only its own content.
 func TestOwnerDashboardTabs(t *testing.T) {

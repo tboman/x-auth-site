@@ -279,6 +279,8 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/select", signup.OwnerSelect)
 	mux.HandleFunc("POST /admin/owner/switch", signup.OwnerSwitch)
 	mux.HandleFunc("POST /admin/owner/phone-login", signup.SetPhoneLogin)
+	mux.HandleFunc("POST /admin/owner/identities/phone", signup.SetUserPhone)
+	mux.HandleFunc("POST /admin/owner/identities/remove", signup.RemoveIdentity)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 
 	// Tenant-scoped admin endpoints. A dedicated mux under /v1/ lets us wrap only

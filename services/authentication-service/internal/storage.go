@@ -110,6 +110,10 @@ type Storage interface {
 	// the lookup phone login uses to tell a known number from a new one. Returns
 	// ErrNotFound on a miss.
 	GetIdentityAnchorByValue(tenantID, anchorType, value string) (IdentityAnchor, error)
+	// DeleteIdentityAnchor removes one anchor by id, scoped to its tenant.
+	// ErrNotFound if no such anchor in that tenant. Used by owner identity
+	// management to replace/remove a user's phone number.
+	DeleteIdentityAnchor(tenantID, id string) error
 
 	// Device signals (append-only). RecordDeviceSignal logs one device
 	// observation captured at a validation stage; ListDeviceSignals returns a
@@ -806,6 +810,17 @@ func (s *MemStorage) GetIdentityAnchorByValue(tenantID, anchorType, value string
 		}
 	}
 	return IdentityAnchor{}, ErrNotFound
+}
+
+// DeleteIdentityAnchor removes one anchor by id, scoped to its tenant.
+func (s *MemStorage) DeleteIdentityAnchor(tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a, ok := s.anchors[id]; !ok || a.TenantID != tenantID {
+		return ErrNotFound
+	}
+	delete(s.anchors, id)
+	return nil
 }
 
 // ListIdentityAnchors returns every anchor in tenantID, newest first (CreatedAt

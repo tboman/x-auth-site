@@ -1012,6 +1012,19 @@ func (s *PGStorage) GetIdentityAnchorByValue(tenantID, anchorType, value string)
 	return a, err
 }
 
+// DeleteIdentityAnchor removes one anchor by id, scoped to its tenant.
+func (s *PGStorage) DeleteIdentityAnchor(tenantID, id string) error {
+	tag, err := s.pool.Exec(bgCtx(),
+		`DELETE FROM identity_anchors WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_identity_anchor: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ListIdentityAnchors returns every anchor in tenantID, newest first.
 func (s *PGStorage) ListIdentityAnchors(tenantID string) ([]IdentityAnchor, error) {
 	const q = `

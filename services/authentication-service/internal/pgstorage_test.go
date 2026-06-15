@@ -1065,4 +1065,18 @@ func TestPGStorageIdentityAnchors(t *testing.T) {
 	if got[1].VerifiedAt != nil {
 		t.Fatalf("phone anchor should be unverified, got %v", got[1].VerifiedAt)
 	}
+
+	// Delete is tenant-scoped: wrong tenant misses, right tenant removes.
+	if err := s.DeleteIdentityAnchor("ten_other", phone.ID); err != ErrNotFound {
+		t.Fatalf("cross-tenant delete: want ErrNotFound, got %v", err)
+	}
+	if err := s.DeleteIdentityAnchor("ten_acme", phone.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if remaining, _ := s.ListIdentityAnchors("ten_acme"); len(remaining) != 1 {
+		t.Fatalf("after delete want 1 anchor, got %d", len(remaining))
+	}
+	if err := s.DeleteIdentityAnchor("ten_acme", phone.ID); err != ErrNotFound {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
 }

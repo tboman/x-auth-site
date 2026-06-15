@@ -489,6 +489,82 @@ func (h *SignupConsoleHandlers) SetPhoneLogin(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
 }
 
+// SetUserPhone handles POST /admin/owner/identities/phone — the owner sets (or
+// replaces) a verified phone number for one of their users. The number becomes
+// a verified phone identity anchor, enabling SMS step-up and phone sign-in.
+func (h *SignupConsoleHandlers) SetUserPhone(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=users")
+		return
+	}
+	userID := strings.TrimSpace(r.PostForm.Get("user_id"))
+	phone, valid := normalizePhone(r.PostForm.Get("phone"))
+	if userID == "" || !valid {
+		h.errorPage(w, http.StatusBadRequest, "Enter a valid mobile number in international format, e.g. +15551234567.", "/admin?tab=users")
+		return
+	}
+	if _, err := h.Store.GetUser(owner.Tenant.ID, userID); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "That user isn't in your workspace.", "/admin?tab=users")
+		return
+	}
+	// The number can't already belong to a different user in this workspace.
+	if existing, err := h.Store.GetIdentityAnchorByValue(owner.Tenant.ID, AnchorPhone, phone); err == nil && existing.UserID != userID {
+		h.errorPage(w, http.StatusConflict, "That phone number is already assigned to another user.", "/admin?tab=users")
+		return
+	}
+	// Replace any existing phone anchors for this user so "set" means "set".
+	if anchors, err := h.Store.ListIdentityAnchors(owner.Tenant.ID); err == nil {
+		for _, a := range anchors {
+			if a.UserID == userID && a.Type == AnchorPhone {
+				_ = h.Store.DeleteIdentityAnchor(owner.Tenant.ID, a.ID)
+			}
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := h.Store.CreateIdentityAnchor(IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: userID, TenantID: owner.Tenant.ID,
+		Type: AnchorPhone, Value: phone, VerifiedAt: &now, CreatedAt: now,
+	}); err != nil {
+		h.Logger.Error("owner_set_phone_failed", "err", err, "tenant_id", owner.Tenant.ID, "user_id", userID)
+		h.errorPage(w, http.StatusBadGateway, "Could not set the phone number.", "/admin?tab=users")
+		return
+	}
+	h.Logger.Info("owner_user_phone_set", "tenant_id", owner.Tenant.ID, "user_id", userID, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=users", http.StatusFound)
+}
+
+// RemoveIdentity handles POST /admin/owner/identities/remove — the owner removes
+// one of their users' non-primary anchors (e.g. a phone number). Tenant-scoped:
+// an owner can only remove anchors in their own workspace.
+func (h *SignupConsoleHandlers) RemoveIdentity(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=users")
+		return
+	}
+	anchorID := strings.TrimSpace(r.PostForm.Get("anchor_id"))
+	if anchorID == "" {
+		h.errorPage(w, http.StatusBadRequest, "anchor_id is required.", "/admin?tab=users")
+		return
+	}
+	if err := h.Store.DeleteIdentityAnchor(owner.Tenant.ID, anchorID); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_remove_identity_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not remove the identity.", "/admin?tab=users")
+		return
+	}
+	h.Logger.Info("owner_identity_removed", "tenant_id", owner.Tenant.ID, "anchor_id", anchorID, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=users", http.StatusFound)
+}
+
 // finishOwnerLogin mints an owner session for email in tenantID, sets the owner
 // cookie, and sends the user to their dashboard.
 func (h *SignupConsoleHandlers) finishOwnerLogin(w http.ResponseWriter, r *http.Request, tenantID, email string) {
@@ -734,9 +810,43 @@ so leave phone off for real end users until it's announced.</p>
 func (h *SignupConsoleHandlers) ownerUsers(owner ownerSession) string {
 	users, _ := h.Store.ListUsers(owner.Tenant.ID, 0, time.Time{})
 	anchors, _ := h.Store.ListIdentityAnchors(owner.Tenant.ID)
-	return `<p class="muted">Everyone who has signed in to your application. Each is anchored by their Google-verified
-email; phone and passkey anchors will appear here once those sign-in methods are available.</p>` +
-		identityTable(users, anchors)
+	byUser := anchorsByUser(anchors)
+	const inputStyle = `padding:8px 10px;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;font:inherit`
+
+	var rows strings.Builder
+	if len(users) == 0 {
+		rows.WriteString(`<tr><td colspan="3" class="muted">No users yet.</td></tr>`)
+	}
+	for _, u := range users {
+		name := u.Email
+		if name == "" {
+			name = u.ID
+		}
+		// Current phone anchor (if any) with a remove control.
+		phoneCell := `<span class="muted">none</span>`
+		for _, a := range byUser[u.ID] {
+			if a.Type != AnchorPhone {
+				continue
+			}
+			phoneCell = `<code>` + html.EscapeString(a.Value) + `</code> ` +
+				`<form method="post" action="/admin/owner/identities/remove" style="display:inline" onsubmit="return confirm('Remove this phone number?')">` +
+				`<input type="hidden" name="anchor_id" value="` + html.EscapeString(a.ID) + `">` +
+				`<button class="danger" type="submit" style="padding:4px 9px">Remove</button></form>`
+			break
+		}
+		setForm := `<form method="post" action="/admin/owner/identities/phone" style="display:flex;gap:6px;margin-top:8px">` +
+			`<input type="hidden" name="user_id" value="` + html.EscapeString(u.ID) + `">` +
+			`<input type="tel" name="phone" placeholder="+15551234567" required style="` + inputStyle + `">` +
+			`<button class="secondary" type="submit" style="padding:6px 12px">Set</button></form>`
+		rows.WriteString(`<tr><td><code>` + html.EscapeString(name) + `</code></td><td>` + phoneCell + setForm +
+			`</td><td class="muted">` + html.EscapeString(u.CreatedAt.UTC().Format(time.RFC3339)) + `</td></tr>`)
+	}
+	return `<p class="muted">Everyone who has signed in to your application. Email is the Google-verified primary anchor.
+Set a verified <strong>phone number</strong> for any user manually — it enables SMS verification (step-up) and phone
+sign-in for that account.</p>
+<div class="panel"><table>
+<thead><tr><th>User</th><th>Phone</th><th>Created (UTC)</th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table></div>`
 }
 
 // ownerSessions is the sessions tab (active sessions + live step-ups, revocable).
