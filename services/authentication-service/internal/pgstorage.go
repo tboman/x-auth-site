@@ -494,6 +494,63 @@ func (s *PGStorage) DeleteTransactionType(tenantID, name string) error {
 	return nil
 }
 
+// ---- Advice calls ----
+
+func (s *PGStorage) RecordAdviceCall(c AdviceCall) error {
+	const q = `
+		INSERT INTO advice_calls
+			(id, tenant_id, client_id, user_id, session_id, device_id, transaction_type, acr, rank, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+	_, err := s.pool.Exec(bgCtx(), q,
+		c.ID, c.TenantID, nullable(c.ClientID), nullable(c.UserID), nullable(c.SessionID), nullable(c.DeviceID),
+		c.TransactionType, c.ACR, c.Rank, c.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("pgstorage record_advice_call: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	q := `SELECT id, tenant_id, client_id, user_id, session_id, device_id, transaction_type, acr, rank, created_at
+	        FROM advice_calls WHERE 1=1`
+	args := []any{}
+	if filter.TenantID != "" {
+		args = append(args, filter.TenantID)
+		q += fmt.Sprintf(" AND tenant_id = $%d", len(args))
+	}
+	if filter.UserID != "" {
+		args = append(args, filter.UserID)
+		q += fmt.Sprintf(" AND user_id = $%d", len(args))
+	}
+	args = append(args, limit)
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+
+	rows, err := s.pool.Query(bgCtx(), q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_advice_calls: %w", err)
+	}
+	defer rows.Close()
+	out := make([]AdviceCall, 0)
+	for rows.Next() {
+		var c AdviceCall
+		var clientID, userID, sessionID, deviceID *string
+		if err := rows.Scan(&c.ID, &c.TenantID, &clientID, &userID, &sessionID, &deviceID,
+			&c.TransactionType, &c.ACR, &c.Rank, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		c.ClientID = derefString(clientID)
+		c.UserID = derefString(userID)
+		c.SessionID = derefString(sessionID)
+		c.DeviceID = derefString(deviceID)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ---- Auth codes ----
 
 // PutAuthCode stores a pending authorization code.

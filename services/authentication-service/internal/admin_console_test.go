@@ -281,6 +281,45 @@ func TestMonitoringPanelsRenderLiveData(t *testing.T) {
 	}
 }
 
+// The administrator Advice domain lists /v1/advice history and filters by tenant
+// and user id.
+func TestAdviceDomainRendersAndFilters(t *testing.T) {
+	r, store := newAdminRouter(t, "tomasboman@gmail.com") // administrator role
+	now := time.Now().UTC()
+	_ = store.RecordAdviceCall(AdviceCall{ID: "adv_1", TenantID: "ten_acme", UserID: "usr_a", TransactionType: "payment.high", ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CreatedAt: now})
+	_ = store.RecordAdviceCall(AdviceCall{ID: "adv_2", TenantID: "ten_beta", UserID: "usr_b", TransactionType: "login", ACR: "urn:xauth:protect:high:protected", Rank: 1, CreatedAt: now})
+
+	sess := seedAdminSession(t, store, "tomasboman@gmail.com")
+	cb := driveAdminCallback(t, r, sess.ID)
+	cookie := sessionCookie(cb, adminSessionCookie)
+	get := func(q string) string {
+		req := httptest.NewRequest(http.MethodGet, "/admin?domain=advice"+q, nil)
+		req.AddCookie(&http.Cookie{Name: adminSessionCookie, Value: cookie})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("advice domain %q: want 200, got %d", q, w.Code)
+		}
+		return w.Body.String()
+	}
+
+	// Unfiltered: both calls + the nav tab.
+	body := get("")
+	for _, want := range []string{"Advice history", "ten_acme", "ten_beta", "usr_a", "usr_b", "domain=advice"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("unfiltered advice domain missing %q", want)
+		}
+	}
+	// Filter by tenant: ten_acme present, ten_beta gone.
+	if body = get("&tenant=ten_acme"); !strings.Contains(body, "ten_acme") || strings.Contains(body, "ten_beta") {
+		t.Errorf("tenant filter not applied")
+	}
+	// Search by user: usr_b present, usr_a gone.
+	if body = get("&user=usr_b"); !strings.Contains(body, "usr_b") || strings.Contains(body, "usr_a") {
+		t.Errorf("user filter not applied")
+	}
+}
+
 // operator maps to the monitoring domain only, and the allStaffRoles list stays
 // in sync with rolePermissions/allowedDomains.
 func TestOperatorRoleAndStaffRoleInvariant(t *testing.T) {

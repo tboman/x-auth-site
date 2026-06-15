@@ -325,3 +325,27 @@ type TransactionType struct {
 	ACR       string    `json:"acr"` // a protection-level ACR (urn:xauth:protect:…)
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// AdviceCall is one append-only record of a /v1/advice request and the level it
+// returned — the staff "advice history" view reads these (filterable by tenant
+// and user). The subject ids are whatever the caller supplied.
+type AdviceCall struct {
+	ID              string    `json:"id"`
+	TenantID        string    `json:"tenant_id"`
+	ClientID        string    `json:"client_id"`
+	UserID          string    `json:"user_id"`
+	SessionID       string    `json:"session_id"`
+	DeviceID        string    `json:"device_id"`
+	TransactionType string    `json:"transaction_type"`
+	ACR             string    `json:"acr"`
+	Rank            int       `json:"rank"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// AdviceCallFilter narrows the advice-history listing. Empty fields match
+// everything; Limit <= 0 uses a default cap.
+type AdviceCallFilter struct {
+	TenantID string
+	UserID   string
+	Limit    int
+}

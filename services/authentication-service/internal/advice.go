@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/xentranet/x-auth/pkg/httpx"
 )
@@ -94,6 +97,15 @@ func (h *AdviceHandlers) Advise(w http.ResponseWriter, r *http.Request) {
 	h.Logger.Info("advice_issued",
 		"tenant_id", client.TenantID, "client_id", client.ClientID, "transaction_type", tt.Name,
 		"acr", lvl.ACR, "rank", lvl.Rank, "session_id", req.SessionID, "user_id", req.UserID, "device_id", req.DeviceID)
+
+	// Append to the advice history (staff console reads it). Best-effort.
+	if err := h.Store.RecordAdviceCall(AdviceCall{
+		ID: "adv_" + uuid.NewString(), TenantID: client.TenantID, ClientID: client.ClientID,
+		UserID: req.UserID, SessionID: req.SessionID, DeviceID: req.DeviceID,
+		TransactionType: tt.Name, ACR: lvl.ACR, Rank: lvl.Rank, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		h.Logger.Error("advice_record_failed", "err", err, "tenant_id", client.TenantID)
+	}
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"tenant_id":        client.TenantID,

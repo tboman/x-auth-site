@@ -113,6 +113,49 @@ func TestAdviceMissingType400(t *testing.T) {
 	}
 }
 
+// A successful advice call is appended to the history.
+func TestAdviceRecordsHistory(t *testing.T) {
+	h, clientID, secret := adviceTestSetup(t)
+	w := httptest.NewRecorder()
+	h.Advise(w, adviceReq(`{"user_id":"usr_1","session_id":"ses_1","device_id":"dev_1","transaction_type":"payment.high"}`, clientID, secret))
+	if w.Code != http.StatusOK {
+		t.Fatalf("advise: %d (%s)", w.Code, w.Body.String())
+	}
+	calls, _ := h.Store.ListAdviceCalls(AdviceCallFilter{})
+	if len(calls) != 1 {
+		t.Fatalf("history len = %d, want 1", len(calls))
+	}
+	c := calls[0]
+	if c.TenantID != "ten_acme" || c.UserID != "usr_1" || c.TransactionType != "payment.high" || c.Rank != 8 {
+		t.Fatalf("recorded call wrong: %+v", c)
+	}
+}
+
+func TestAdviceCallStorageFilters(t *testing.T) {
+	s := NewMemStorage()
+	now := time.Now().UTC()
+	mk := func(id, tenant, user string) AdviceCall {
+		return AdviceCall{ID: id, TenantID: tenant, UserID: user, TransactionType: "t", ACR: "urn:xauth:protect:high:protected", Rank: 1, CreatedAt: now}
+	}
+	for _, c := range []AdviceCall{mk("a", "ten_a", "u1"), mk("b", "ten_a", "u2"), mk("c", "ten_b", "u1")} {
+		if err := s.RecordAdviceCall(c); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	if all, _ := s.ListAdviceCalls(AdviceCallFilter{}); len(all) != 3 || all[0].ID != "c" { // newest-first
+		t.Fatalf("all: %+v", all)
+	}
+	if got, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "ten_a"}); len(got) != 2 {
+		t.Fatalf("by tenant: %d", len(got))
+	}
+	if got, _ := s.ListAdviceCalls(AdviceCallFilter{UserID: "u1"}); len(got) != 2 {
+		t.Fatalf("by user: %d", len(got))
+	}
+	if got, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "ten_a", UserID: "u1"}); len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("by both: %+v", got)
+	}
+}
+
 func TestTransactionTypeStorageMem(t *testing.T) {
 	s := NewMemStorage()
 	now := time.Now().UTC()

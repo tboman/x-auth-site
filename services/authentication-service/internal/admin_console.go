@@ -242,6 +242,8 @@ func (h *AdminConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 		content = h.renderMarketingDomain()
 	case "monitoring":
 		content = h.renderMonitoringDomain(r)
+	case "advice":
+		content = h.renderAdviceDomain(r)
 	}
 
 	h.pageSignedIn(w, http.StatusOK, "X-Auth admin", admin.User.Email, `<h1>Administration</h1>
@@ -354,6 +356,56 @@ func (h *AdminConsoleHandlers) renderMonitoringDomain(r *http.Request) string {
 	}
 	b.WriteString(`</div>`)
 	return b.String()
+}
+
+// renderAdviceDomain shows the /v1/advice call history with tenant + user-id
+// filters (administrator role). Filters live in the query string so they survive
+// in the URL; the form submits a GET that keeps domain=advice.
+func (h *AdminConsoleHandlers) renderAdviceDomain(r *http.Request) string {
+	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	user := strings.TrimSpace(r.URL.Query().Get("user"))
+	calls, _ := h.Store.ListAdviceCalls(AdviceCallFilter{TenantID: tenant, UserID: user, Limit: 200})
+
+	idCell := func(s string) string {
+		if s == "" {
+			return `<span class="muted">—</span>`
+		}
+		return `<code>` + html.EscapeString(s) + `</code>`
+	}
+	var rows strings.Builder
+	if len(calls) == 0 {
+		note := ""
+		if tenant != "" || user != "" {
+			note = " matching the filter"
+		}
+		rows.WriteString(`<tr><td colspan="6" class="muted">No advice calls` + note + ` yet.</td></tr>`)
+	}
+	for _, c := range calls {
+		level := html.EscapeString(c.ACR)
+		if l, ok := protectionByACR(c.ACR); ok {
+			level = html.EscapeString(l.Band+" : "+l.Name) + ` <span class="muted">(rank ` + itoa(l.Rank) + `)</span>`
+		}
+		rows.WriteString(`<tr><td><code>` + c.CreatedAt.UTC().Format("2006-01-02 15:04:05") + `</code></td>` +
+			`<td>` + idCell(c.TenantID) + `</td>` +
+			`<td><code>` + html.EscapeString(c.TransactionType) + `</code></td>` +
+			`<td>` + level + `</td>` +
+			`<td>` + idCell(c.UserID) + `</td>` +
+			`<td>` + idCell(c.DeviceID) + `</td></tr>`)
+	}
+
+	return `<h2>Advice history</h2>
+<p class="muted">Every <code>POST /v1/advice</code> call and the protection level it returned. Filter by tenant and search by user id.</p>
+<form method="get" action="/admin" style="margin-bottom:8px">
+<input type="hidden" name="domain" value="advice">
+<label>Tenant ID</label>
+<input type="text" name="tenant" value="` + html.EscapeString(tenant) + `" placeholder="ten_…">
+<label>User ID</label>
+<input type="text" name="user" value="` + html.EscapeString(user) + `" placeholder="usr_…">
+<div class="actions"><button type="submit">Filter</button><a class="btn secondary" href="/admin?domain=advice">Clear</a></div>
+</form>
+<div class="panel"><table>
+<thead><tr><th>Time (UTC)</th><th>Tenant</th><th>Transaction</th><th>Level</th><th>User</th><th>Device</th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table></div>`
 }
 
 // healthBadge renders a coloured status dot + label for a service probe result.
@@ -837,6 +889,7 @@ func allowedDomains(roles []string) []string {
 		switch r {
 		case "administrator":
 			hasDomain["tenants"] = true
+			hasDomain["advice"] = true
 		case "architect":
 			hasDomain["documents"] = true
 		case "executive":
@@ -848,6 +901,9 @@ func allowedDomains(roles []string) []string {
 	var out []string
 	if hasDomain["tenants"] {
 		out = append(out, "tenants")
+	}
+	if hasDomain["advice"] {
+		out = append(out, "advice")
 	}
 	if hasDomain["documents"] {
 		out = append(out, "documents")

@@ -132,6 +132,12 @@ type Storage interface {
 	GetTransactionType(tenantID, name string) (TransactionType, error)
 	DeleteTransactionType(tenantID, name string) error
 
+	// Advice calls (append-only). RecordAdviceCall logs one /v1/advice request;
+	// ListAdviceCalls returns matching records newest-first for the staff history
+	// view (filtered by tenant and/or user; empty filter fields match all).
+	RecordAdviceCall(c AdviceCall) error
+	ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, error)
+
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
 	// long-expired sessions, returning the total number of entries removed.
 	// Called periodically by the background sweeper in cmd/main.go.
@@ -148,7 +154,8 @@ type MemStorage struct {
 	clients  map[string]OIDCClient     // keyed by client id
 	tenants  map[string]Tenant         // keyed by tenant id
 	anchors  map[string]IdentityAnchor // keyed by anchor id
-	devSigs  []DeviceSignal            // append-only device-signal log
+	devSigs   []DeviceSignal           // append-only device-signal log
+	adviceLog []AdviceCall             // append-only /v1/advice call log
 	staffUsr map[string]StaffUser      // keyed by user id
 	staffRol map[string][]string       // keyed by user id
 	txnTypes map[string]TransactionType // keyed by tenant_id\x00name
@@ -927,5 +934,36 @@ func (s *MemStorage) DeleteTransactionType(tenantID, name string) error {
 	}
 	delete(s.txnTypes, k)
 	return nil
+}
+
+// ---- Advice calls ----
+
+func (s *MemStorage) RecordAdviceCall(c AdviceCall) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adviceLog = append(s.adviceLog, c)
+	return nil
+}
+
+func (s *MemStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	out := make([]AdviceCall, 0)
+	// append-ordered (oldest→newest); walk backwards for newest-first.
+	for i := len(s.adviceLog) - 1; i >= 0 && len(out) < limit; i-- {
+		c := s.adviceLog[i]
+		if filter.TenantID != "" && c.TenantID != filter.TenantID {
+			continue
+		}
+		if filter.UserID != "" && c.UserID != filter.UserID {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }
 

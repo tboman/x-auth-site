@@ -41,7 +41,7 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types",
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types, advice_calls",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -737,6 +737,35 @@ func TestPGStorageTransactionTypes(t *testing.T) {
 	}
 	if err := s.DeleteTransactionType("tenant-a", "payment.high"); err != ErrNotFound {
 		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
+}
+
+// TestPGStorageAdviceCalls exercises the advice_calls schema (migration 000012)
+// and the tenant/user filters the staff history view uses.
+func TestPGStorageAdviceCalls(t *testing.T) {
+	s := newPGStorage(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	mk := func(id, tenant, user string, n int) AdviceCall {
+		return AdviceCall{ID: id, TenantID: tenant, ClientID: "cli", UserID: user, SessionID: "ses", DeviceID: "dev",
+			TransactionType: "payment.high", ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CreatedAt: base.Add(time.Duration(n) * time.Second)}
+	}
+	for _, c := range []AdviceCall{mk("adv_a", "tenant-a", "u1", 1), mk("adv_b", "tenant-a", "u2", 2), mk("adv_c", "tenant-b", "u1", 3)} {
+		if err := s.RecordAdviceCall(c); err != nil {
+			t.Fatalf("record %s: %v", c.ID, err)
+		}
+	}
+	if all, err := s.ListAdviceCalls(AdviceCallFilter{}); err != nil || len(all) != 3 || all[0].ID != "adv_c" {
+		t.Fatalf("all (newest-first): %v %+v", err, all)
+	}
+	if got, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "tenant-a"}); len(got) != 2 {
+		t.Fatalf("by tenant: %d", len(got))
+	}
+	if got, _ := s.ListAdviceCalls(AdviceCallFilter{UserID: "u1"}); len(got) != 2 {
+		t.Fatalf("by user: %d", len(got))
+	}
+	got, _ := s.ListAdviceCalls(AdviceCallFilter{TenantID: "tenant-a", UserID: "u1"})
+	if len(got) != 1 || got[0].ID != "adv_a" || got[0].DeviceID != "dev" || got[0].Rank != 8 {
+		t.Fatalf("by both / round-trip: %+v", got)
 	}
 }
 
