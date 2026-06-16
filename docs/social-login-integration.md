@@ -224,6 +224,33 @@ back-compat:
 All ten values are advertised in discovery under `acr_values_supported` at
 `/.well-known/openid-configuration`.
 
+## Advice & the `transaction_id` (security contract)
+
+Your backend can ask X-Auth what assurance a transaction needs by calling
+`POST /v1/advice` (confidential client auth) with a `transaction_type` and the
+subject context (`session_id`, `user_id`, `device_id`). The response returns the
+required `acr` plus a unique **`transaction_id`**. You carry that id into
+`/authorize?…&transaction_id=…`; it comes back on the callback
+(`?code=&state=&transaction_id=`) and as a `transaction_id` claim in the signed
+`id_token`, so you can correlate the completed authentication with the advice
+you requested.
+
+**`transaction_id` is a correlation handle, NOT an authorization token.** It is
+not secret (it travels in URLs and logs). X-Auth binds it server-side — at
+`/authorize` a presented id must be a *known, not-yet-used* advice call for the
+*same tenant*, issued for the *same user* (when the advice named one), at a
+requested level *>= the advised rank*; otherwise the request is rejected (`400`
+unknown/replayed/downgrade, `403` subject mismatch), and completion is
+single-use. But your backend is the last line of defence: when you act on a
+completed transaction, **verify the signed `id_token`** and check that
+
+- `sub` is the user the action is for,
+- `acr` meets-or-exceeds the level the action requires, and
+- `transaction_id` matches the advice record you stored.
+
+Never treat "I saw `transaction_id` X" as proof the action is approved — always
+check `sub` and `acr` from the verified token.
+
 ## Local trial (cryptofreight on your laptop)
 
 1. Run authentication-service with Google credentials (see the service

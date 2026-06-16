@@ -555,16 +555,58 @@ func (s *PGStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, erro
 	return out, rows.Err()
 }
 
+func (s *PGStorage) GetAdviceCall(tenantID, transactionID string) (AdviceCall, error) {
+	const q = `SELECT id, tenant_id, client_id, user_id, session_id, device_id, transaction_type, acr, rank,
+	                  created_at, completed_at, completed_user_id, completed_acr
+	             FROM advice_calls WHERE id = $1 AND tenant_id = $2`
+	var c AdviceCall
+	var clientID, userID, sessionID, deviceID, completedUserID, completedACR *string
+	err := s.pool.QueryRow(bgCtx(), q, transactionID, tenantID).Scan(
+		&c.ID, &c.TenantID, &clientID, &userID, &sessionID, &deviceID,
+		&c.TransactionType, &c.ACR, &c.Rank, &c.CreatedAt,
+		&c.CompletedAt, &completedUserID, &completedACR)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdviceCall{}, ErrNotFound
+	}
+	if err != nil {
+		return AdviceCall{}, fmt.Errorf("pgstorage get_advice_call: %w", err)
+	}
+	c.ClientID = derefString(clientID)
+	c.UserID = derefString(userID)
+	c.SessionID = derefString(sessionID)
+	c.DeviceID = derefString(deviceID)
+	c.CompletedUserID = derefString(completedUserID)
+	c.CompletedACR = derefString(completedACR)
+	return c, nil
+}
+
+// MarkAdviceCallCompleted atomically transitions pending → completed. The
+// `completed_at IS NULL` guard makes it single-use: a second call affects no
+// rows, and a follow-up existence check distinguishes ErrConflict (already
+// completed) from ErrNotFound (unknown id).
 func (s *PGStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, acr string, at time.Time) error {
 	const q = `
 		UPDATE advice_calls
 		   SET completed_at = $3, completed_user_id = $4, completed_acr = $5
-		 WHERE id = $1 AND tenant_id = $2`
-	_, err := s.pool.Exec(bgCtx(), q, transactionID, tenantID, at.UTC(), nullable(userID), nullable(acr))
+		 WHERE id = $1 AND tenant_id = $2 AND completed_at IS NULL`
+	tag, err := s.pool.Exec(bgCtx(), q, transactionID, tenantID, at.UTC(), nullable(userID), nullable(acr))
 	if err != nil {
 		return fmt.Errorf("pgstorage mark_advice_call_completed: %w", err)
 	}
-	return nil
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	// No row updated: either it doesn't exist or it was already completed.
+	var exists bool
+	if err := s.pool.QueryRow(bgCtx(),
+		`SELECT EXISTS(SELECT 1 FROM advice_calls WHERE id = $1 AND tenant_id = $2)`,
+		transactionID, tenantID).Scan(&exists); err != nil {
+		return fmt.Errorf("pgstorage mark_advice_call_completed exists: %w", err)
+	}
+	if exists {
+		return ErrConflict
+	}
+	return ErrNotFound
 }
 
 // ---- Auth codes ----

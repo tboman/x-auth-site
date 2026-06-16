@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -285,7 +286,51 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		CodeChallenge: codeChallenge,
 		TransactionID: transactionID,
 	}
-	if lvl, ok := matchProtection(q.Get("acr_values")); ok {
+
+	lvl, lvlOK := matchProtection(q.Get("acr_values"))
+
+	// Advice → /authorize binding. When a transaction_id is presented it must be a
+	// known, not-yet-completed advice call for THIS tenant, issued for THIS user
+	// (when the advice named one), and the requested protection level must
+	// meet-or-exceed the advised rank. This stops a client-supplied transaction_id
+	// from being a free-floating correlation token: it can't be forged, replayed,
+	// bound to a different subject, or used to downgrade the required assurance.
+	if transactionID != "" {
+		advice, err := h.Store.GetAdviceCall(effectiveTenant, transactionID)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			h.Logger.Warn("authorize_transaction_unknown", "transaction_id", transactionID, "tenant_id", effectiveTenant, "user_id", user.ID)
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "unknown transaction_id")
+			return
+		case err != nil:
+			h.Logger.Error("authorize_transaction_lookup_failed", "err", err, "tenant_id", effectiveTenant)
+			httpx.WriteError(w, http.StatusBadGateway, "internal_error", "could not resolve transaction_id")
+			return
+		}
+		if advice.CompletedAt != nil {
+			h.Logger.Warn("authorize_transaction_replay", "transaction_id", transactionID, "tenant_id", effectiveTenant, "user_id", user.ID)
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "transaction_id has already been used")
+			return
+		}
+		if advice.UserID != "" && advice.UserID != user.ID {
+			h.Logger.Warn("authorize_transaction_subject_mismatch", "transaction_id", transactionID,
+				"tenant_id", effectiveTenant, "advice_user", advice.UserID, "auth_user", user.ID)
+			httpx.WriteError(w, http.StatusForbidden, "access_denied", "transaction_id was issued for a different user")
+			return
+		}
+		reqRank := 0
+		if lvlOK {
+			reqRank = lvl.Rank
+		}
+		if advice.Rank > 0 && reqRank < advice.Rank {
+			h.Logger.Warn("authorize_transaction_downgrade", "transaction_id", transactionID,
+				"tenant_id", effectiveTenant, "advised_rank", advice.Rank, "requested_rank", reqRank)
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "acr_values must request at least the advised protection level")
+			return
+		}
+	}
+
+	if lvlOK {
 		h.handleProtection(w, r, lvl, authzSessionID, pend)
 		return
 	}

@@ -154,9 +154,14 @@ type Storage interface {
 	// view (filtered by tenant and/or user; empty filter fields match all).
 	RecordAdviceCall(c AdviceCall) error
 	ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, error)
-	// MarkAdviceCallCompleted stamps the advice row whose id == transactionID (and
-	// tenant matches) as completed at the given auth context. A no-op (nil) if no
-	// such row exists — the caller may pass a transaction_id we never issued.
+	// GetAdviceCall returns one advice row by id within a tenant, or ErrNotFound.
+	// /authorize uses it to validate a transaction_id (subject + level binding,
+	// single-use) instead of trusting the client-supplied value.
+	GetAdviceCall(tenantID, transactionID string) (AdviceCall, error)
+	// MarkAdviceCallCompleted atomically stamps the advice row whose id ==
+	// transactionID (tenant-scoped) as completed — but only if it is still
+	// pending. ErrNotFound if no such row; ErrConflict if it was already
+	// completed (single-use), so the caller can skip re-emitting side effects.
 	MarkAdviceCallCompleted(tenantID, transactionID, userID, acr string, at time.Time) error
 
 	// Maintenance. PurgeExpired removes expired tokens, stale auth codes, and
@@ -1057,11 +1062,25 @@ func (s *MemStorage) ListAdviceCalls(filter AdviceCallFilter) ([]AdviceCall, err
 	return out, nil
 }
 
+func (s *MemStorage) GetAdviceCall(tenantID, transactionID string) (AdviceCall, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.adviceLog {
+		if s.adviceLog[i].ID == transactionID && s.adviceLog[i].TenantID == tenantID {
+			return s.adviceLog[i], nil
+		}
+	}
+	return AdviceCall{}, ErrNotFound
+}
+
 func (s *MemStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, acr string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.adviceLog {
 		if s.adviceLog[i].ID == transactionID && s.adviceLog[i].TenantID == tenantID {
+			if s.adviceLog[i].CompletedAt != nil {
+				return ErrConflict // already used — single-use
+			}
 			t := at
 			s.adviceLog[i].CompletedAt = &t
 			s.adviceLog[i].CompletedUserID = userID
@@ -1069,5 +1088,5 @@ func (s *MemStorage) MarkAdviceCallCompleted(tenantID, transactionID, userID, ac
 			return nil
 		}
 	}
-	return nil // unknown transaction_id — no-op
+	return ErrNotFound
 }

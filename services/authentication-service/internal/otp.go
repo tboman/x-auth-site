@@ -496,8 +496,20 @@ func (h *OIDCHandlers) mintCodeAndRedirect(w http.ResponseWriter, r *http.Reques
 // assurance-level-change SET to risk-service for the satisfied protection level.
 // Best-effort: storage errors are logged, the SET delivery is already detached.
 func (h *OIDCHandlers) completeAdviceTransaction(ac AuthCode) {
-	if err := h.Store.MarkAdviceCallCompleted(ac.TenantID, ac.TransactionID, ac.UserID, ac.ACR, time.Now().UTC()); err != nil {
+	// Single-use: only the call that actually transitions pending → completed
+	// emits the side effects (history stamp already done, CAEP SET below). A
+	// replay (ErrConflict) or unknown id (ErrNotFound) — neither should have
+	// passed the /authorize validation — is logged and drops the emit.
+	switch err := h.Store.MarkAdviceCallCompleted(ac.TenantID, ac.TransactionID, ac.UserID, ac.ACR, time.Now().UTC()); {
+	case err == ErrConflict:
+		h.Logger.Warn("advice_transaction_already_completed", "transaction_id", ac.TransactionID, "tenant_id", ac.TenantID)
+		return
+	case err == ErrNotFound:
+		h.Logger.Warn("advice_transaction_unknown_on_complete", "transaction_id", ac.TransactionID, "tenant_id", ac.TenantID)
+		return
+	case err != nil:
 		h.Logger.Error("advice_complete_record_failed", "err", err, "transaction_id", ac.TransactionID)
+		return
 	}
 	h.Logger.Info("advice_transaction_completed",
 		"transaction_id", ac.TransactionID, "tenant_id", ac.TenantID, "user_id", ac.UserID, "acr", ac.ACR)

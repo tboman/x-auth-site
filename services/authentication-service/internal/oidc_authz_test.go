@@ -14,11 +14,25 @@ import (
 	"github.com/xentranet/x-auth/pkg/jwtx"
 )
 
+// seedAdvice records a minimal advice row so a transaction_id passes the
+// /authorize binding checks. rank 0 means "no level requirement" (isolates a
+// test from the downgrade gate); userID "" means "no subject binding".
+func seedAdvice(t *testing.T, store Storage, id, tenant, userID string, rank int, acr string) {
+	t.Helper()
+	if err := store.RecordAdviceCall(AdviceCall{
+		ID: id, TenantID: tenant, UserID: userID, Rank: rank, ACR: acr,
+		TransactionType: "test", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed advice: %v", err)
+	}
+}
+
 // The transaction_id from /v1/advice, carried into /authorize, is echoed on the
 // final callback (alongside code+state) and recorded on the minted auth code.
 func TestAuthorizeEchoesTransactionId(t *testing.T) {
 	r, store := secureAuthzRouter(t)
 	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	seedAdvice(t, store, "txn_abc123", "ten_bound", "usr_real@bound.test", 0, "")
 	req := authzReq(url.Values{"transaction_id": {"txn_abc123"}})
 	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
 	w := httptest.NewRecorder()
@@ -37,6 +51,7 @@ func TestAuthorizeEchoesTransactionId(t *testing.T) {
 func TestIDTokenCarriesTransactionId(t *testing.T) {
 	r, store := secureAuthzRouter(t)
 	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	seedAdvice(t, store, "txn_xyz", "ten_bound", "usr_real@bound.test", 0, "")
 	req := authzReq(url.Values{"transaction_id": {"txn_xyz"}})
 	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
 	w := httptest.NewRecorder()
@@ -102,12 +117,12 @@ func TestAdviceCompletionRecordsAndEmitsCAEP(t *testing.T) {
 	}
 }
 
-// Driving /authorize with a known transaction_id marks the advice row completed.
+// Driving /authorize with a known transaction_id (matching subject) marks the
+// advice row completed.
 func TestAuthorizeCompletesAdviceTransaction(t *testing.T) {
 	r, store := secureAuthzRouter(t)
-	_ = store.RecordAdviceCall(AdviceCall{ID: "txn_flow", TenantID: "ten_bound", UserID: "x",
-		TransactionType: "pay", ACR: "urn:xauth:protect:ultra:strict", Rank: 8, CreatedAt: time.Now().UTC()})
 	sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+	seedAdvice(t, store, "txn_flow", "ten_bound", "usr_real@bound.test", 0, "")
 	req := authzReq(url.Values{"transaction_id": {"txn_flow"}})
 	req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sess.ID})
 	w := httptest.NewRecorder()
@@ -125,6 +140,63 @@ func TestAuthorizeCompletesAdviceTransaction(t *testing.T) {
 	if !done {
 		t.Fatalf("advice transaction not marked completed: %+v", calls)
 	}
+}
+
+// Hardening: a transaction_id at /authorize must be a known, not-yet-used advice
+// call for this tenant, issued for this user, at >= the advised level.
+func TestAuthorizeTransactionBinding(t *testing.T) {
+	drive := func(r http.Handler, sessID string, extra url.Values) *httptest.ResponseRecorder {
+		req := authzReq(extra)
+		req.AddCookie(&http.Cookie{Name: AuthzSessionCookie, Value: sessID})
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("unknown transaction_id → 400", func(t *testing.T) {
+		r, store := secureAuthzRouter(t)
+		sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+		w := drive(r, sess.ID, url.Values{"transaction_id": {"txn_nope"}})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unknown transaction_id") {
+			t.Fatalf("want 400 unknown, got %d (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("replayed (already completed) → 400", func(t *testing.T) {
+		r, store := secureAuthzRouter(t)
+		sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+		seedAdvice(t, store, "txn_used", "ten_bound", "usr_real@bound.test", 0, "")
+		if err := store.MarkAdviceCallCompleted("ten_bound", "txn_used", "usr_real@bound.test", "", time.Now().UTC()); err != nil {
+			t.Fatalf("pre-complete: %v", err)
+		}
+		w := drive(r, sess.ID, url.Values{"transaction_id": {"txn_used"}})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "already been used") {
+			t.Fatalf("want 400 replay, got %d (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("subject mismatch → 403", func(t *testing.T) {
+		r, store := secureAuthzRouter(t)
+		sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+		seedAdvice(t, store, "txn_other", "ten_bound", "usr_someone_else", 0, "")
+		w := drive(r, sess.ID, url.Values{"transaction_id": {"txn_other"}})
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "different user") {
+			t.Fatalf("want 403 subject mismatch, got %d (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("downgrade below advised level → 400", func(t *testing.T) {
+		r, store := secureAuthzRouter(t)
+		sess := seedAuthzSession(t, store, "ten_bound", "real@bound.test")
+		seedAdvice(t, store, "txn_hi", "ten_bound", "usr_real@bound.test", 8, "urn:xauth:protect:ultra:strict")
+		// Request rank 1 against an advised rank 8 → rejected before any challenge.
+		w := drive(r, sess.ID, url.Values{
+			"transaction_id": {"txn_hi"}, "acr_values": {"urn:xauth:protect:high:protected"},
+		})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "at least the advised") {
+			t.Fatalf("want 400 downgrade, got %d (%s)", w.Code, w.Body.String())
+		}
+	})
 }
 
 func mustQuery(t *testing.T, w *httptest.ResponseRecorder, key string) string {

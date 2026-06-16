@@ -771,7 +771,18 @@ func TestPGStorageAdviceCalls(t *testing.T) {
 		t.Fatalf("new advice call should be pending, got %+v", got[0].CompletedAt)
 	}
 
-	// Completion stamp (migration 000014).
+	// GetAdviceCall: by id within tenant; cross-tenant + unknown miss.
+	if got, err := s.GetAdviceCall("tenant-a", "adv_a"); err != nil || got.Rank != 8 {
+		t.Fatalf("get advice: %+v err=%v", got, err)
+	}
+	if _, err := s.GetAdviceCall("tenant-b", "adv_a"); err != ErrNotFound {
+		t.Fatalf("cross-tenant get: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.GetAdviceCall("tenant-a", "adv_missing"); err != ErrNotFound {
+		t.Fatalf("unknown get: want ErrNotFound, got %v", err)
+	}
+
+	// Completion stamp (migration 000014) is single-use.
 	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_a", "u1", "urn:xauth:protect:ultra:strict", base.Add(time.Minute)); err != nil {
 		t.Fatalf("mark completed: %v", err)
 	}
@@ -779,9 +790,12 @@ func TestPGStorageAdviceCalls(t *testing.T) {
 	if len(done) != 1 || done[0].CompletedAt == nil || done[0].CompletedACR != "urn:xauth:protect:ultra:strict" {
 		t.Fatalf("completion not persisted: %+v", done)
 	}
-	// Marking an unknown transaction id is a no-op, not an error.
-	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_missing", "u1", "x", base); err != nil {
-		t.Fatalf("mark unknown: want nil, got %v", err)
+	// Completing again → ErrConflict (single-use); unknown id → ErrNotFound.
+	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_a", "u1", "x", base); err != ErrConflict {
+		t.Fatalf("replay complete: want ErrConflict, got %v", err)
+	}
+	if err := s.MarkAdviceCallCompleted("tenant-a", "adv_missing", "u1", "x", base); err != ErrNotFound {
+		t.Fatalf("mark unknown: want ErrNotFound, got %v", err)
 	}
 }
 
