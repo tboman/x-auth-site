@@ -229,12 +229,15 @@ func TestPGStorageChallengeRoundTrip(t *testing.T) {
 		ID:              id,
 		TenantID:        "tenant-a",
 		UserID:          "usr_1",
-		Method:          MethodTOTP,
+		Method:          MethodFIDO2,
 		AuthenticatorID: "authr_x",
-		Prompt:          "Enter 6-digit code from your authenticator app",
+		Prompt:          "Use your passkey",
 		Status:          ChallengeStatusPending,
 		CreatedAt:       now,
 		ExpiresAt:       now.Add(ChallengeTTL),
+		// WebAuthn ceremony columns (migration 000003).
+		OptionsJSON: `{"publicKey": {"challenge": "abc"}}`,
+		SessionData: []byte("session-bytes"),
 	}
 	mustPutChallenge(t, s, c)
 
@@ -242,8 +245,11 @@ func TestPGStorageChallengeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Method != MethodTOTP || got.AuthenticatorID != "authr_x" || got.Status != ChallengeStatusPending {
+	if got.Method != MethodFIDO2 || got.AuthenticatorID != "authr_x" || got.Status != ChallengeStatusPending {
 		t.Fatalf("roundtrip mismatch: %+v", got)
+	}
+	if got.OptionsJSON == "" || string(got.SessionData) != "session-bytes" {
+		t.Fatalf("webauthn columns not round-tripped: options=%q session=%q", got.OptionsJSON, got.SessionData)
 	}
 	if got.Prompt != c.Prompt || got.Attempts != 0 || got.CompletedAt != nil {
 		t.Fatalf("roundtrip mismatch: %+v", got)

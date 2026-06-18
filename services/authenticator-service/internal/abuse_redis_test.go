@@ -38,7 +38,7 @@ func newRedisLimitedServer(t *testing.T, mr *miniredis.Miniredis, store *Store, 
 	if lockThreshold > 0 {
 		limits.Lockout = NewRedisLockout(lockThreshold, lockWindow, client, "rate:authr:lockout", log, clock.now)
 	}
-	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}), limits))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}, nil), limits, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

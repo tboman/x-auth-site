@@ -47,8 +47,8 @@ func newTestServerWithLimits(t *testing.T, limitsFn func(now func() time.Time) L
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	registry := NewRegistry(log, store, smsx.Stub{})
-	srv := httptest.NewServer(Router(log, store, registry, limitsFn(clock.now)))
+	registry := NewRegistry(log, store, smsx.Stub{}, nil)
+	srv := httptest.NewServer(Router(log, store, registry, limitsFn(clock.now), nil))
 	t.Cleanup(srv.Close)
 	return srv, store, clock
 }
@@ -129,7 +129,7 @@ func TestHandlersRejectMissingTenantContext(t *testing.T) {
 	store := NewStore(clock.now)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ah := NewAuthenticatorHandlers(log, store)
-	ch := NewChallengeHandlers(log, store, NewRegistry(log, store, smsx.Stub{}), Limits{})
+	ch := NewChallengeHandlers(log, store, NewRegistry(log, store, smsx.Stub{}, nil), Limits{})
 
 	cases := []struct {
 		name    string
@@ -269,7 +269,7 @@ func TestDeleteIsSoftAndIdempotent(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
 	resp := do(t, srv, http.MethodPost, "/v1/authenticators", EnrollRequest{
-		UserID: "u1", Method: MethodFIDO2,
+		UserID: "u1", Method: MethodTOTP,
 	})
 	var a Authenticator
 	decode(t, resp, &a)
@@ -341,24 +341,25 @@ func TestChallengeCreateSelectsPreferredMethod(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 
 	enroll(t, srv, "u1", MethodTOTP)
-	enroll(t, srv, "u1", MethodFIDO2)
+	enroll(t, srv, "u1", MethodPush)
 
-	// Prefer fido2; expect it even though totp enrolled first.
+	// Prefer push; expect it even though totp enrolled first. (fido2 can't be
+	// enrolled via the blind endpoint, so the selection test uses stub methods.)
 	resp := do(t, srv, http.MethodPost, "/v1/challenges", ChallengeRequest{
-		UserID: "u1", Methods: []string{MethodFIDO2, MethodTOTP},
+		UserID: "u1", Methods: []string{MethodPush, MethodTOTP},
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("want 201, got %d", resp.StatusCode)
 	}
 	var disp ChallengeDispatched
 	decode(t, resp, &disp)
-	if disp.Method != MethodFIDO2 {
-		t.Fatalf("want method fido2, got %q", disp.Method)
+	if disp.Method != MethodPush {
+		t.Fatalf("want method push, got %q", disp.Method)
 	}
 	if !strings.HasPrefix(disp.ChallengeID, "ch_") {
 		t.Fatalf("challenge id prefix: %q", disp.ChallengeID)
 	}
-	if disp.Prompt != "WebAuthn ceremony initiated (stub)" {
+	if disp.Prompt != "Push notification sent (stub)" {
 		t.Fatalf("unexpected prompt: %q", disp.Prompt)
 	}
 }
@@ -591,7 +592,7 @@ func newFailingServer(t *testing.T, failLists bool) (*httptest.Server, *failingS
 	clock := &testClock{t: time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)}
 	store := &failingStore{Store: NewStore(clock.now), failLists: failLists}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}), Limits{}))
+	srv := httptest.NewServer(Router(log, store, NewRegistry(log, store, smsx.Stub{}, nil), Limits{}, nil))
 	t.Cleanup(srv.Close)
 	return srv, store
 }
@@ -729,7 +730,7 @@ func TestAdapterStubs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed sms authenticator: %v", err)
 	}
-	reg := NewRegistry(log, store, smsx.Stub{})
+	reg := NewRegistry(log, store, smsx.Stub{}, nil)
 	ctx := context.Background()
 
 	// The expected-prompt + golden-response table pins every adapter's
@@ -743,9 +744,7 @@ func TestAdapterStubs(t *testing.T) {
 		validResp   map[string]any
 		invalidResp map[string]any
 	}{
-		{MethodFIDO2, "WebAuthn ceremony initiated (stub)", "", "",
-			map[string]any{"signature": "stub_valid_signature"},
-			map[string]any{"signature": "bogus"}},
+		// fido2 is real crypto now — exercised in webauthn_test.go, not this stub table.
 		{MethodTOTP, "Enter 6-digit code from your authenticator app", "", "",
 			map[string]any{"code": "000000"},
 			map[string]any{"code": "111111"}},
@@ -767,28 +766,28 @@ func TestAdapterStubs(t *testing.T) {
 				t.Fatalf("no adapter for %s", tc.method)
 			}
 			chal := Challenge{ID: "ch_stub", Method: tc.method, TenantID: tc.tenantID, AuthenticatorID: tc.authID}
-			prompt, err := adapter.Dispatch(ctx, chal)
+			res, err := adapter.Dispatch(ctx, chal)
 			if err != nil {
 				t.Fatalf("dispatch: %v", err)
 			}
-			if prompt != tc.wantPrompt {
-				t.Fatalf("prompt: want %q, got %q", tc.wantPrompt, prompt)
+			if res.Prompt != tc.wantPrompt {
+				t.Fatalf("prompt: want %q, got %q", tc.wantPrompt, res.Prompt)
 			}
-			ok1, err := adapter.Verify(ctx, chal, tc.validResp)
-			if err != nil || !ok1 {
-				t.Fatalf("expected valid verify: ok=%v err=%v", ok1, err)
+			v1, err := adapter.Verify(ctx, chal, tc.validResp)
+			if err != nil || !v1.OK {
+				t.Fatalf("expected valid verify: ok=%v err=%v", v1.OK, err)
 			}
-			ok2, err := adapter.Verify(ctx, chal, tc.invalidResp)
+			v2, err := adapter.Verify(ctx, chal, tc.invalidResp)
 			if err != nil {
 				t.Fatalf("invalid verify errored: %v", err)
 			}
-			if ok2 {
+			if v2.OK {
 				t.Fatalf("expected invalid response to return false")
 			}
 			// Missing fields / wrong types must never panic and must not verify.
-			ok3, err := adapter.Verify(ctx, chal, nil)
-			if err != nil || ok3 {
-				t.Fatalf("nil response: ok=%v err=%v", ok3, err)
+			v3, err := adapter.Verify(ctx, chal, nil)
+			if err != nil || v3.OK {
+				t.Fatalf("nil response: ok=%v err=%v", v3.OK, err)
 			}
 		})
 	}
@@ -796,7 +795,7 @@ func TestAdapterStubs(t *testing.T) {
 
 func TestRegistryUnknownMethod(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	reg := NewRegistry(log, nil, smsx.Stub{})
+	reg := NewRegistry(log, nil, smsx.Stub{}, nil)
 	if _, ok := reg.Lookup("nope"); ok {
 		t.Fatal("expected Lookup of unknown method to return false")
 	}

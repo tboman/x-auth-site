@@ -169,8 +169,8 @@ func (s *PGStorage) PutChallenge(c Challenge) error {
 		INSERT INTO challenges (
 			id, tenant_id, user_id, method, authenticator_id,
 			prompt, status, attempts, created_at, expires_at, completed_at,
-			last_attempt_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			last_attempt_at, options_json, session_data
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (id) DO UPDATE SET
 			tenant_id        = EXCLUDED.tenant_id,
 			user_id          = EXCLUDED.user_id,
@@ -182,13 +182,15 @@ func (s *PGStorage) PutChallenge(c Challenge) error {
 			created_at       = EXCLUDED.created_at,
 			expires_at       = EXCLUDED.expires_at,
 			completed_at     = EXCLUDED.completed_at,
-			last_attempt_at  = EXCLUDED.last_attempt_at
+			last_attempt_at  = EXCLUDED.last_attempt_at,
+			options_json     = EXCLUDED.options_json,
+			session_data     = EXCLUDED.session_data
 	`
 	if _, err := s.pool.Exec(bgCtx(), q,
 		c.ID, c.TenantID, c.UserID, c.Method, c.AuthenticatorID,
 		nullable(c.Prompt), c.Status, c.Attempts,
 		c.CreatedAt.UTC(), c.ExpiresAt.UTC(), nullableTime(c.CompletedAt),
-		nullableTime(c.LastAttemptAt),
+		nullableTime(c.LastAttemptAt), nullable(c.OptionsJSON), nullableBytes(c.SessionData),
 	); err != nil {
 		return fmt.Errorf("pgstorage put_challenge: %w", err)
 	}
@@ -248,7 +250,9 @@ func (s *PGStorage) UpdateChallenge(tenantID, id string, mutator func(*Challenge
 			created_at       = $9,
 			expires_at       = $10,
 			completed_at     = $11,
-			last_attempt_at  = $12
+			last_attempt_at  = $12,
+			options_json     = $13,
+			session_data     = $14
 		WHERE id = $1 AND tenant_id = $2
 	`
 	if _, err := tx.Exec(ctx, q,
@@ -256,7 +260,7 @@ func (s *PGStorage) UpdateChallenge(tenantID, id string, mutator func(*Challenge
 		c.UserID, c.Method, c.AuthenticatorID,
 		nullable(c.Prompt), c.Status, c.Attempts,
 		c.CreatedAt.UTC(), c.ExpiresAt.UTC(), nullableTime(c.CompletedAt),
-		nullableTime(c.LastAttemptAt),
+		nullableTime(c.LastAttemptAt), nullable(c.OptionsJSON), nullableBytes(c.SessionData),
 	); err != nil {
 		return Challenge{}, fmt.Errorf("pgstorage update_challenge: %w", err)
 	}
@@ -296,7 +300,7 @@ const authenticatorCols = `
 const challengeCols = `
 	SELECT id, tenant_id, user_id, method, authenticator_id,
 	       prompt, status, attempts, created_at, expires_at, completed_at,
-	       last_attempt_at
+	       last_attempt_at, options_json, session_data
 	  FROM challenges`
 
 // rowScanner is satisfied by both pgx.Row and pgx.Rows for shared scanning.
@@ -331,15 +335,17 @@ func scanChallenge(r rowScanner) (Challenge, error) {
 		prompt        *string
 		completedAt   *time.Time
 		lastAttemptAt *time.Time
+		optionsJSON   []byte
 	)
 	if err := r.Scan(
 		&c.ID, &c.TenantID, &c.UserID, &c.Method, &c.AuthenticatorID,
 		&prompt, &c.Status, &c.Attempts, &c.CreatedAt, &c.ExpiresAt, &completedAt,
-		&lastAttemptAt,
+		&lastAttemptAt, &optionsJSON, &c.SessionData,
 	); err != nil {
 		return Challenge{}, err
 	}
 	c.Prompt = derefString(prompt)
+	c.OptionsJSON = string(optionsJSON)
 	if completedAt != nil {
 		t := completedAt.UTC()
 		c.CompletedAt = &t
@@ -378,6 +384,13 @@ func nullableTime(t *time.Time) any {
 		return nil
 	}
 	return t.UTC()
+}
+
+func nullableBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 func derefString(p *string) string {

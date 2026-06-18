@@ -352,6 +352,20 @@ func TestDiscoveryAdvertisesACR(t *testing.T) {
 
 // --- FIDO2 stub interlude -------------------------------------------------
 
+// postAssertion drives POST /authorize/verify with a fido2 assertion body.
+func postAssertion(t *testing.T, r http.Handler, flowID, assertion string) *httptest.ResponseRecorder {
+	t.Helper()
+	form := url.Values{"flow": {flowID}, "assertion": {assertion}}
+	req := httptest.NewRequest(http.MethodPost, "/authorize/verify", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// With an enrolled passkey, fido2 step-up serves the assertion page, forwards
+// the assertion (not a "code") to authenticator-service, and stamps the truthful
+// amr the verify reported.
 func TestFIDO2FlowHappyPath(t *testing.T) {
 	mock := &mockAuthenticator{
 		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
@@ -361,28 +375,31 @@ func TestFIDO2FlowHappyPath(t *testing.T) {
 			if len(methods) != 1 || methods[0] != "fido2" {
 				t.Errorf("challenge methods = %v, want [fido2]", methods)
 			}
-			return ChallengeInfo{ChallengeID: "chl_f", Method: "fido2", Prompt: "WebAuthn ceremony initiated (stub)"}, nil
+			return ChallengeInfo{ChallengeID: "chl_f", Method: "fido2", Prompt: "Use your passkey",
+				Options: json.RawMessage(`{"publicKey":{"challenge":"abc"}}`)}, nil
 		},
 		VerifyChallengeFn: func(_ context.Context, _, challengeID string, resp map[string]any) (VerifyOutcome, error) {
 			if challengeID != "chl_f" {
 				t.Errorf("verify challenge id = %q", challengeID)
 			}
-			// The adapter contract: the assertion rides under "signature",
-			// not "code".
 			if _, hasCode := resp["code"]; hasCode {
 				t.Errorf("fido2 verify must not send a \"code\" field: %v", resp)
 			}
-			return VerifyOutcome{Verified: resp["signature"] == "stub_valid_signature"}, nil
+			if _, ok := resp["assertion"]; !ok {
+				t.Errorf("fido2 verify must send an \"assertion\" field: %v", resp)
+			}
+			// Report user verification → amr ["user","pin"].
+			return VerifyOutcome{Verified: true, AMR: []string{"user", "pin"}}, nil
 		},
 	}
 	r, store := newOTPRouter(t, mock)
 
 	flowID, page := startStepUpAuthorize(t, r, ACRFIDO2)
-	if !strings.Contains(page, "stub_valid_signature") || !strings.Contains(page, "Touch your authenticator") {
-		t.Fatalf("fido2 page missing stub ceremony elements:\n%s", page)
+	if !strings.Contains(page, "Use passkey") || !strings.Contains(page, "/authorize/verify") {
+		t.Fatalf("fido2 page missing assertion elements:\n%s", page)
 	}
 
-	w := postVerify(t, r, flowID, "stub_valid_signature")
+	w := postAssertion(t, r, flowID, `{"id":"x","type":"public-key"}`)
 	if w.Code != http.StatusFound {
 		t.Fatalf("verify: expected 302, got %d (%s)", w.Code, w.Body.String())
 	}
@@ -419,8 +436,8 @@ func TestFIDO2FlowHappyPath(t *testing.T) {
 		t.Errorf("id_token acr = %v, want %q", claims["acr"], ACRFIDO2)
 	}
 	amr, _ := claims["amr"].([]any)
-	if len(amr) != 2 || amr[0] != "user" || amr[1] != "swk" {
-		t.Errorf("id_token amr = %v, want [user swk]", claims["amr"])
+	if len(amr) != 2 || amr[0] != "user" || amr[1] != "pin" {
+		t.Errorf("id_token amr = %v, want [user pin]", claims["amr"])
 	}
 
 	// Session minted from a fido2 step-up is stepped-up from birth.
@@ -439,9 +456,14 @@ func TestFIDO2WrongAssertionRetries(t *testing.T) {
 		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
 			return []Authenticator{{ID: "atr_f", Method: "fido2", Status: "active"}}, nil
 		},
+		CreateChallengeFn: func(_ context.Context, _, _ string, _ []string) (ChallengeInfo, error) {
+			return ChallengeInfo{ChallengeID: "chl_f", Method: "fido2",
+				Options: json.RawMessage(`{"publicKey":{"challenge":"abc"}}`)}, nil
+		},
 		VerifyChallengeFn: func(_ context.Context, _, _ string, resp map[string]any) (VerifyOutcome, error) {
-			if resp["signature"] == "stub_valid_signature" {
-				return VerifyOutcome{Verified: true}, nil
+			raw, _ := resp["assertion"].(json.RawMessage)
+			if strings.Contains(string(raw), "good") {
+				return VerifyOutcome{Verified: true, AMR: []string{"user", "pin"}}, nil
 			}
 			return VerifyOutcome{Verified: false, Reason: "invalid_response"}, nil
 		},
@@ -449,36 +471,31 @@ func TestFIDO2WrongAssertionRetries(t *testing.T) {
 
 	flowID, _ := startStepUpAuthorize(t, r, ACRFIDO2)
 
-	w := postVerify(t, r, flowID, "garbage-assertion")
-	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Assertion rejected") {
+	w := postAssertion(t, r, flowID, `{"sig":"bad"}`)
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Passkey verification failed") {
 		t.Fatalf("wrong assertion: expected re-rendered page, got %d (%s)", w.Code, w.Body.String())
 	}
-	if w := postVerify(t, r, flowID, "stub_valid_signature"); w.Code != http.StatusFound {
+	if w := postAssertion(t, r, flowID, `{"sig":"good"}`); w.Code != http.StatusFound {
 		t.Fatalf("retry with valid assertion: expected 302, got %d", w.Code)
 	}
 }
 
-func TestFIDO2AutoEnrollsWhenNoCredential(t *testing.T) {
-	enrolled := false
+// With no passkey on file, fido2 step-up serves the registration page
+// (register-on-first-use) rather than auto-enrolling a stub.
+func TestFIDO2RegisterPageWhenNoCredential(t *testing.T) {
 	r, _ := newOTPRouter(t, &mockAuthenticator{
 		ListFn: func(_ context.Context, _, _ string) ([]Authenticator, error) {
-			return nil, nil
+			return nil, nil // no passkey enrolled
 		},
-		EnrollFn: func(_ context.Context, _, _, method string, md map[string]any) (Authenticator, error) {
-			enrolled = true
-			if method != "fido2" {
-				t.Errorf("enroll method = %q, want fido2", method)
-			}
-			if md["credential_id"] == nil {
-				t.Errorf("enroll metadata missing credential_id: %v", md)
-			}
-			return Authenticator{ID: "atr_new", Method: "fido2", Status: "active"}, nil
+		EnrollFn: func(_ context.Context, _, _, _ string, _ map[string]any) (Authenticator, error) {
+			t.Fatal("fido2 step-up must NOT auto-enroll a stub")
+			return Authenticator{}, nil
 		},
 	})
 
-	startStepUpAuthorize(t, r, ACRFIDO2)
-	if !enrolled {
-		t.Fatal("expected auto-enrollment of a fido2 authenticator")
+	_, page := startStepUpAuthorize(t, r, ACRFIDO2)
+	if !strings.Contains(page, "Create a passkey") || !strings.Contains(page, "register/begin") {
+		t.Fatalf("expected the passkey registration page:\n%s", page)
 	}
 }
 

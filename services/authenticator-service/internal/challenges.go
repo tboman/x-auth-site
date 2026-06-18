@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -119,13 +120,21 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:       now.Add(ChallengeTTL),
 	}
 
-	prompt, err := adapter.Dispatch(r.Context(), chal)
+	res, err := adapter.Dispatch(r.Context(), chal)
 	if err != nil {
+		// A user with no enrolled passkey can't be challenged for fido2 — surface
+		// it distinctly so the caller runs registration first.
+		if errors.Is(err, errNoCredential) {
+			httpx.WriteError(w, http.StatusConflict, "no_credential", "user has no credential for this method")
+			return
+		}
 		h.log.Error("adapter_dispatch_failed", "challenge_id", chal.ID, "method", method, "err", err)
 		httpx.WriteError(w, http.StatusBadGateway, "dispatch_failed", "adapter failed to dispatch challenge")
 		return
 	}
-	chal.Prompt = prompt
+	chal.Prompt = res.Prompt
+	chal.OptionsJSON = res.Options
+	chal.SessionData = res.SessionData
 	if err := h.store.PutChallenge(chal); err != nil {
 		h.log.Error("challenge_put_failed", "err", err, "challenge_id", chal.ID, "tenant_id", tenantID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to store challenge")
@@ -144,6 +153,7 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		Method:      chal.Method,
 		Prompt:      chal.Prompt,
 		ExpiresAt:   chal.ExpiresAt,
+		Options:     json.RawMessage(chal.OptionsJSON),
 	})
 }
 
@@ -264,12 +274,13 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verified, err := adapter.Verify(r.Context(), c, req.Response)
+	res, err := adapter.Verify(r.Context(), c, req.Response)
 	if err != nil {
 		h.log.Error("adapter_verify_failed", "challenge_id", c.ID, "method", c.Method, "err", err)
 		httpx.WriteError(w, http.StatusBadGateway, "verify_failed", "adapter failed to verify")
 		return
 	}
+	verified := res.OK
 
 	updated, err := h.store.UpdateChallenge(tenantID, id, func(ch *Challenge) {
 		if verified {
@@ -317,6 +328,7 @@ func (h *ChallengeHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 	resp := VerifyResponse{Verified: verified}
 	if verified {
 		resp.AuthenticatorID = updated.AuthenticatorID
+		resp.AMR = res.AMR
 	} else {
 		if updated.Status == ChallengeStatusFailed {
 			resp.Reason = "max_attempts_exceeded"

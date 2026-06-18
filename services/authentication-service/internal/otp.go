@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"errors"
 	"html/template"
 	"net/http"
@@ -37,10 +38,10 @@ import (
 const (
 	// ACRSMSOTP — SMS one-time code interlude.
 	ACRSMSOTP = "urn:xauth:otp:sms"
-	// ACRFIDO2 — FIDO2/WebAuthn assertion interlude. The stub ceremony proves
-	// possession of a software key without user verification, so the amr is
-	// ["user","swk"]; UV-required and device-bound tiers (urn:xauth:fido2:uv,
-	// :uv:hw) arrive with the real webauthn adapter.
+	// ACRFIDO2 — FIDO2/WebAuthn (passkey) assertion interlude. The real adapter
+	// reports the achieved amr from the assertion's user-verification flag —
+	// ["user","pin"] when UV happened, else ["user","swk"] — so the spec's amr
+	// below is only the fallback.
 	ACRFIDO2 = "urn:xauth:fido2"
 )
 
@@ -63,10 +64,13 @@ type stepUpSpec struct {
 	RetryError string
 }
 
-// stepUpMethodSMS is the authenticator-service method name for SMS OTP. SMS
-// step-up sources the user's real phone anchor at enroll time, so the spec's
-// AutoEnrollMetadata phone below is only a placeholder it overrides.
-const stepUpMethodSMS = "sms"
+// stepUp method names (authenticator-service method strings). SMS sources the
+// user's real phone anchor at enroll time; FIDO2 registers a real passkey on
+// first use, so neither uses a fabricated AutoEnrollMetadata.
+const (
+	stepUpMethodSMS   = "sms"
+	stepUpMethodFIDO2 = "fido2"
+)
 
 var stepUpSpecs = []stepUpSpec{
 	{
@@ -78,12 +82,11 @@ var stepUpSpecs = []stepUpSpec{
 		RetryError:         "Incorrect code — try again.",
 	},
 	{
-		ACR:                ACRFIDO2,
-		Method:             "fido2",
-		AMR:                []string{"user", "swk"},
-		AutoEnrollMetadata: map[string]any{"credential_id": "stub-credential", "enrolled_by": "authorize-fido2-stub"},
-		ResponseField:      "signature",
-		RetryError:         "Assertion rejected — try again.",
+		ACR:           ACRFIDO2,
+		Method:        stepUpMethodFIDO2,
+		AMR:           []string{"user", "swk"}, // fallback; real amr comes from the assertion
+		ResponseField: "assertion",
+		RetryError:    "Passkey verification failed — try again.",
 	},
 }
 
@@ -141,6 +144,11 @@ type pendingAuthorize struct {
 	TransactionID string // advice-lifecycle id, carried through step-up to the final code
 	CreatedAt     time.Time
 
+	// WebAuthnOptions is the PublicKeyCredentialRequestOptions JSON for a fido2
+	// assertion, kept on the flow so the page can re-render (retry) without a new
+	// challenge. Empty for non-fido2 flows.
+	WebAuthnOptions string
+
 	// Protection-level fields (protection.go). When the flow was triggered by a
 	// protection-level request, TargetACR overrides the method spec's ACR on the
 	// minted token, and a successful verify records TargetRank against
@@ -192,6 +200,13 @@ func (h *OIDCHandlers) dropFlow(id string) {
 // the hosted verification page.
 func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, spec stepUpSpec, p pendingAuthorize) {
 	ctx := r.Context()
+
+	// FIDO2 has its own ceremony (register-on-first-use + assertion) — it can't
+	// auto-enroll a fabricated credential like SMS can.
+	if spec.Method == stepUpMethodFIDO2 {
+		h.startWebAuthnStepUp(w, r, spec, p)
+		return
+	}
 
 	// Ensure an enrolled, usable authenticator. Mock-stage convenience:
 	// auto-enroll a stub one so any user can exercise the flow; a real
@@ -296,9 +311,8 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flowID := r.PostForm.Get("flow")
-	code := r.PostForm.Get("code")
-	if flowID == "" || code == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "flow and code are required")
+	if flowID == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "flow is required")
 		return
 	}
 	flow, ok := h.peekFlow(flowID)
@@ -315,8 +329,26 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, err := h.Authenticator.VerifyChallenge(r.Context(), flow.TenantID, flow.ChallengeID,
-		map[string]any{spec.ResponseField: code})
+	// The response shape is method-specific: fido2 carries a JSON assertion
+	// object under "assertion"; other methods carry a "code" string.
+	var response map[string]any
+	if flow.Method == stepUpMethodFIDO2 {
+		assertion := strings.TrimSpace(r.PostForm.Get("assertion"))
+		if assertion == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "assertion is required")
+			return
+		}
+		response = map[string]any{spec.ResponseField: json.RawMessage(assertion)}
+	} else {
+		code := r.PostForm.Get("code")
+		if code == "" {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "code is required")
+			return
+		}
+		response = map[string]any{spec.ResponseField: code}
+	}
+
+	outcome, err := h.Authenticator.VerifyChallenge(r.Context(), flow.TenantID, flow.ChallengeID, response)
 	if err != nil {
 		var de *DownstreamError
 		switch {
@@ -326,10 +358,8 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "challenge_closed",
 				"the verification challenge has expired or failed — restart the login")
 		case errors.As(err, &de) && de.Status == http.StatusTooManyRequests:
-			h.renderOTPForm(w, http.StatusTooManyRequests, otpFormData{
-				FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method,
-				Error: "Too many attempts — wait a moment and try again.",
-			})
+			h.renderStepUpRetry(w, http.StatusTooManyRequests, flow, flowID,
+				"Too many attempts — wait a moment and try again.")
 		default:
 			h.Logger.Error("otp_verify_failed", "err", err, "flow_id", flowID)
 			httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not verify the code")
@@ -344,10 +374,7 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 				"too many incorrect codes — restart the login")
 			return
 		}
-		h.renderOTPForm(w, http.StatusUnauthorized, otpFormData{
-			FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method,
-			Error: spec.RetryError,
-		})
+		h.renderStepUpRetry(w, http.StatusUnauthorized, flow, flowID, spec.RetryError)
 		return
 	}
 
@@ -370,6 +397,12 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 	if flow.TargetRank > 0 {
 		h.Protection.Record(flow.AuthzSessionID, flow.TargetRank)
 	}
+	// Prefer the truthful amr the adapter reported (e.g. webauthn UV →
+	// ["user","pin"]); fall back to the spec's static amr.
+	amr := spec.AMR
+	if len(outcome.AMR) > 0 {
+		amr = outcome.AMR
+	}
 	h.mintCodeAndRedirect(w, r, AuthCode{
 		ClientID:      flow.ClientID,
 		TenantID:      flow.TenantID,
@@ -380,14 +413,13 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 		Nonce:         flow.Nonce,
 		CodeChallenge: flow.CodeChallenge,
 		ACR:           acr,
-		AMR:           spec.AMR,
+		AMR:           amr,
 		TransactionID: flow.TransactionID,
 	})
 }
 
-// otpFormData feeds the verification page template. Method selects the
-// ceremony block: "fido2" renders the stub-assertion button, anything else
-// renders the code input.
+// otpFormData feeds the OTP (code) verification page. FIDO2 has its own page
+// (renderWebAuthnForm), so this template only renders the code input.
 type otpFormData struct {
 	FlowID string
 	Prompt string
@@ -421,22 +453,15 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  {{if eq .Method "fido2"}}<h1>Confirm with your passkey</h1>{{else}}<h1>Enter verification code</h1>{{end}}
+  <h1>Enter verification code</h1>
   <p>{{.Prompt}}</p>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
   <form method="POST" action="/authorize/verify">
     <input type="hidden" name="flow" value="{{.FlowID}}">
     <input type="hidden" name="device_fp" data-device-fp>
-    {{if eq .Method "fido2"}}
-    <!-- Stub ceremony: the real WebAuthn adapter replaces this with a
-         navigator.credentials.get() call and posts the signed assertion. -->
-    <input type="hidden" name="code" value="stub_valid_signature">
-    <button type="submit">Touch your authenticator (stub)</button>
-    {{else}}
     <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code"
            maxlength="6" autofocus required>
     <button type="submit">Verify</button>
-    {{end}}
   </form>
 </div>
 ` + deviceFPScript + `

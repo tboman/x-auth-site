@@ -45,6 +45,8 @@ type mockAuthenticator struct {
 	EnrollFn          func(ctx context.Context, tenantID, userID, method string, metadata map[string]any) (Authenticator, error)
 	CreateChallengeFn func(ctx context.Context, tenantID, userID string, methods []string) (ChallengeInfo, error)
 	VerifyChallengeFn func(ctx context.Context, tenantID, challengeID string, response map[string]any) (VerifyOutcome, error)
+	RegBeginFn        func(ctx context.Context, tenantID, userID, name, displayName string) (WebAuthnRegistration, error)
+	RegFinishFn       func(ctx context.Context, tenantID, userID, registrationID string, attestation json.RawMessage) (Authenticator, error)
 }
 
 func (m *mockAuthenticator) ListAuthenticators(ctx context.Context, t, u string) ([]Authenticator, error) {
@@ -76,6 +78,18 @@ func (m *mockAuthenticator) VerifyChallenge(ctx context.Context, t, c string, re
 		return VerifyOutcome{Verified: true}, nil
 	}
 	return m.VerifyChallengeFn(ctx, t, c, resp)
+}
+func (m *mockAuthenticator) WebAuthnRegisterBegin(ctx context.Context, t, u, name, displayName string) (WebAuthnRegistration, error) {
+	if m.RegBeginFn == nil {
+		return WebAuthnRegistration{RegistrationID: "reg_mock", Options: json.RawMessage(`{"publicKey":{}}`)}, nil
+	}
+	return m.RegBeginFn(ctx, t, u, name, displayName)
+}
+func (m *mockAuthenticator) WebAuthnRegisterFinish(ctx context.Context, t, u, regID string, attestation json.RawMessage) (Authenticator, error) {
+	if m.RegFinishFn == nil {
+		return Authenticator{ID: "authr_mock", Method: "fido2", Status: "active"}, nil
+	}
+	return m.RegFinishFn(ctx, t, u, regID, attestation)
 }
 
 // testSigner is a single RS256 signer shared by every test router — generating

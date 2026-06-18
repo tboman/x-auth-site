@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
@@ -31,9 +33,10 @@ import (
 // limit + account lockout). They are enforced INSIDE the challenge handlers —
 // not as mux middleware — so the /v1 and /internal/v1 mounts, which share the
 // same handler instances, are both covered by a single check.
-func Router(log *slog.Logger, store Storage, registry *Registry, limits Limits) http.Handler {
+func Router(log *slog.Logger, store Storage, registry *Registry, limits Limits, wa *webauthn.WebAuthn) http.Handler {
 	auth := NewAuthenticatorHandlers(log, store)
 	chal := NewChallengeHandlers(log, store, registry, limits)
+	wauth := NewWebAuthnHandlers(log, store, wa)
 
 	// tenanted is the router that requires X-Tenant-Id. All /v1/* routes go here.
 	tenanted := http.NewServeMux()
@@ -41,6 +44,10 @@ func Router(log *slog.Logger, store Storage, registry *Registry, limits Limits) 
 	tenanted.HandleFunc("GET /v1/authenticators", auth.List)
 	tenanted.HandleFunc("GET /v1/authenticators/{id}", auth.Get)
 	tenanted.HandleFunc("DELETE /v1/authenticators/{id}", auth.Delete)
+
+	// Passkey (WebAuthn) registration ceremony — enrolls a new fido2 credential.
+	tenanted.HandleFunc("POST /v1/authenticators/webauthn/register/begin", wauth.RegisterBegin)
+	tenanted.HandleFunc("POST /v1/authenticators/webauthn/register/finish", wauth.RegisterFinish)
 
 	tenanted.HandleFunc("POST /v1/challenges", chal.Create)
 	tenanted.HandleFunc("GET /v1/challenges/{id}", chal.Get)

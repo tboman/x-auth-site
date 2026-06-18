@@ -5,22 +5,40 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
-// Adapter is the per-method vendor boundary. Phase 1 has five pure-Go stubs;
-// phase 2 swaps them for SDK-backed implementations (Yubico / webauthn-go,
-// pquerna/otp, Twilio, APNs/FCM, SendGrid). The interface stays frozen.
-type Adapter interface {
-	// Dispatch kicks off the authentication ceremony. For WebAuthn this is
-	// producing the challenge bytes; for TOTP it is a no-op prompt; for push/
-	// sms/magic_link it is the outbound send. Returns the user-visible prompt
-	// text to surface on the client.
-	Dispatch(ctx context.Context, chal Challenge) (prompt string, err error)
+// DispatchResult is what Dispatch hands back. Prompt is the user-visible text;
+// for WebAuthn, Options is the PublicKeyCredentialRequestOptions surfaced to the
+// browser and SessionData is the server-only ceremony state persisted on the
+// challenge. Non-WebAuthn methods set only Prompt.
+type DispatchResult struct {
+	Prompt      string
+	Options     string // PublicKeyCredentialRequestOptions JSON (fido2 only)
+	SessionData []byte // serialized go-webauthn SessionData (fido2 only)
+}
 
-	// Verify checks the response submitted by the client. The `response` map
-	// is method-specific — see each stub below for the accepted shape.
-	Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error)
+// VerifyResult is what Verify hands back. OK is whether the response validated;
+// AMR is the method-derived authentication-method references actually achieved
+// (e.g. WebAuthn with user verification → ["user","pin"]). AMR is nil when the
+// method has no dynamic AMR and the caller uses its configured default.
+type VerifyResult struct {
+	OK  bool
+	AMR []string
+}
+
+// Adapter is the per-method vendor boundary. SMS (Twilio) and FIDO2 (WebAuthn)
+// are real; TOTP/push/magic_link are still phase-1 stubs.
+type Adapter interface {
+	// Dispatch kicks off the authentication ceremony — producing the WebAuthn
+	// request options, a TOTP no-op prompt, or the SMS/push/email outbound send.
+	Dispatch(ctx context.Context, chal Challenge) (DispatchResult, error)
+
+	// Verify checks the response submitted by the client. The `response` map is
+	// method-specific — see each adapter below for the accepted shape.
+	Verify(ctx context.Context, chal Challenge, response map[string]any) (VerifyResult, error)
 }
 
 // Registry indexes adapters by method name. One per process.
@@ -29,16 +47,14 @@ type Registry struct {
 	adapters map[string]Adapter
 }
 
-// NewRegistry wires the adapters into a Registry. Every adapter is constructed
-// with the same logger so dispatch/verify traces appear on a single stream. The
-// SMS adapter additionally gets the store (to read the enrollment's phone) and
-// an smsx.Verifier (Twilio Verify, or a stub when Twilio is unconfigured); the
-// other methods are still phase-1 stubs.
-func NewRegistry(log *slog.Logger, store Storage, verifier smsx.Verifier) *Registry {
+// NewRegistry wires the adapters into a Registry. Every adapter shares the
+// logger. SMS gets the store + an smsx.Verifier; FIDO2 gets the store + the
+// configured *webauthn.WebAuthn relying party; TOTP/push/magic_link are stubs.
+func NewRegistry(log *slog.Logger, store Storage, verifier smsx.Verifier, wa *webauthn.WebAuthn) *Registry {
 	return &Registry{
 		log: log,
 		adapters: map[string]Adapter{
-			MethodFIDO2:     &webauthnAdapter{log: log},
+			MethodFIDO2:     &webauthnAdapter{log: log, store: store, wa: wa},
 			MethodTOTP:      &totpAdapter{log: log},
 			MethodPush:      &pushAdapter{log: log},
 			MethodSMS:       &smsAdapter{log: log, store: store, verifier: verifier},
@@ -90,27 +106,8 @@ func getBool(m map[string]any, key string) (bool, bool) {
 	return b, ok
 }
 
-// -----------------------------------------------------------------------------
-// webauthn / FIDO2
-// -----------------------------------------------------------------------------
-
-type webauthnAdapter struct{ log *slog.Logger }
-
-// TODO(phase-2): real vendor adapter — back this with github.com/go-webauthn/webauthn
-// or a Yubico/DUO SDK; generate a real challenge, persist rp_id & allowed creds,
-// and verify assertion signature against the stored public key.
-func (a *webauthnAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
-	a.log.Info("adapter_dispatch", "method", MethodFIDO2, "challenge_id", chal.ID)
-	return "WebAuthn ceremony initiated (stub)", nil
-}
-
-// TODO(phase-2): real vendor adapter — verify clientDataJSON / authenticatorData
-// bindings and signature over the challenge bytes.
-func (a *webauthnAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
-	a.log.Info("adapter_verify", "method", MethodFIDO2, "challenge_id", chal.ID)
-	sig, _ := getString(response, "signature")
-	return sig == "stub_valid_signature", nil
-}
+// webauthnAdapter (FIDO2/passkeys) lives in webauthn.go — it's backed by
+// github.com/go-webauthn/webauthn and needs the store + relying party.
 
 // -----------------------------------------------------------------------------
 // TOTP
@@ -120,16 +117,16 @@ type totpAdapter struct{ log *slog.Logger }
 
 // TODO(phase-2): real vendor adapter — back this with github.com/pquerna/otp,
 // derive the 30s window from the enrollment's shared secret in metadata.
-func (a *totpAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
+func (a *totpAdapter) Dispatch(ctx context.Context, chal Challenge) (DispatchResult, error) {
 	a.log.Info("adapter_dispatch", "method", MethodTOTP, "challenge_id", chal.ID)
-	return "Enter 6-digit code from your authenticator app", nil
+	return DispatchResult{Prompt: "Enter 6-digit code from your authenticator app"}, nil
 }
 
 // TODO(phase-2): real vendor adapter — totp.Validate against stored secret +/- 1 window.
-func (a *totpAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
+func (a *totpAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (VerifyResult, error) {
 	a.log.Info("adapter_verify", "method", MethodTOTP, "challenge_id", chal.ID)
 	code, _ := getString(response, "code")
-	return code == "000000", nil
+	return VerifyResult{OK: code == "000000"}, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -140,17 +137,17 @@ type pushAdapter struct{ log *slog.Logger }
 
 // TODO(phase-2): real vendor adapter — integrate APNs / FCM (or Duo Push) using
 // the device token stored on the authenticator metadata.
-func (a *pushAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
+func (a *pushAdapter) Dispatch(ctx context.Context, chal Challenge) (DispatchResult, error) {
 	a.log.Info("adapter_dispatch", "method", MethodPush, "challenge_id", chal.ID)
-	return "Push notification sent (stub)", nil
+	return DispatchResult{Prompt: "Push notification sent (stub)"}, nil
 }
 
 // TODO(phase-2): real vendor adapter — poll/subscribe to the push vendor's
 // approval webhook instead of accepting a client-asserted boolean.
-func (a *pushAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
+func (a *pushAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (VerifyResult, error) {
 	a.log.Info("adapter_verify", "method", MethodPush, "challenge_id", chal.ID)
 	approved, _ := getBool(response, "approved")
-	return approved, nil
+	return VerifyResult{OK: approved}, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -178,28 +175,29 @@ func (a *smsAdapter) phone(chal Challenge) (string, error) {
 }
 
 // Dispatch texts a fresh code to the enrolled number via the verifier.
-func (a *smsAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
+func (a *smsAdapter) Dispatch(ctx context.Context, chal Challenge) (DispatchResult, error) {
 	a.log.Info("adapter_dispatch", "method", MethodSMS, "challenge_id", chal.ID)
 	phone, err := a.phone(chal)
 	if err != nil {
-		return "", err
+		return DispatchResult{}, err
 	}
 	if err := a.verifier.Start(ctx, phone); err != nil {
-		return "", err
+		return DispatchResult{}, err
 	}
-	return "We texted a verification code to your phone", nil
+	return DispatchResult{Prompt: "We texted a verification code to your phone"}, nil
 }
 
 // Verify checks the submitted code against the verifier (Twilio Verify validates
 // it; the stub accepts smsx.StubCode).
-func (a *smsAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
+func (a *smsAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (VerifyResult, error) {
 	a.log.Info("adapter_verify", "method", MethodSMS, "challenge_id", chal.ID)
 	phone, err := a.phone(chal)
 	if err != nil {
-		return false, err
+		return VerifyResult{}, err
 	}
 	code, _ := getString(response, "code")
-	return a.verifier.Check(ctx, phone, code)
+	ok, err := a.verifier.Check(ctx, phone, code)
+	return VerifyResult{OK: ok}, err
 }
 
 // -----------------------------------------------------------------------------
@@ -210,15 +208,15 @@ type magicLinkAdapter struct{ log *slog.Logger }
 
 // TODO(phase-2): real vendor adapter — SendGrid / SES; mint a short-lived
 // signed token, embed in a URL, persist the token hash.
-func (a *magicLinkAdapter) Dispatch(ctx context.Context, chal Challenge) (string, error) {
+func (a *magicLinkAdapter) Dispatch(ctx context.Context, chal Challenge) (DispatchResult, error) {
 	a.log.Info("adapter_dispatch", "method", MethodMagicLink, "challenge_id", chal.ID)
-	return "Magic link sent to user@example.com (stub)", nil
+	return DispatchResult{Prompt: "Magic link sent to user@example.com (stub)"}, nil
 }
 
 // TODO(phase-2): real vendor adapter — constant-time compare against the
 // persisted token hash, check expiry.
-func (a *magicLinkAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (bool, error) {
+func (a *magicLinkAdapter) Verify(ctx context.Context, chal Challenge, response map[string]any) (VerifyResult, error) {
 	a.log.Info("adapter_verify", "method", MethodMagicLink, "challenge_id", chal.ID)
 	tok, _ := getString(response, "token")
-	return tok == "stub_magic_token", nil
+	return VerifyResult{OK: tok == "stub_magic_token"}, nil
 }

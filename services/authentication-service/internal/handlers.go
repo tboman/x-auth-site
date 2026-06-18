@@ -174,6 +174,9 @@ func Router(d Deps) http.Handler {
 	// browser POST, no CORS needed.
 	mux.HandleFunc("GET /authorize", oidc.Authorize)
 	mux.HandleFunc("POST /authorize/verify", oidc.AuthorizeVerify)
+	// WebAuthn (passkey) register-on-first-use proxies for the step-up page.
+	mux.HandleFunc("POST /authorize/webauthn/register/begin", oidc.AuthorizeWebAuthnRegisterBegin)
+	mux.HandleFunc("POST /authorize/webauthn/register/finish", oidc.AuthorizeWebAuthnRegisterFinish)
 	mux.Handle("POST /token", withCORS(oidc.Token))
 	mux.Handle("OPTIONS /token", withCORS(oidc.Token))
 	mux.Handle("POST /revoke", withCORS(oidc.Revoke))

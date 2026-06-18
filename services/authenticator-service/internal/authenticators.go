@@ -43,6 +43,13 @@ func (h *AuthenticatorHandlers) Enroll(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "method must be one of fido2, totp, push, sms, magic_link")
 		return
 	}
+	// A passkey can't be enrolled by posting raw metadata — its public key must
+	// come from a real attestation. Force fido2 through the registration ceremony.
+	if req.Method == MethodFIDO2 {
+		httpx.WriteError(w, http.StatusBadRequest, "use_registration_ceremony",
+			"fido2 must be enrolled via /authenticators/webauthn/register/begin + finish")
+		return
+	}
 
 	now := h.store.Now()
 	a := Authenticator{

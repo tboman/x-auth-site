@@ -9,7 +9,10 @@
 // services (transaction, risk, authentication) can be exercised end to end.
 package internal
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Supported authenticator methods. The string values are the wire form; they
 // also index the adapter registry.
@@ -64,12 +67,15 @@ type ChallengeRequest struct {
 	Methods []string `json:"methods"`
 }
 
-// ChallengeDispatched is the response from POST /v1/challenges.
+// ChallengeDispatched is the response from POST /v1/challenges. OptionsJSON
+// carries the WebAuthn PublicKeyCredentialRequestOptions for fido2 (empty for
+// other methods) so the caller can drive navigator.credentials.get().
 type ChallengeDispatched struct {
-	ChallengeID string    `json:"challenge_id"`
-	Method      string    `json:"method"`
-	Prompt      string    `json:"prompt"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ChallengeID string          `json:"challenge_id"`
+	Method      string          `json:"method"`
+	Prompt      string          `json:"prompt"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	Options     json.RawMessage `json:"options,omitempty"`
 }
 
 // VerifyRequest is the body of POST /v1/challenges/{id}/verify.
@@ -77,11 +83,15 @@ type VerifyRequest struct {
 	Response map[string]any `json:"response"`
 }
 
-// VerifyResponse is the body of POST /v1/challenges/{id}/verify.
+// VerifyResponse is the body of POST /v1/challenges/{id}/verify. AMR carries the
+// method-derived authentication-method references the verify actually achieved
+// (e.g. WebAuthn with user verification → ["user","pin"]); empty when the method
+// has no dynamic AMR and the caller uses its configured default.
 type VerifyResponse struct {
-	Verified        bool   `json:"verified"`
-	AuthenticatorID string `json:"authenticator_id,omitempty"`
-	Reason          string `json:"reason,omitempty"`
+	Verified        bool     `json:"verified"`
+	AuthenticatorID string   `json:"authenticator_id,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	AMR             []string `json:"amr,omitempty"`
 }
 
 // ListResponse envelopes GET /v1/authenticators (and its /internal/v1 alias).
@@ -125,6 +135,15 @@ type Challenge struct {
 	// abuse.go): the next verify is allowed 2^Attempts seconds after it.
 	// nil until the first failure.
 	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+
+	// WebAuthn ceremony state (migration 000003). OptionsJSON is the
+	// PublicKeyCredentialRequestOptions the adapter produced at dispatch, surfaced
+	// to the caller so the browser can run navigator.credentials.get(); empty for
+	// non-WebAuthn methods. SessionData is the serialized go-webauthn SessionData
+	// (the random challenge + allowed credentials) the verify step needs — it is
+	// SERVER-ONLY and never returned to the caller.
+	OptionsJSON string `json:"options_json,omitempty"`
+	SessionData []byte `json:"-"`
 }
 
 // IsValidMethod reports whether m is one of the supported method strings.

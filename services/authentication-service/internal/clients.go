@@ -61,6 +61,13 @@ type AuthenticatorClient interface {
 	EnrollAuthenticator(ctx context.Context, tenantID, userID, method string, metadata map[string]any) (Authenticator, error)
 	CreateChallenge(ctx context.Context, tenantID, userID string, methods []string) (ChallengeInfo, error)
 	VerifyChallenge(ctx context.Context, tenantID, challengeID string, response map[string]any) (VerifyOutcome, error)
+
+	// WebAuthn (passkey) registration ceremony — drives the register-on-first-use
+	// path for fido2 step-up. Begin returns the creation options for
+	// navigator.credentials.create(); Finish validates the attestation and
+	// persists the new credential, returning the enrolled authenticator.
+	WebAuthnRegisterBegin(ctx context.Context, tenantID, userID, name, displayName string) (WebAuthnRegistration, error)
+	WebAuthnRegisterFinish(ctx context.Context, tenantID, userID, registrationID string, attestation json.RawMessage) (Authenticator, error)
 }
 
 // Authenticator is the slimmed view of an authenticator-service row. Fields we
@@ -74,21 +81,33 @@ type Authenticator struct {
 }
 
 // ChallengeInfo is authenticator-service's dispatch response — what the
-// /authorize interlude needs to render a verification prompt.
+// /authorize interlude needs to render a verification prompt. Options carries
+// the WebAuthn PublicKeyCredentialRequestOptions for fido2 (empty otherwise).
 type ChallengeInfo struct {
-	ChallengeID string    `json:"challenge_id"`
-	Method      string    `json:"method"`
-	Prompt      string    `json:"prompt"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ChallengeID string          `json:"challenge_id"`
+	Method      string          `json:"method"`
+	Prompt      string          `json:"prompt"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	Options     json.RawMessage `json:"options,omitempty"`
 }
 
 // VerifyOutcome is the decoded verdict of a challenge verify call. A wrong
 // code is an outcome (Verified=false), not an error — terminal/throttle
 // states (410, 429) surface as a *DownstreamError instead so callers can
-// distinguish "try again" from "start over".
+// distinguish "try again" from "start over". AMR carries the method-derived
+// authentication-method references the verify actually achieved (e.g. WebAuthn
+// with user verification → ["user","pin"]); empty → caller uses its default.
 type VerifyOutcome struct {
-	Verified bool   `json:"verified"`
-	Reason   string `json:"reason,omitempty"` // invalid_response | max_attempts_exceeded
+	Verified bool     `json:"verified"`
+	Reason   string   `json:"reason,omitempty"` // invalid_response | max_attempts_exceeded
+	AMR      []string `json:"amr,omitempty"`
+}
+
+// WebAuthnRegistration is the begin-registration response: the ceremony id to
+// echo on finish, plus the creation options for navigator.credentials.create().
+type WebAuthnRegistration struct {
+	RegistrationID string          `json:"registration_id"`
+	Options        json.RawMessage `json:"options"`
 }
 
 // HTTPAuthenticatorClient is the production implementation — a thin HTTP wrapper
@@ -234,6 +253,28 @@ func (c *HTTPAuthenticatorClient) VerifyChallenge(ctx context.Context, tenantID,
 			}
 		}
 		return VerifyOutcome{}, err
+	}
+	return out, nil
+}
+
+// WebAuthnRegisterBegin calls POST /internal/v1/authenticators/webauthn/register/begin.
+func (c *HTTPAuthenticatorClient) WebAuthnRegisterBegin(ctx context.Context, tenantID, userID, name, displayName string) (WebAuthnRegistration, error) {
+	var out WebAuthnRegistration
+	body := map[string]any{"user_id": userID, "name": name, "display_name": displayName}
+	url := c.BaseURL + "/internal/v1/authenticators/webauthn/register/begin"
+	if err := c.do(ctx, http.MethodPost, url, tenantID, body, &out); err != nil {
+		return WebAuthnRegistration{}, err
+	}
+	return out, nil
+}
+
+// WebAuthnRegisterFinish calls POST /internal/v1/authenticators/webauthn/register/finish.
+func (c *HTTPAuthenticatorClient) WebAuthnRegisterFinish(ctx context.Context, tenantID, userID, registrationID string, attestation json.RawMessage) (Authenticator, error) {
+	var out Authenticator
+	body := map[string]any{"user_id": userID, "registration_id": registrationID, "attestation": attestation}
+	url := c.BaseURL + "/internal/v1/authenticators/webauthn/register/finish"
+	if err := c.do(ctx, http.MethodPost, url, tenantID, body, &out); err != nil {
+		return Authenticator{}, err
 	}
 	return out, nil
 }

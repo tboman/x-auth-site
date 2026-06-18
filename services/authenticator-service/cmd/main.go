@@ -21,6 +21,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/redisx"
 	"github.com/xentranet/x-auth/pkg/smsx"
 	"github.com/xentranet/x-auth/pkg/tlsx"
+	"github.com/xentranet/x-auth/pkg/webauthnx"
 	"github.com/xentranet/x-auth/services/authenticator-service/internal"
 )
 
@@ -131,8 +132,16 @@ func main() {
 		log.Warn("account_lockout_disabled")
 	}
 
-	registry := internal.NewRegistry(log, store, smsx.New(smsx.ConfigFromEnv(), log))
-	handler := internal.Router(log, store, registry, limits)
+	// WebAuthn relying party (passkeys). Fatal on malformed WAUTHN_* config; an
+	// unset RP id falls back to a localhost dev config (logged).
+	wa, err := webauthnx.New(webauthnx.ConfigFromEnv(), log)
+	if err != nil {
+		log.Error("webauthn_config_failed", "err", err)
+		os.Exit(1)
+	}
+
+	registry := internal.NewRegistry(log, store, smsx.New(smsx.ConfigFromEnv(), log), wa)
+	handler := internal.Router(log, store, registry, limits, wa)
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS_CERT_FILE/TLS_KEY_FILE
 	// enable TLS, TLS_CLIENT_CA_FILE additionally enforces mTLS. With none set
