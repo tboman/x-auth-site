@@ -347,16 +347,40 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 	// un-customized tenant. The advice/transaction binding above stays a
 	// precondition (not a stage). Flag OFF → the legacy branch runs unchanged.
 	if h.FlowEngine {
+		// Seed the policy facts the risk-evaluation stage and stage-bound policies
+		// read: request.* (client, ip, device, ua) and protection.* (requested vs
+		// already-achieved rank). risk.* is filled by the risk-evaluation stage.
+		reqRank := 0
+		if lvlOK {
+			reqRank = lvl.Rank
+		}
+		achievedRank := 0
+		if h.Protection != nil && authzSessionID != "" {
+			achievedRank = h.Protection.Achieved(authzSessionID)
+		}
 		exec := &FlowExecution{
 			ID: uuid.NewString(), TenantID: effectiveTenant, Designation: FlowAuthorizeStepUp,
 			ClientID: clientID, UserID: user.ID, RedirectURI: redirectURI, Scope: scope,
 			State: state, Nonce: nonce, CodeChallenge: codeChallenge, TransactionID: transactionID,
 			AuthzSessionID: authzSessionID, ACRValues: q.Get("acr_values"),
-			Context: map[string]any{}, CreatedAt: time.Now().UTC(),
+			Context: map[string]any{
+				"request": map[string]any{
+					"client_id":  clientID,
+					"ip":         clientIP(r),
+					"device_fp":  q.Get("device_fp"),
+					"user_agent": r.UserAgent(),
+				},
+				"protection": map[string]any{
+					"requested_rank": reqRank,
+					"achieved_rank":  achievedRank,
+				},
+			},
+			CreatedAt: time.Now().UTC(),
 		}
-		if _, err := runFlow(w, r, exec, h.defaultAuthorizeStepUpFlow().Stages); err != nil {
+		flow := h.selectAuthorizeFlow(effectiveTenant)
+		if _, err := runFlow(w, r, exec, flow.Stages); err != nil {
 			// Stages write their own responses; just record the fault.
-			h.Logger.Error("flow_run_failed", "err", err, "tenant_id", effectiveTenant, "user_id", user.ID)
+			h.Logger.Error("flow_run_failed", "err", err, "flow", flow.Slug, "tenant_id", effectiveTenant, "user_id", user.ID)
 		}
 		return
 	}

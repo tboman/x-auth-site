@@ -149,6 +149,16 @@ type Storage interface {
 	GetTransactionType(tenantID, name string) (TransactionType, error)
 	DeleteTransactionType(tenantID, name string) error
 
+	// Configurable flows (tenant-scoped, flow engine). UpsertFlow creates or
+	// replaces by ID (stamping UpdatedAt). GetEnabledFlow returns the enabled
+	// flow for a designation (ErrNotFound when none) — what Authorize selects.
+	// Get/Delete return ErrNotFound on a miss; List is slug-ordered.
+	UpsertFlow(f FlowDefinition) error
+	ListFlows(tenantID string) ([]FlowDefinition, error)
+	GetFlow(tenantID, id string) (FlowDefinition, error)
+	GetEnabledFlow(tenantID, designation string) (FlowDefinition, error)
+	DeleteFlow(tenantID, id string) error
+
 	// Advice calls (append-only). RecordAdviceCall logs one /v1/advice request;
 	// ListAdviceCalls returns matching records newest-first for the staff history
 	// view (filtered by tenant and/or user; empty filter fields match all).
@@ -185,6 +195,7 @@ type MemStorage struct {
 	staffUsr  map[string]StaffUser       // keyed by user id
 	staffRol  map[string][]string        // keyed by user id
 	txnTypes  map[string]TransactionType // keyed by tenant_id\x00name
+	flows     map[string]FlowDefinition  // keyed by flow id
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -201,6 +212,7 @@ func NewMemStorage() *MemStorage {
 		staffUsr: make(map[string]StaffUser),
 		staffRol: make(map[string][]string),
 		txnTypes: make(map[string]TransactionType),
+		flows:    make(map[string]FlowDefinition),
 	}
 	s.seedDefaultClient()
 	return s
@@ -1028,6 +1040,88 @@ func (s *MemStorage) DeleteTransactionType(tenantID, name string) error {
 		return ErrNotFound
 	}
 	delete(s.txnTypes, k)
+	return nil
+}
+
+// ---- Configurable flows ----
+
+func (s *MemStorage) UpsertFlow(f FlowDefinition) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	if f.CreatedAt.IsZero() {
+		if existing, ok := s.flows[f.ID]; ok {
+			f.CreatedAt = existing.CreatedAt
+		} else {
+			f.CreatedAt = now
+		}
+	}
+	f.UpdatedAt = now
+	// One enabled flow per (tenant, designation): demote the others (mirrors the
+	// PG partial unique index + demote).
+	if f.Enabled {
+		for k, other := range s.flows {
+			if k != f.ID && other.TenantID == f.TenantID && other.Designation == f.Designation && other.Enabled {
+				other.Enabled = false
+				s.flows[k] = other
+			}
+		}
+	}
+	s.flows[f.ID] = f
+	return nil
+}
+
+func (s *MemStorage) ListFlows(tenantID string) ([]FlowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]FlowDefinition, 0)
+	for _, f := range s.flows {
+		if f.TenantID == tenantID {
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out, nil
+}
+
+func (s *MemStorage) GetFlow(tenantID, id string) (FlowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	f, ok := s.flows[id]
+	if !ok || f.TenantID != tenantID {
+		return FlowDefinition{}, ErrNotFound
+	}
+	return f, nil
+}
+
+func (s *MemStorage) GetEnabledFlow(tenantID, designation string) (FlowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best FlowDefinition
+	found := false
+	for _, f := range s.flows {
+		if f.TenantID != tenantID || f.Designation != designation || !f.Enabled {
+			continue
+		}
+		// Deterministic tiebreak: most-recently-updated enabled flow wins.
+		if !found || f.UpdatedAt.After(best.UpdatedAt) {
+			best, found = f, true
+		}
+	}
+	if !found {
+		return FlowDefinition{}, ErrNotFound
+	}
+	return best, nil
+}
+
+func (s *MemStorage) DeleteFlow(tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, ok := s.flows[id]
+	if !ok || f.TenantID != tenantID {
+		return ErrNotFound
+	}
+	delete(s.flows, id)
 	return nil
 }
 

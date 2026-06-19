@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -487,6 +488,122 @@ func (s *PGStorage) DeleteTransactionType(tenantID, name string) error {
 	tag, err := s.pool.Exec(bgCtx(), q, tenantID, name)
 	if err != nil {
 		return fmt.Errorf("pgstorage delete_transaction_type: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- Configurable flows ----
+
+func (s *PGStorage) UpsertFlow(f FlowDefinition) error {
+	stages, err := json.Marshal(f.Stages)
+	if err != nil {
+		return fmt.Errorf("pgstorage upsert_flow marshal: %w", err)
+	}
+	ctx := bgCtx()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pgstorage upsert_flow begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Enforce one enabled flow per (tenant, designation): demote the others first
+	// so the partial unique index never rejects the upsert.
+	if f.Enabled {
+		const demote = `UPDATE flows SET enabled = false, updated_at = now()
+			WHERE tenant_id = $1 AND designation = $2 AND id <> $3 AND enabled`
+		if _, err := tx.Exec(ctx, demote, f.TenantID, f.Designation, f.ID); err != nil {
+			return fmt.Errorf("pgstorage upsert_flow demote: %w", err)
+		}
+	}
+	const q = `
+		INSERT INTO flows (id, tenant_id, designation, slug, title, enabled, stages, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
+		ON CONFLICT (id) DO UPDATE SET
+			designation = EXCLUDED.designation,
+			slug        = EXCLUDED.slug,
+			title       = EXCLUDED.title,
+			enabled     = EXCLUDED.enabled,
+			stages      = EXCLUDED.stages,
+			updated_at  = now()`
+	if _, err := tx.Exec(ctx, q, f.ID, f.TenantID, f.Designation, f.Slug, f.Title, f.Enabled, stages); err != nil {
+		return fmt.Errorf("pgstorage upsert_flow: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("pgstorage upsert_flow commit: %w", err)
+	}
+	return nil
+}
+
+func scanFlow(row interface {
+	Scan(dest ...any) error
+}) (FlowDefinition, error) {
+	var f FlowDefinition
+	var stages []byte
+	if err := row.Scan(&f.ID, &f.TenantID, &f.Designation, &f.Slug, &f.Title, &f.Enabled, &stages, &f.CreatedAt, &f.UpdatedAt); err != nil {
+		return FlowDefinition{}, err
+	}
+	if len(stages) > 0 {
+		if err := json.Unmarshal(stages, &f.Stages); err != nil {
+			return FlowDefinition{}, fmt.Errorf("pgstorage scan_flow unmarshal: %w", err)
+		}
+	}
+	return f, nil
+}
+
+const flowCols = `id, tenant_id, designation, slug, title, enabled, stages, created_at, updated_at`
+
+func (s *PGStorage) ListFlows(tenantID string) ([]FlowDefinition, error) {
+	q := `SELECT ` + flowCols + ` FROM flows WHERE tenant_id = $1 ORDER BY slug ASC`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_flows: %w", err)
+	}
+	defer rows.Close()
+	out := make([]FlowDefinition, 0)
+	for rows.Next() {
+		f, err := scanFlow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStorage) GetFlow(tenantID, id string) (FlowDefinition, error) {
+	q := `SELECT ` + flowCols + ` FROM flows WHERE tenant_id = $1 AND id = $2`
+	f, err := scanFlow(s.pool.QueryRow(bgCtx(), q, tenantID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FlowDefinition{}, ErrNotFound
+	}
+	if err != nil {
+		return FlowDefinition{}, fmt.Errorf("pgstorage get_flow: %w", err)
+	}
+	return f, nil
+}
+
+func (s *PGStorage) GetEnabledFlow(tenantID, designation string) (FlowDefinition, error) {
+	q := `SELECT ` + flowCols + ` FROM flows
+		WHERE tenant_id = $1 AND designation = $2 AND enabled
+		ORDER BY updated_at DESC LIMIT 1`
+	f, err := scanFlow(s.pool.QueryRow(bgCtx(), q, tenantID, designation))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FlowDefinition{}, ErrNotFound
+	}
+	if err != nil {
+		return FlowDefinition{}, fmt.Errorf("pgstorage get_enabled_flow: %w", err)
+	}
+	return f, nil
+}
+
+func (s *PGStorage) DeleteFlow(tenantID, id string) error {
+	const q = `DELETE FROM flows WHERE tenant_id = $1 AND id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_flow: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

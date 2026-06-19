@@ -76,6 +76,41 @@ type Flow struct {
 	Stages      []Stage
 }
 
+// FlowDefinition is the stored, declarative form of a tenant's flow — one row
+// (the stages live in a JSONB column). It is compiled into a runnable *Flow by
+// buildFlow (flow_build.go): each StageConfig becomes a Stage, optionally wrapped
+// in a policyGatedStage. Keeping the whole flow in one document (policies inline,
+// not separate rows) keeps P3 storage to a single table; normalization can come
+// later without changing this contract.
+type FlowDefinition struct {
+	ID          string        `json:"id"`
+	TenantID    string        `json:"tenant_id"`
+	Designation string        `json:"designation"` // FlowAuthorizeStepUp, …
+	Slug        string        `json:"slug"`
+	Title       string        `json:"title"`
+	Enabled     bool          `json:"enabled"` // the enabled flow per designation is the one Authorize runs
+	Stages      []StageConfig `json:"stages"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
+// StageConfig is one stage in a stored flow: a taxonomy type, optional config
+// (e.g. {"reason": …} for a deny stage), and zero or more attached policies that
+// gate whether it runs.
+type StageConfig struct {
+	Type     string         `json:"type"`
+	Config   map[string]any `json:"config,omitempty"`
+	Policies []PolicyConfig `json:"policies,omitempty"`
+}
+
+// PolicyConfig is one boolean expr-lang policy bound to a stage. Negate flips the
+// pass/skip sense (see policyGatedStage).
+type PolicyConfig struct {
+	Name       string `json:"name"`
+	Expression string `json:"expression"`
+	Negate     bool   `json:"negate"`
+}
+
 // FlowExecution is the parked, resumable state of a running flow. It carries the
 // OIDC request facts (the former pendingAuthorize fields) plus a context bag the
 // later risk/policy stages populate. It lives in an in-process TTL map keyed by

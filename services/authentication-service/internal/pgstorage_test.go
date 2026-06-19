@@ -740,6 +740,61 @@ func TestPGStorageTransactionTypes(t *testing.T) {
 	}
 }
 
+// TestPGStorageFlows exercises the flows schema (migration 000017): JSONB stage
+// round-trip, tenant isolation, the single-enabled-per-designation invariant,
+// and enabled-flow selection.
+func TestPGStorageFlows(t *testing.T) {
+	s := newPGStorage(t)
+	a := RiskAdaptiveFlowDefinition("flo_a", "tenant-a", true)
+	if err := s.UpsertFlow(a); err != nil {
+		t.Fatalf("upsert a: %v", err)
+	}
+	got, err := s.GetFlow("tenant-a", "flo_a")
+	if err != nil || len(got.Stages) != 4 || got.Stages[0].Type != StageTypeRiskEvaluation {
+		t.Fatalf("get a (JSONB round-trip): %v %+v", err, got)
+	}
+	if got.Stages[2].Policies[0].Expression != PolicySkipStepUpWhenLowRisk || !got.Stages[2].Policies[0].Negate {
+		t.Fatalf("policy did not round-trip: %+v", got.Stages[2].Policies)
+	}
+	if _, err := s.GetFlow("tenant-b", "flo_a"); err != ErrNotFound {
+		t.Errorf("cross-tenant get: want ErrNotFound, got %v", err)
+	}
+
+	// Enabling a second flow for the same designation demotes the first (partial
+	// unique index + demote).
+	b := RiskAdaptiveFlowDefinition("flo_b", "tenant-a", true)
+	b.Slug = "second"
+	if err := s.UpsertFlow(b); err != nil {
+		t.Fatalf("upsert b: %v", err)
+	}
+	en, err := s.GetEnabledFlow("tenant-a", FlowAuthorizeStepUp)
+	if err != nil || en.ID != "flo_b" {
+		t.Fatalf("enabled flow should be flo_b: %q %v", en.ID, err)
+	}
+	if first, _ := s.GetFlow("tenant-a", "flo_a"); first.Enabled {
+		t.Fatal("flo_a should have been demoted")
+	}
+
+	// Upsert (replace) by id.
+	b.Title = "Renamed"
+	if err := s.UpsertFlow(b); err != nil {
+		t.Fatalf("re-upsert b: %v", err)
+	}
+	if got, _ := s.GetFlow("tenant-a", "flo_b"); got.Title != "Renamed" {
+		t.Fatalf("upsert-replace: title = %q", got.Title)
+	}
+
+	if list, _ := s.ListFlows("tenant-a"); len(list) != 2 {
+		t.Fatalf("want 2 flows, got %d", len(list))
+	}
+	if err := s.DeleteFlow("tenant-a", "flo_a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.DeleteFlow("tenant-a", "flo_a"); err != ErrNotFound {
+		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
+}
+
 // TestPGStorageAdviceCalls exercises the advice_calls schema (migration 000012)
 // and the tenant/user filters the staff history view uses.
 func TestPGStorageAdviceCalls(t *testing.T) {
