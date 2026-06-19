@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xentranet/x-auth/pkg/httpx"
+	"github.com/xentranet/x-auth/pkg/smsx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -126,6 +127,13 @@ func (h *ChallengeHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		// it distinctly so the caller runs registration first.
 		if errors.Is(err, errNoCredential) {
 			httpx.WriteError(w, http.StatusConflict, "no_credential", "user has no credential for this method")
+			return
+		}
+		// The enrolled phone isn't a valid sendable number — a permanent client
+		// error, not a transient outage. 422 so the caller can say "fix the number".
+		if errors.Is(err, smsx.ErrInvalidNumber) {
+			h.log.Info("adapter_dispatch_invalid_number", "challenge_id", chal.ID, "method", method)
+			httpx.WriteError(w, http.StatusUnprocessableEntity, "invalid_number", "the number on file is not a valid phone number")
 			return
 		}
 		h.log.Error("adapter_dispatch_failed", "challenge_id", chal.ID, "method", method, "err", err)

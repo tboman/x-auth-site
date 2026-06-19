@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"context"
+	"errors"
 	"html"
 	"io"
 	"log/slog"
@@ -13,6 +15,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/xentranet/x-auth/pkg/smsx"
 )
+
+// phoneLookupValid reports whether phone passes the provider's number lookup.
+// It fails OPEN: a lookup that errors (provider outage) returns true so a Twilio
+// hiccup can't block setting a number — only a definitive "not a valid number"
+// returns false. A nil verifier (none configured) also returns true.
+func phoneLookupValid(ctx context.Context, v smsx.Verifier, logger *slog.Logger, phone string) bool {
+	if v == nil {
+		return true
+	}
+	ok, err := v.Lookup(ctx, phone)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("phone_lookup_failed", "err", err)
+		}
+		return true
+	}
+	return ok
+}
 
 // phone_login.go implements primary login by phone number — the "Continue with
 // phone" path of the hosted /login chooser, separate from Google.
@@ -227,6 +247,12 @@ func (h *PhoneLoginHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Verifier.Start(r.Context(), phone); err != nil {
+		if errors.Is(err, smsx.ErrInvalidNumber) {
+			h.page(w, http.StatusBadRequest, "Phone sign-in", `<h1 class="err">Check the number</h1>
+<p class="muted">That doesn't look like a valid mobile number. Enter it in full international format, e.g. <code>+15551234567</code>.</p>
+<div class="actions"><a class="btn secondary" href="`+html.EscapeString(h.entryHref(tenantID, redirectURI, state))+`">Back</a></div>`)
+			return
+		}
 		h.Logger.Error("phone_otp_send_failed", "err", err, "tenant_id", tenantID)
 		h.errorPage(w, "Could not text your code right now. Try again.")
 		return

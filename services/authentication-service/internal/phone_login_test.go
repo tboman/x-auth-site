@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,35 @@ import (
 
 	"github.com/xentranet/x-auth/pkg/smsx"
 )
+
+// fakeVerifier lets a test control Lookup's verdict.
+type fakeVerifier struct {
+	lookupOK  bool
+	lookupErr error
+}
+
+func (f fakeVerifier) Start(context.Context, string) error                 { return nil }
+func (f fakeVerifier) Check(context.Context, string, string) (bool, error) { return true, nil }
+func (f fakeVerifier) Lookup(context.Context, string) (bool, error)        { return f.lookupOK, f.lookupErr }
+
+// phoneLookupValid blocks only on a definitive "not a valid number"; nil
+// verifier and lookup errors fail open.
+func TestPhoneLookupValid(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if !phoneLookupValid(ctx, nil, log, "+1") {
+		t.Error("nil verifier should pass")
+	}
+	if !phoneLookupValid(ctx, fakeVerifier{lookupOK: true}, log, "+1") {
+		t.Error("valid number should pass")
+	}
+	if phoneLookupValid(ctx, fakeVerifier{lookupOK: false}, log, "+1") {
+		t.Error("definitively invalid number must be rejected")
+	}
+	if !phoneLookupValid(ctx, fakeVerifier{lookupErr: errors.New("twilio down")}, log, "+1") {
+		t.Error("lookup error must fail open (pass)")
+	}
+}
 
 // phoneTestRouter wires a router with a tenant whose client registers the test
 // redirect, so the phone flow's redirect check passes.

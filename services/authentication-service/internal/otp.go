@@ -258,6 +258,15 @@ func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, s
 
 	chal, err := h.Authenticator.CreateChallenge(ctx, p.TenantID, p.UserID, []string{spec.Method})
 	if err != nil {
+		// A 422 means the enrolled phone is not a valid sendable number — a
+		// permanent data problem the owner must fix, not a service outage.
+		var de *DownstreamError
+		if errors.As(err, &de) && de.Status == http.StatusUnprocessableEntity {
+			h.Logger.Warn("stepup_invalid_phone", "user_id", p.UserID, "tenant_id", p.TenantID)
+			httpx.WriteError(w, http.StatusUnprocessableEntity, "invalid_phone_number",
+				"the phone number on file is not valid — update it (full international format, e.g. +14155551234)")
+			return
+		}
 		h.Logger.Error("stepup_challenge_create_failed", "err", err, "user_id", p.UserID, "method", spec.Method)
 		httpx.WriteError(w, http.StatusBadGateway, "authenticator_unavailable", "could not create "+spec.Method+" challenge")
 		return

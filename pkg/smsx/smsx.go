@@ -8,6 +8,7 @@ package smsx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,16 +21,26 @@ import (
 // Verifier starts an OTP (texts a code to phone) and checks a submitted code.
 type Verifier interface {
 	// Start sends a fresh one-time code to phone (E.164). An error means the code
-	// was not sent.
+	// was not sent; ErrInvalidNumber specifically means the number is not a valid
+	// sendable E.164 (e.g. missing country code).
 	Start(ctx context.Context, phone string) error
 	// Check reports whether code is the valid current code for phone. A false with
 	// nil error is a wrong/expired code; a non-nil error is a transport/provider
 	// failure the caller should surface as "try again".
 	Check(ctx context.Context, phone, code string) (bool, error)
+	// Lookup reports whether phone is a real, valid number (Twilio Lookup). A
+	// (false, nil) is a definitive "not a valid number"; a non-nil error means the
+	// lookup itself failed and the caller should NOT block on it (fail open). The
+	// stub returns (true, nil) — no validation without a provider.
+	Lookup(ctx context.Context, phone string) (bool, error)
 }
 
 // StubCode is the fixed code the Stub verifier accepts when Twilio is unconfigured.
 const StubCode = "123456"
+
+// ErrInvalidNumber is returned by Start when the provider rejects the phone as
+// not a valid sendable number (Twilio 60200 / HTTP 400 on the To parameter).
+var ErrInvalidNumber = errors.New("invalid phone number")
 
 // Config holds Twilio Verify credentials. AuthSecret pairs with either the
 // account auth token (AccountSID as the basic-auth user) or an API key
@@ -66,7 +77,7 @@ func New(cfg Config, logger *slog.Logger) Verifier {
 		if logger != nil {
 			logger.Info("sms_verifier", "provider", "twilio_verify", "verify_service_sid", cfg.VerifyServiceSID)
 		}
-		return &TwilioVerify{cfg: cfg, log: logger, hc: &http.Client{Timeout: 10 * time.Second}, base: twilioVerifyBase}
+		return &TwilioVerify{cfg: cfg, log: logger, hc: &http.Client{Timeout: 10 * time.Second}, base: twilioVerifyBase, lookupBase: twilioLookupBase}
 	}
 	if logger != nil {
 		logger.Warn("sms_verifier", "provider", "stub",
@@ -89,28 +100,78 @@ func (s Stub) Check(_ context.Context, _, code string) (bool, error) {
 	return code == StubCode, nil
 }
 
+func (s Stub) Lookup(_ context.Context, _ string) (bool, error) {
+	return true, nil // no validation without a provider — don't block dev/test
+}
+
 // TwilioVerify calls the Twilio Verify v2 API over HTTPS (no SDK — the API is
 // simple form-POST + JSON, which keeps go.mod lean).
 type TwilioVerify struct {
-	cfg  Config
-	log  *slog.Logger
-	hc   *http.Client
-	base string // Verify API base; overridable in tests. Empty → twilioVerifyBase.
+	cfg        Config
+	log        *slog.Logger
+	hc         *http.Client
+	base       string // Verify API base; overridable in tests. Empty → twilioVerifyBase.
+	lookupBase string // Lookup API base; overridable in tests. Empty → twilioLookupBase.
 }
 
-const twilioVerifyBase = "https://verify.twilio.com/v2/Services/"
+const (
+	twilioVerifyBase = "https://verify.twilio.com/v2/Services/"
+	twilioLookupBase = "https://lookups.twilio.com/v2/PhoneNumbers/"
+)
 
-// Start creates a verification, which texts a fresh code to phone.
+// Start creates a verification, which texts a fresh code to phone. A 400
+// (Twilio 60200) means the number is not a valid sendable E.164 →
+// ErrInvalidNumber so callers can show a "check the number" message.
 func (t *TwilioVerify) Start(ctx context.Context, phone string) error {
 	status, httpCode, err := t.post(ctx, "/Verifications", url.Values{"To": {phone}, "Channel": {"sms"}})
 	if err != nil {
 		return err
+	}
+	if httpCode == http.StatusBadRequest {
+		return ErrInvalidNumber
 	}
 	if httpCode < 200 || httpCode >= 300 {
 		return fmt.Errorf("twilio verify start: http %d", httpCode)
 	}
 	_ = status
 	return nil
+}
+
+// Lookup checks whether phone is a real, valid number via the Twilio Lookup v2
+// API. A 404 (Twilio can't parse it) is a definitive invalid → (false, nil); a
+// transport/auth fault is returned as an error so callers can fail open.
+func (t *TwilioVerify) Lookup(ctx context.Context, phone string) (bool, error) {
+	base := t.lookupBase
+	if base == "" {
+		base = twilioLookupBase
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+url.PathEscape(phone), nil)
+	if err != nil {
+		return false, err
+	}
+	user := t.cfg.AccountSID
+	if t.cfg.APIKeySID != "" {
+		user = t.cfg.APIKeySID
+	}
+	req.SetBasicAuth(user, t.cfg.AuthSecret)
+	resp, err := t.hc.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("twilio lookup: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil // unparseable number
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("twilio lookup: http %d", resp.StatusCode)
+	}
+	var body struct {
+		Valid bool `json:"valid"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false, fmt.Errorf("twilio lookup decode: %w", err)
+	}
+	return body.Valid, nil
 }
 
 // Check validates a submitted code. A Twilio 404 means the verification no

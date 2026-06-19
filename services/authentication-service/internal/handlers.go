@@ -10,6 +10,7 @@ import (
 	"github.com/xentranet/x-auth/pkg/httpx"
 	"github.com/xentranet/x-auth/pkg/jwtx"
 	"github.com/xentranet/x-auth/pkg/ratex"
+	"github.com/xentranet/x-auth/pkg/smsx"
 	"github.com/xentranet/x-auth/pkg/tenantx"
 )
 
@@ -137,7 +138,8 @@ func Router(d Deps) http.Handler {
 	admin.StepUps = stepUps
 	admin.Events = d.Events
 	admin.Health = d.Health
-	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps}
+	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps,
+		Verifier: smsx.New(smsx.ConfigFromEnv(), d.Logger)}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 	advice := &AdviceHandlers{Store: d.Store, Logger: d.Logger}

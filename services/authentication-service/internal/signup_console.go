@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xentranet/x-auth/pkg/smsx"
 )
 
 // signup_console.go implements the self-service onboarding funnel reached from
@@ -53,6 +54,10 @@ type SignupConsoleHandlers struct {
 	// StepUps surfaces live in-progress step-up attempts in the owner's session
 	// view. Optional (nil renders an empty list).
 	StepUps *StepUpTracker
+
+	// Verifier validates a phone number (Twilio Lookup) before the owner stores it
+	// for a user. Optional/nil → no lookup validation (dev/stub).
+	Verifier smsx.Verifier
 }
 
 const (
@@ -506,6 +511,14 @@ func (h *SignupConsoleHandlers) SetUserPhone(w http.ResponseWriter, r *http.Requ
 	phone, valid := normalizePhone(r.PostForm.Get("phone"))
 	if userID == "" || !valid {
 		h.errorPage(w, http.StatusBadRequest, "Enter a valid mobile number in international format, e.g. +15551234567.", "/admin?tab=users")
+		return
+	}
+	// Confirm it's a real, sendable number (catches a missing country code, e.g.
+	// a US number entered without the leading 1) before it's stored — otherwise
+	// SMS step-up only fails later at send time.
+	if !phoneLookupValid(r.Context(), h.Verifier, h.Logger, phone) {
+		h.errorPage(w, http.StatusBadRequest,
+			"That doesn't look like a valid phone number. Use the full international format, e.g. +14155551234.", "/admin?tab=users")
 		return
 	}
 	if _, err := h.Store.GetUser(owner.Tenant.ID, userID); err != nil {
