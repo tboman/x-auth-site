@@ -676,7 +676,7 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 	case "transactions":
 		content = h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
 	case "flows":
-		content = h.flowsSection(owner.Tenant.ID)
+		content = h.flowsSection(owner.Tenant.ID, r.URL.Query().Get("edit"))
 	case "users":
 		content = h.ownerUsers(owner)
 	case "sessions":

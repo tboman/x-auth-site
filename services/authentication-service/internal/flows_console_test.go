@@ -98,11 +98,74 @@ func TestOwnerFlowsTabLifecycle(t *testing.T) {
 	}
 }
 
+// The freeform editor: save a new custom flow, see it stored, then a bad
+// submission is rejected with the input preserved.
+func TestOwnerFlowsEditorSaveAndValidate(t *testing.T) {
+	r, store := newAdminRouter(t)
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	oc := &http.Cookie{Name: ownerSessionCookie, Value: sessionCookie(w, ownerSessionCookie)}
+
+	good := `[{"type":"risk-evaluation"},{"type":"authenticator-validate","policies":[{"name":"skip","expression":"risk.tier == \"low\"","negate":true}]},{"type":"user-login"}]`
+	sw := postForm(t, r, "/admin/owner/flows/save", url.Values{
+		"slug": {"my-flow"}, "title": {"My Flow"}, "enabled": {"on"}, "stages": {good},
+	}, oc)
+	if sw.Code != http.StatusFound {
+		t.Fatalf("save good: want 302, got %d (%s)", sw.Code, sw.Body.String())
+	}
+	flows, _ := store.ListFlows("ten_acme")
+	if len(flows) != 1 || flows[0].Slug != "my-flow" || !flows[0].Enabled || len(flows[0].Stages) != 3 {
+		t.Fatalf("saved flow wrong: %+v", flows)
+	}
+
+	// Invalid expression → 400, editor re-rendered with the error and the bad
+	// JSON preserved (so the owner doesn't lose their work).
+	bad := `[{"type":"authenticator-validate","policies":[{"name":"x","expression":"risk.tier ==="}]},{"type":"user-login"}]`
+	bw := postForm(t, r, "/admin/owner/flows/save", url.Values{
+		"slug": {"broken"}, "stages": {bad},
+	}, oc)
+	if bw.Code != http.StatusBadRequest {
+		t.Fatalf("save bad: want 400, got %d", bw.Code)
+	}
+	body := bw.Body.String()
+	if !strings.Contains(body, "Validation failed") || !strings.Contains(body, "risk.tier ===") {
+		t.Fatalf("error page should show the message and preserve input:\n%s", body)
+	}
+	// Non-terminal flow is rejected too.
+	nt := postForm(t, r, "/admin/owner/flows/save", url.Values{"slug": {"nt"}, "stages": {`[{"type":"risk-evaluation"}]`}}, oc)
+	if nt.Code != http.StatusBadRequest || !strings.Contains(nt.Body.String(), "user-login or deny") {
+		t.Fatalf("non-terminal flow should be rejected: %d", nt.Code)
+	}
+}
+
+// An owner cannot overwrite another workspace's flow by submitting its id.
+func TestOwnerFlowsEditorRejectsForeignID(t *testing.T) {
+	r, store := newAdminRouter(t)
+	// Another tenant's flow.
+	if err := store.UpsertFlow(RiskAdaptiveFlowDefinition("flo_victim", "ten_other", true)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	oc := &http.Cookie{Name: ownerSessionCookie, Value: sessionCookie(w, ownerSessionCookie)}
+
+	good := `[{"type":"user-login"}]`
+	fw := postForm(t, r, "/admin/owner/flows/save", url.Values{
+		"id": {"flo_victim"}, "slug": {"hijack"}, "stages": {good}, "enabled": {"on"},
+	}, oc)
+	if fw.Code != http.StatusNotFound {
+		t.Fatalf("foreign id: want 404, got %d", fw.Code)
+	}
+	// The victim's flow is untouched.
+	v, _ := store.GetFlow("ten_other", "flo_victim")
+	if v.Slug != "risk-adaptive-stepup" || len(v.Stages) != 4 {
+		t.Fatalf("victim flow was tampered: %+v", v)
+	}
+}
+
 // The Flows endpoints reject unauthenticated callers.
 func TestOwnerFlowsRequireAuth(t *testing.T) {
 	r, _ := newAdminRouter(t)
 	for _, path := range []string{
-		"/admin/owner/flows/apply", "/admin/owner/flows/enable",
+		"/admin/owner/flows/apply", "/admin/owner/flows/save", "/admin/owner/flows/enable",
 		"/admin/owner/flows/validate", "/admin/owner/flows/delete",
 	} {
 		w := postForm(t, r, path, url.Values{"id": {"x"}})

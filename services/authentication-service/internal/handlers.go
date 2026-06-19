@@ -308,6 +308,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/transaction-types", signup.CreateTransactionType)
 	mux.HandleFunc("POST /admin/owner/transaction-types/delete", signup.DeleteTransactionType)
 	mux.HandleFunc("POST /admin/owner/flows/apply", signup.ApplyFlowTemplate)
+	mux.HandleFunc("POST /admin/owner/flows/save", signup.SaveFlow)
 	mux.HandleFunc("POST /admin/owner/flows/enable", signup.SetFlowEnabled)
 	mux.HandleFunc("POST /admin/owner/flows/validate", signup.ValidateFlow)
 	mux.HandleFunc("POST /admin/owner/flows/delete", signup.DeleteFlow)
