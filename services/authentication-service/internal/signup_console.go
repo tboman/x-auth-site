@@ -652,6 +652,7 @@ var dashboardTabs = []struct{ key, label string }{
 	{"overview", "Overview"},
 	{"integration", "Integration"},
 	{"transactions", "Transaction types"},
+	{"flows", "Flows"},
 	{"users", "Users"},
 	{"sessions", "Sessions"},
 }
@@ -674,6 +675,8 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 		content = h.ownerIntegration(owner)
 	case "transactions":
 		content = h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
+	case "flows":
+		content = h.flowsSection(owner.Tenant.ID)
 	case "users":
 		content = h.ownerUsers(owner)
 	case "sessions":

@@ -55,6 +55,41 @@ func (h *OIDCHandlers) buildStage(sc StageConfig) (Stage, error) {
 	return policyGatedStage{inner: base, policies: binds, logger: h.Logger}, nil
 }
 
+// knownStageType reports whether t is a stage type the builder understands.
+func knownStageType(t string) bool {
+	switch t {
+	case StageTypeRiskEvaluation, StageTypeAuthValidate, StageTypeUserLogin, "issue", StageTypeDeny:
+		return true
+	}
+	return false
+}
+
+// ValidateFlowDefinition checks a stored/edited flow without an OIDCHandlers:
+// every stage type is known, every policy expression compiles, and the flow ends
+// in a terminal stage (user-login or deny) so it can't dead-end without issuing
+// or denying. This is the lockout-prevention gate the owner console runs before
+// enabling a flow.
+func ValidateFlowDefinition(def FlowDefinition) error {
+	if len(def.Stages) == 0 {
+		return fmt.Errorf("flow has no stages")
+	}
+	for i, sc := range def.Stages {
+		if !knownStageType(sc.Type) {
+			return fmt.Errorf("stage %d: unknown type %q", i+1, sc.Type)
+		}
+		for _, pc := range sc.Policies {
+			if _, err := policy.Compile(pc.Expression); err != nil {
+				return fmt.Errorf("stage %d (%s) policy %q: %w", i+1, sc.Type, pc.Name, err)
+			}
+		}
+	}
+	last := def.Stages[len(def.Stages)-1].Type
+	if last != StageTypeUserLogin && last != "issue" && last != StageTypeDeny {
+		return fmt.Errorf("flow must end in a user-login or deny stage (ends in %q)", last)
+	}
+	return nil
+}
+
 // buildFlow compiles a stored definition into a runnable flow.
 func (h *OIDCHandlers) buildFlow(def FlowDefinition) (*Flow, error) {
 	if len(def.Stages) == 0 {
