@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/alicebob/miniredis/v2 v2.33.0
+	github.com/expr-lang/expr v1.16.9
 	github.com/go-webauthn/webauthn v0.10.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.5

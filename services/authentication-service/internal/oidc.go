@@ -92,6 +92,12 @@ type OIDCHandlers struct {
 	// (flowexec.go) instead of the legacy hardcoded branch. OFF by default; the
 	// built-in default flow reproduces the legacy behavior exactly (FLOW_ENGINE).
 	FlowEngine bool
+
+	// Risk is the risk-service client the risk-evaluation stage uses to fetch a
+	// live score/tier before policy-gated stages run. Optional — nil (or an
+	// unreachable risk-service) degrades fail-open: risk inputs default to falsy
+	// and policies referencing them evaluate as if risk were absent.
+	Risk RiskEvaluator
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.

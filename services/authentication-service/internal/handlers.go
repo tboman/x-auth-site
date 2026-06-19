@@ -70,6 +70,11 @@ type Deps struct {
 	// of the legacy hardcoded branch (FLOW_ENGINE). OFF by default; the built-in
 	// default flow reproduces the legacy behavior exactly.
 	FlowEngine bool
+
+	// Risk is an optional override for the risk-service client used by the
+	// risk-evaluation stage. When nil, Router builds an HTTP client from
+	// RISK_EVENTS_URL (same base as the CAEP transmitter); tests inject a mock.
+	Risk RiskEvaluator
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -119,6 +124,20 @@ func Router(d Deps) http.Handler {
 	caepTx := NewCAEPTransmitter(d.Signer, jwtIssuer, os.Getenv("RISK_EVENTS_URL"),
 		os.Getenv(httpx.EnvInternalAuthSecret), d.Logger)
 	analyzer := NewDeviceAnalyzer(d.Store, d.Logger, caepTx)
+
+	// Risk-evaluation stage client. Prefer an injected evaluator (tests); else
+	// build an HTTP client from risk-service's base (derived from RISK_EVENTS_URL).
+	// Unset → nil → the stage fails open (no risk inputs).
+	riskEval := d.Risk
+	if riskEval == nil {
+		if base := RiskBaseURL(os.Getenv("RISK_EVENTS_URL")); base != "" {
+			if rc, err := NewHTTPRiskClient(d.Logger, base); err != nil {
+				d.Logger.Error("risk_client_init_failed", "err", err)
+			} else {
+				riskEval = rc
+			}
+		}
+	}
 	oidc := &OIDCHandlers{
 		Store:           d.Store,
 		Logger:          d.Logger,
@@ -134,6 +153,7 @@ func Router(d Deps) http.Handler {
 		CAEP:            caepTx,
 		StepUpFreshness: d.StepUpFreshness,
 		FlowEngine:      d.FlowEngine,
+		Risk:            riskEval,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
