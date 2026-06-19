@@ -8,6 +8,14 @@
     ],
     "rewrites": [
       {
+        "source": "/fido",
+        "destination": "/fido/index.html"
+      },
+      {
+        "source": "/fido/**",
+        "destination": "/fido/index.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

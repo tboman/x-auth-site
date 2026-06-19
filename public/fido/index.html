@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FIDO2 Risk &amp; Metadata API | X-Auth</title>
+    <meta name="description" content="Score authenticator posture from an AAGUID or attestation: hardware-bound vs synced, FIDO MDS certification, and extension support — without maintaining your own MDS cache.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/quickstarts/quickstart.css">
+    <style>
+        /* Small additions on top of the shared quickstart theme. */
+        .qs-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
+        .qs-table th, .qs-table td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+        .qs-table th { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+        .qs-table code { color: var(--text); }
+        .pill { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; border: 1px solid var(--border); }
+        .pill-low { color: var(--accent); border-color: var(--accent-ring); }
+        .pill-med { color: var(--warn); border-color: rgba(240,180,41,0.4); }
+        .pill-high { color: var(--danger); border-color: rgba(240,64,64,0.4); }
+        .demo-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 1rem 0; }
+        .demo-row input { flex: 1; min-width: 280px; background: #0c0c10; border: 1px solid var(--border); color: var(--text); padding: 0.7rem 0.9rem; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+        .demo-row button { background: var(--accent); color: #000; border: 0; padding: 0.7rem 1.2rem; border-radius: 6px; font-weight: 700; cursor: pointer; }
+        .note { color: var(--muted); font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="/">Home</a> / API / FIDO Risk &amp; Metadata</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#00e096;--c2:#0a8f63;">FIDO</div>
+            <div>
+                <h1>FIDO2 Authenticator Risk &amp; Metadata API</h1>
+                <p class="lead">Send an <strong>AAGUID</strong> or a WebAuthn <strong>attestation</strong> and get back an enriched posture profile: is the credential <strong>hardware-bound</strong> or a <strong>synced</strong> cloud passkey, its <strong>FIDO Alliance MDS certification</strong>, and which advanced extensions (<code>largeBlob</code>, PRF, <code>credProtect</code>) it supports — without building your own MDS cache, signature-chain verification, and parsing.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Base URL: https://fido.x-auth.com</span>
+            <span>Auth: X-Tenant-Id header</span>
+            <span>Format: JSON</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">i</div>
+        <div>
+            <h2>How it works</h2>
+            <p>X-Auth fetches the FIDO Alliance Metadata Service (MDS3) blob, verifies its signature against the FIDO root via the <code>x5c</code> chain, and keeps a fresh in-memory index. You query it by AAGUID or by posting an attestation; we fold the metadata statement and status reports into one opinionated risk shape. Every <code>/v1/*</code> call needs an <code>X-Tenant-Id</code> header (used for rate limiting) and is rate limited per tenant.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Look up an AAGUID</h2>
+            <p><code>GET /v1/authenticators/{aaguid}</code> — returns the risk profile, or <code>404</code> if the AAGUID is not in the MDS.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">request</span></div>
+                <div class="term-body"><pre><code>curl -H <span class="str">"X-Tenant-Id: acme"</span> \
+  https://fido.x-auth.com/v1/authenticators/ee882879-721c-4913-9775-3dfcce97072a</code></pre></div>
+            </div>
+            <div class="terminal-shell" style="margin-top:1rem;">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">200 OK</span></div>
+                <div class="term-body"><pre><code>{
+  "aaguid": "ee882879-721c-4913-9775-3dfcce97072a",
+  "description": "YubiKey 5 Series with NFC",
+  "protocolFamily": "fido2",
+  "binding": "hardware",
+  "hardwareBound": true,
+  "keyProtection": ["hardware", "secure_element"],
+  "certification": {
+    "fidoCertified": true,
+    "status": "FIDO_CERTIFIED_L2",
+    "level": "L2",
+    "latestEffectiveDate": "2021-05-12"
+  },
+  "extensions": {
+    "largeBlob": true,
+    "prf": true,
+    "credProtect": true,
+    "credBlob": false,
+    "minPinLength": true,
+    "supported": ["credProtect", "hmac-secret", "largeBlobKey", "minPinLength"]
+  },
+  "riskTier": "low",
+  "riskScore": 0,
+  "signals": ["hardware-bound key protection", "FIDO certified (FIDO_CERTIFIED_L2)"],
+  "source": "mds"
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>Profile an attestation</h2>
+            <p><code>POST /v1/attestation</code> — send a bare <code>attestationObject</code> (base64url or base64) or a full WebAuthn registration response under <code>credential</code>. We read the AAGUID and the authenticator-data flags. The <strong>backup-eligible (BE)</strong> flag is authoritative for synced credentials.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">request</span></div>
+                <div class="term-body"><pre><code>curl -X POST -H <span class="str">"X-Tenant-Id: acme"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"attestationObject":"o2NmbXRkbm9uZ..."}'</span> \
+  https://fido.x-auth.com/v1/attestation</code></pre></div>
+            </div>
+            <div class="terminal-shell" style="margin-top:1rem;">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">200 OK</span></div>
+                <div class="term-body"><pre><code>{
+  "aaguid": "fbfc3007-154e-4ecc-8c0b-6e020557d7bd",
+  "description": "iCloud Keychain",
+  "binding": "synced",
+  "hardwareBound": false,
+  "certification": { "fidoCertified": false, "status": "NOT_FIDO_CERTIFIED" },
+  "extensions": { "largeBlob": false, "prf": true },
+  "attestation": {
+    "userPresent": true,
+    "userVerified": true,
+    "backupEligible": true,
+    "backupState": true,
+    "attestedCredentialData": true
+  },
+  "riskTier": "medium",
+  "riskScore": 50,
+  "signals": ["synced / multi-device credential", "credential is backup-eligible (synced / multi-device)"],
+  "source": "mds+attestation"
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>List &amp; status</h2>
+            <p><code>GET /v1/authenticators?offset=0&amp;limit=50</code> pages through every known authenticator. <code>GET /v1/mds/status</code> reports snapshot freshness and the last refresh outcome — handy as a deep health check.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">GET /v1/mds/status → 200 OK</span></div>
+                <div class="term-body"><pre><code>{ "loaded": true, "blobNumber": 71, "entryCount": 312,
+  "nextUpdate": "2026-07-01", "fetchedAt": "2026-06-19T09:00:00Z", "source": "network" }</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Risk tiers</h2>
+            <p>Every profile carries a <code>riskScore</code> (0–100, higher = riskier) and a tier. Security advisories (revoked, key compromise, UV bypass) always force <span class="pill pill-high">high</span>.</p>
+            <table class="qs-table">
+                <tr><th>Tier</th><th>Typical signals</th></tr>
+                <tr><td><span class="pill pill-low">low</span></td><td>Hardware-bound key protection, FIDO certified (L2+).</td></tr>
+                <tr><td><span class="pill pill-med">medium</span></td><td>Synced/software credential, not certified, or AAGUID absent from MDS.</td></tr>
+                <tr><td><span class="pill pill-high">high</span></td><td>Revoked / attestation-key compromise / user-verification bypass advisories.</td></tr>
+            </table>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">▷</div>
+        <div>
+            <h2>Try it</h2>
+            <p>Paste an AAGUID and query the live API.</p>
+            <div class="demo-row">
+                <input id="aaguid" type="text" value="ee882879-721c-4913-9775-3dfcce97072a" spellcheck="false" aria-label="AAGUID">
+                <button id="lookup">Look up</button>
+            </div>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">response</span></div>
+                <div class="term-body"><pre><code id="demo-out">// response appears here</code></pre></div>
+            </div>
+            <p class="note">Calls <code>https://fido.x-auth.com</code> with a demo tenant header. Cross-origin browser access requires CORS on the service; from a server you can call it directly today.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Score device posture dynamically alongside the rest of the platform.</p>
+        <ul>
+            <li><a href="/#services"><strong>Risk advice API</strong><span>Combine authenticator posture with behavioral and network risk.</span></a></li>
+            <li><a href="/quickstarts/"><strong>Quickstarts</strong><span>Wire up X-Auth login in your stack.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Higher rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>High-security AAGUID allow/deny policy support.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="/quickstarts/">Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+<script>
+    (function () {
+        var btn = document.getElementById('lookup');
+        var out = document.getElementById('demo-out');
+        var input = document.getElementById('aaguid');
+        btn.addEventListener('click', function () {
+            var aaguid = input.value.trim();
+            out.textContent = '// loading…';
+            fetch('https://fido.x-auth.com/v1/authenticators/' + encodeURIComponent(aaguid), {
+                headers: { 'X-Tenant-Id': 'demo' }
+            }).then(function (r) {
+                return r.json().then(function (body) {
+                    out.textContent = JSON.stringify(body, null, 2);
+                });
+            }).catch(function (err) {
+                out.textContent = '// request failed: ' + err.message +
+                    '\n// (the service may not be deployed yet, or CORS is not enabled for browser access)';
+            });
+        });
+    })();
+</script>
+
+</body>
+</html>

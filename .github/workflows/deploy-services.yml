@@ -53,7 +53,7 @@ jobs:
       - name: Build and push images
         run: |
           set -euo pipefail
-          for svc in transaction risk authentication authenticator persona pool broker grant; do
+          for svc in transaction risk authentication authenticator persona pool broker grant fido; do
             echo "::group::build ${svc}-service"
             docker build -t "${REPO}/${svc}-service:${GITHUB_SHA}" \
               -f "services/${svc}-service/Dockerfile" .
@@ -71,9 +71,9 @@ jobs:
           set -euo pipefail
           declare -A short=(
             [transaction]=txn [risk]=risk [authentication]=auth [authenticator]=authr
-            [persona]=persona [pool]=pool [broker]=broker [grant]=grant
+            [persona]=persona [pool]=pool [broker]=broker [grant]=grant [fido]=fido
           )
-          for svc in transaction risk authentication authenticator persona pool broker grant; do
+          for svc in transaction risk authentication authenticator persona pool broker grant fido; do
             job="migrate-${short[$svc]}"
             echo "::group::${job}"
             gcloud run jobs update "${job}" \
@@ -87,7 +87,7 @@ jobs:
       - name: Deploy services
         run: |
           set -euo pipefail
-          for svc in transaction risk authentication authenticator persona pool broker grant; do
+          for svc in transaction risk authentication authenticator persona pool broker grant fido; do
             echo "::group::deploy ${svc}-service"
             gcloud run services update "${svc}-service" \
               --image "${REPO}/${svc}-service:${GITHUB_SHA}" \
@@ -106,11 +106,13 @@ jobs:
           # on transaction-service.
           declare -A path=( [transaction-service]=/v1/advice
                             [authentication-service]=/.well-known/openid-configuration
-                            [broker-service]=/.well-known/oauth-authorization-server )
+                            [broker-service]=/.well-known/oauth-authorization-server
+                            [fido-service]=/v1/mds/status )
           declare -A want=( [transaction-service]=405
                             [authentication-service]=200
-                            [broker-service]=200 )
-          for svc in transaction-service authentication-service broker-service; do
+                            [broker-service]=200
+                            [fido-service]=400 )
+          for svc in transaction-service authentication-service broker-service fido-service; do
             url="https://${svc}-${PROJECT_NUMBER}.${REGION}.run.app${path[$svc]}"
             echo "checking ${url} (want ${want[$svc]})"
             for attempt in 1 2 3 4 5; do

@@ -12,3 +12,4 @@ COPY services/persona-service/migrations        /migrations/persona-service
 COPY services/pool-service/migrations           /migrations/pool-service
 COPY services/broker-service/migrations         /migrations/broker-service
 COPY services/grant-service/migrations          /migrations/grant-service
+COPY services/fido-service/migrations           /migrations/fido-service

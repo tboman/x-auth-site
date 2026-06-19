@@ -18,6 +18,7 @@ locals {
     "pool-service",
     "broker-service",
     "grant-service",
+    "fido-service",
   ]
 
   short = {
@@ -29,6 +30,7 @@ locals {
     "pool-service"           = "pool"
     "broker-service"         = "broker"
     "grant-service"          = "grant"
+    "fido-service"           = "fido"
   }
 
   # Deterministic run.app URLs — avoids resource self-references in for_each.
@@ -105,6 +107,16 @@ locals {
       public = false
       db     = "grant_db"
       redis  = false
+      env    = {}
+    }
+    # Public FIDO MDS risk API (fido.x-auth.com). Redis backs the shared blob
+    # cache + rate limiter. Domain mapping is a manual post-apply step — see
+    # deploy/terraform/README.md.
+    "fido-service" = {
+      port   = 8184
+      public = true
+      db     = "fido_db"
+      redis  = true
       env    = {}
     }
   }

@@ -105,9 +105,16 @@ manually via *Actions → Deploy services → Run workflow*).
 ## Custom domains
 
 Map `api.x-auth.com` → transaction-service, `auth.x-auth.com` →
-authentication-service, `mcp.x-auth.com` → broker-service with
-`gcloud beta run domain-mappings create` (or a global external LB + Cloud
-Armor when you want WAF/DDoS controls — Appendix B's "Cloud Load Balancer").
+authentication-service, `mcp.x-auth.com` → broker-service, `fido.x-auth.com` →
+fido-service with `gcloud beta run domain-mappings create` (or a global external
+LB + Cloud Armor when you want WAF/DDoS controls — Appendix B's "Cloud Load
+Balancer"), e.g.:
+
+```
+gcloud beta run domain-mappings create --service=fido-service \
+  --domain=fido.x-auth.com --region=europe-north1
+```
+
 After mapping the auth domain, set `auth_public_url` in terraform so the OIDC
 issuer matches (`terraform apply -var auth_public_url=https://auth.x-auth.com`).
 
