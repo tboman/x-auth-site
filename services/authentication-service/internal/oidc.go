@@ -87,6 +87,11 @@ type OIDCHandlers struct {
 	// CAEP emits a Security Event Token to risk-service when an advice-tracked
 	// transaction completes authentication (mintCodeAndRedirect). Optional.
 	CAEP *CAEPTransmitter
+
+	// FlowEngine routes /authorize through the configurable flow executor
+	// (flowexec.go) instead of the legacy hardcoded branch. OFF by default; the
+	// built-in default flow reproduces the legacy behavior exactly (FLOW_ENGINE).
+	FlowEngine bool
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.
@@ -328,6 +333,26 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "acr_values must request at least the advised protection level")
 			return
 		}
+	}
+
+	// Flow engine: when enabled, drive the request through the configurable flow
+	// executor. The built-in default flow reproduces the legacy branch below
+	// exactly (validate → issue), so this is behavior-identical for an
+	// un-customized tenant. The advice/transaction binding above stays a
+	// precondition (not a stage). Flag OFF → the legacy branch runs unchanged.
+	if h.FlowEngine {
+		exec := &FlowExecution{
+			ID: uuid.NewString(), TenantID: effectiveTenant, Designation: FlowAuthorizeStepUp,
+			ClientID: clientID, UserID: user.ID, RedirectURI: redirectURI, Scope: scope,
+			State: state, Nonce: nonce, CodeChallenge: codeChallenge, TransactionID: transactionID,
+			AuthzSessionID: authzSessionID, ACRValues: q.Get("acr_values"),
+			Context: map[string]any{}, CreatedAt: time.Now().UTC(),
+		}
+		if _, err := runFlow(w, r, exec, h.defaultAuthorizeStepUpFlow().Stages); err != nil {
+			// Stages write their own responses; just record the fault.
+			h.Logger.Error("flow_run_failed", "err", err, "tenant_id", effectiveTenant, "user_id", user.ID)
+		}
+		return
 	}
 
 	if lvlOK {

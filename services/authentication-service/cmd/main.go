@@ -158,6 +158,9 @@ func main() {
 		// A protection-level /authorize request passes through (no re-challenge)
 		// when the user stepped up at >= that level within this window. Default 5m.
 		StepUpFreshness: parseDurationEnv(logger, "AUTHORIZE_STEPUP_FRESHNESS"),
+		// Route /authorize through the configurable flow executor. OFF by default;
+		// the built-in default flow reproduces the legacy behavior exactly.
+		FlowEngine: config.Env("FLOW_ENGINE", "") == "true",
 	})
 
 	// Transport security (ARCHITECTURE.md §10.3): TLS/mTLS from the

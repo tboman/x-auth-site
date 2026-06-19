@@ -65,6 +65,11 @@ type Deps struct {
 	// without re-challenging if the user stepped up at >= that level within this
 	// window (AUTHORIZE_STEPUP_FRESHNESS). 0 → defaultStepUpFreshness (5m).
 	StepUpFreshness time.Duration
+
+	// FlowEngine routes /authorize through the configurable flow executor instead
+	// of the legacy hardcoded branch (FLOW_ENGINE). OFF by default; the built-in
+	// default flow reproduces the legacy behavior exactly.
+	FlowEngine bool
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -128,6 +133,7 @@ func Router(d Deps) http.Handler {
 		Analyzer:        analyzer,
 		CAEP:            caepTx,
 		StepUpFreshness: d.StepUpFreshness,
+		FlowEngine:      d.FlowEngine,
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}

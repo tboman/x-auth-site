@@ -179,16 +179,28 @@ func (l *ProtectionLedger) gcLocked() {
 	}
 }
 
+// protectionSatisfied reports whether sessionID already meets lvl.Rank within the
+// step-up freshness window — i.e. the request can pass through without a
+// challenge. Shared by handleProtection (legacy path) and the flow engine's
+// authenticator-validate stage so both make the identical decision.
+func (h *OIDCHandlers) protectionSatisfied(lvl ProtectionLevel, sessionID string) bool {
+	fresh := h.StepUpFreshness
+	if fresh <= 0 {
+		fresh = defaultStepUpFreshness
+	}
+	return sessionID != "" && h.Protection.AchievedWithin(sessionID, fresh) >= lvl.Rank
+}
+
 // handleProtection applies the mocked protection-level decision on /authorize:
 // pass through when the session already satisfies the requested level, else
 // challenge with the level's mapped method (stamping the token acr with the
 // protection level, not the method).
 func (h *OIDCHandlers) handleProtection(w http.ResponseWriter, r *http.Request, lvl ProtectionLevel, sessionID string, p pendingAuthorize) {
-	fresh := h.StepUpFreshness
-	if fresh <= 0 {
-		fresh = defaultStepUpFreshness
-	}
-	if sessionID != "" && h.Protection.AchievedWithin(sessionID, fresh) >= lvl.Rank {
+	if h.protectionSatisfied(lvl, sessionID) {
+		fresh := h.StepUpFreshness
+		if fresh <= 0 {
+			fresh = defaultStepUpFreshness
+		}
 		h.Logger.Info("protection_passthrough", "acr", lvl.ACR, "rank", lvl.Rank,
 			"user_id", p.UserID, "tenant_id", p.TenantID, "freshness", fresh.String())
 		h.mintCodeAndRedirect(w, r, AuthCode{

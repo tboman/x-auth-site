@@ -17,6 +17,16 @@ import (
 
 // newOTPRouter wires a router whose authenticator mock can be shaped per test.
 func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage) {
+	return buildOTPRouter(t, mock, false)
+}
+
+// newOTPRouterFlow is newOTPRouter with the flow engine enabled — used to prove
+// the executor reproduces the legacy /authorize behavior.
+func newOTPRouterFlow(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage) {
+	return buildOTPRouter(t, mock, true)
+}
+
+func buildOTPRouter(t *testing.T, mock *mockAuthenticator, flowEngine bool) (http.Handler, Storage) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := NewMemStorage()
@@ -34,6 +44,7 @@ func newOTPRouter(t *testing.T, mock *mockAuthenticator) (http.Handler, Storage)
 		Issuer:        "http://test.local",
 		Signer:        testSigner,
 		DevAutologin:  true, // legacy /authorize path; secure cookie path covered in oidc_authz_test.go
+		FlowEngine:    flowEngine,
 	})
 	return r, store
 }
