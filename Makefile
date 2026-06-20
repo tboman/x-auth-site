@@ -1,6 +1,6 @@
-.PHONY: all build test tidy run-persona run-pool run-broker run-grant run-fido docker-persona docker-pool docker-broker docker-grant
+.PHONY: all build test tidy run-persona run-pool run-broker run-grant run-fido run-id docker-persona docker-pool docker-broker docker-grant
 
-SERVICES := persona pool broker grant transaction risk authentication authenticator fido
+SERVICES := persona pool broker grant transaction risk authentication authenticator fido id
 
 all: build
 
@@ -56,6 +56,9 @@ run-authenticator:
 
 run-fido:
 	PORT=8184 SERVICE_NAME=fido-service go run ./services/fido-service/cmd
+
+run-id:
+	PORT=8185 SERVICE_NAME=id-service TRUST_MODE=insecure-accept-any go run ./services/id-service/cmd
 
 # Build docker images (each service has its own Dockerfile, shared build context at repo root).
 docker-%:

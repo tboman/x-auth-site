@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Remote Identity Verification (Web mDL) | X-Auth</title>
+    <meta name="description" content="Cryptographic proof of identity for high-risk remote actions: the customer presents a mobile driver's license (ISO 18013-5 mDL) from their device wallet over OpenID4VP, and your agent gets non-repudiable proof.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/quickstarts/quickstart.css">
+    <style>
+        .qs-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.9rem; }
+        .qs-table th, .qs-table td { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+        .qs-table th { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+        .qs-table code { color: var(--text); }
+        .pill { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; border: 1px solid var(--border); }
+        .pill-high { color: var(--accent); border-color: var(--accent-ring); }
+        .pill-med { color: var(--warn); border-color: rgba(240,180,41,0.4); }
+        .pill-low { color: var(--danger); border-color: rgba(240,64,64,0.4); }
+        .note { color: var(--muted); font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container">
+        <div class="header-inner">
+            <div class="logo-wrap">
+                <a href="/" class="logo">X-AUTH//</a>
+                <a href="https://xentranet.com" class="logo-sub" target="_blank" rel="noopener">by XentraNET</a>
+            </div>
+            <nav>
+                <a href="/#apps">For Apps</a>
+                <a href="/#agents">For Agents</a>
+                <a href="/quickstarts/">Quickstarts</a>
+                <a href="/#pricing">Pricing</a>
+                <a href="/#contact" class="nav-cta">Get Started Free</a>
+            </nav>
+        </div>
+    </div>
+</header>
+
+<section class="qs-detail-hero">
+    <div class="container">
+        <div class="qs-breadcrumb"><a href="/">Home</a> / API / Remote Identity Verification</div>
+        <div class="qs-detail-head">
+            <div class="qs-detail-logo" style="--c1:#00e096;--c2:#0a8f63;">mDL</div>
+            <div>
+                <h1>Remote Identity Verification (Web mDL)</h1>
+                <p class="lead">Verify a person remotely for high-risk actions — a controlled-substance prescription, a large wire transfer — with <strong>cryptographic non-repudiation</strong>. Your agent sends a secure link or prompts the customer's portal; the customer taps <strong>"Verify with Wallet"</strong>, confirms with their device biometric, and their wallet presents a <strong>mobile driver's license (ISO 18013-5 mDL)</strong> over the <strong>W3C Digital Credentials API + OpenID4VP</strong>. X-Auth verifies it end-to-end and hands your dashboard the proof.</p>
+            </div>
+        </div>
+        <div class="qs-meta">
+            <span>Base URL: https://id.x-auth.com</span>
+            <span>Agent auth: X-Tenant-Id header</span>
+            <span>Format: JSON</span>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">i</div>
+        <div>
+            <h2>How it works</h2>
+            <p>It's a decoupled, consumer-facing flow. Your backend creates a verification; the customer presents their mDL from a separate moment/device; X-Auth verifies the <strong>issuer signature</strong> (COSE_Sign1 + IACA chain), the <strong>MSO value-digests</strong> for every disclosed field, and the <strong>device signature</strong> over a session transcript that is bound to a per-request nonce — so the result can't be replayed or repudiated. On success we mint a signed <strong>Verified Identity Token</strong> (RS256 JWT) carrying a hash of the disclosed claims.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">1</div>
+        <div>
+            <h2>Create a verification</h2>
+            <p><code>POST /v1/verifications</code> — name the reason, list the mDL claims you need, and pick a channel. You get a one-time <code>verifyUrl</code> to send (or open) for the customer.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">request</span></div>
+                <div class="term-body"><pre><code>curl -X POST -H <span class="str">"X-Tenant-Id: acme"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"purpose":"Authorize wire transfer of $48,000",
+       "claims":["family_name","given_name","birth_date","document_number"],
+       "channel":"link"}'</span> \
+  https://id.x-auth.com/v1/verifications</code></pre></div>
+            </div>
+            <div class="terminal-shell" style="margin-top:1rem;">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">201 Created</span></div>
+                <div class="term-body"><pre><code>{
+  "id": "vrf_8Qx...",
+  "status": "pending",
+  "verifyUrl": "https://id.x-auth.com/v/9aB...",
+  "expiresAt": "2026-06-19T09:10:00Z"
+}</code></pre></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">2</div>
+        <div>
+            <h2>The customer verifies</h2>
+            <p>The customer opens <code>verifyUrl</code> — same-device (a prompt in your portal) or cross-device (a secure link / QR). The page hands the OpenID4VP request to <code>navigator.credentials.get(&#123; digital &#125;)</code>; the OS shows the wallet and a biometric prompt, then returns a <code>vp_token</code> (an mdoc <code>DeviceResponse</code>) which the page posts back to <code>POST /v1/verifications/&#123;id&#125;/response</code>. No login — the wallet biometric is the authentication.</p>
+            <p class="note">Browser support for the Digital Credentials API is currently limited to Chrome on Android with a platform wallet; the page feature-detects and degrades gracefully elsewhere.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">3</div>
+        <div>
+            <h2>Read the result</h2>
+            <p><code>GET /v1/verifications/&#123;id&#125;</code> — poll until <code>verified</code>. You get the disclosed claims, an assurance tier, whether the issuer chain anchored and the credential was device-bound, and the signed proof token.</p>
+            <div class="terminal-shell">
+                <div class="term-bar"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div><span class="term-label">200 OK</span></div>
+                <div class="term-body"><pre><code>{
+  "id": "vrf_8Qx...",
+  "status": "verified",
+  "result": {
+    "claims": {
+      "family_name": "Mustermann",
+      "given_name": "Erika",
+      "birth_date": "1985-03-12",
+      "document_number": "D1234567"
+    },
+    "issuerTrusted": true,
+    "deviceBound": true,
+    "issuerCommonName": "State DMV Document Signer",
+    "assurance": "high",
+    "signals": ["device_signature_valid", "issuer_trusted"],
+    "proofToken": "eyJhbGciOiJSUzI1Ni␣...",
+    "verifiedAt": "2026-06-19T09:03:11Z"
+  }
+}</code></pre></div>
+            </div>
+            <p class="note">Verify the <code>proofToken</code> against <code>https://id.x-auth.com/.well-known/jwks.json</code>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">4</div>
+        <div>
+            <h2>Assurance tiers</h2>
+            <p>Each verified result carries an assurance tier from the strongest signals present.</p>
+            <table class="qs-table">
+                <tr><th>Tier</th><th>Meaning</th></tr>
+                <tr><td><span class="pill pill-high">high</span></td><td>Issuer chain anchored to a trusted IACA root <em>and</em> device-bound (proof of possession).</td></tr>
+                <tr><td><span class="pill pill-med">medium</span></td><td>Device-bound, but the issuer chain didn't anchor to a configured root.</td></tr>
+                <tr><td><span class="pill pill-low">low</span></td><td>Structural only — no device binding established.</td></tr>
+            </table>
+            <p class="note">Production trust of real state mDLs uses the issuing authorities' IACA roots (AAMVA / state), supplied to the service out-of-band; none are bundled.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-step">
+    <div class="container">
+        <div class="qs-step-num">▷</div>
+        <div>
+            <h2>Try it</h2>
+            <p>Open the agent console to create a verification and watch a live result.</p>
+            <p><a class="nav-cta" href="https://id.x-auth.com/dashboard" target="_blank" rel="noopener">Open agent console →</a></p>
+            <p class="note">The console and the customer "Verify with Wallet" page are served from <code>https://id.x-auth.com</code>.</p>
+        </div>
+    </div>
+</section>
+
+<section class="qs-next">
+    <div class="container">
+        <h2>Next steps</h2>
+        <p>Add high-assurance identity proof to your support and telehealth flows.</p>
+        <ul>
+            <li><a href="/#services"><strong>Risk advice API</strong><span>Combine identity proof with behavioral and network risk.</span></a></li>
+            <li><a href="/fido"><strong>FIDO Risk &amp; Metadata API</strong><span>Score authenticator posture from an AAGUID or attestation.</span></a></li>
+            <li><a href="/#pricing"><strong>Production tier</strong><span>Higher rate limits, SLAs, dedicated infrastructure.</span></a></li>
+            <li><a href="/#contact"><strong>Talk to us</strong><span>IACA trust-anchor onboarding for your jurisdictions.</span></a></li>
+        </ul>
+    </div>
+</section>
+
+<footer class="qs-footer">
+    <div class="container">
+        <p>X-Auth by <a href="https://xentranet.com" target="_blank" rel="noopener">XentraNET</a> &middot; <a href="/">Home</a> &middot; <a href="/quickstarts/">Quickstarts</a> &middot; <a href="/#contact">Contact</a></p>
+    </div>
+</footer>
+
+</body>
+</html>

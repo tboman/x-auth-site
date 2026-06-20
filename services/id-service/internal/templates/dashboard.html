@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent verification console · X-Auth</title>
+<style>
+  :root{--bg:#09090b;--surface:#121216;--line:#26262c;--text:#e6e6ea;--muted:#9a9aa6;--accent:#00e096;--danger:#ff6b6b;--amber:#f5b942;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+  header{border-bottom:1px solid var(--line);padding:16px 24px;display:flex;align-items:center;gap:14px}
+  .brand{font:600 13px/1 ui-monospace,"JetBrains Mono",monospace;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+  .tenant{margin-left:auto;font:500 12px/1 ui-monospace,monospace;color:var(--muted)}
+  .tenant input{background:#0c0c10;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 10px;font:inherit;width:180px}
+  main{max-width:1040px;margin:0 auto;padding:28px 24px;display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  @media(max-width:840px){main{grid-template-columns:1fr}}
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px}
+  h2{font-size:15px;margin:0 0 16px;letter-spacing:.02em}
+  label{display:block;font:600 11px/1 ui-monospace,monospace;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:14px 0 6px}
+  input[type=text],select{width:100%;background:#0c0c10;border:1px solid var(--line);color:var(--text);border-radius:9px;padding:11px 12px;font:inherit}
+  .claims{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+  .claims label{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-weight:500;color:var(--text);font-size:13px;margin:0}
+  button{margin-top:18px;border:0;border-radius:11px;background:var(--accent);color:#04130c;font-size:15px;font-weight:700;padding:13px 18px;cursor:pointer}
+  button.ghost{background:#0c0c10;color:var(--text);border:1px solid var(--line)}
+  .link{margin-top:16px;display:none}
+  .link code{display:block;background:#0c0c10;border:1px solid var(--line);border-radius:9px;padding:11px 12px;font:13px/1.4 ui-monospace,monospace;word-break:break-all;color:var(--accent)}
+  .row{display:flex;gap:10px;align-items:center;margin-top:10px}
+  .pill{display:inline-block;font:600 11px/1 ui-monospace,monospace;letter-spacing:.06em;text-transform:uppercase;padding:6px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .pill.pending{color:var(--amber);border-color:#4a3a12}
+  .pill.verified{color:var(--accent);border-color:#0c3a2a}
+  .pill.failed,.pill.expired{color:var(--danger);border-color:#4a1414}
+  .result{display:none;margin-top:6px}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  td{padding:8px 6px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+  td.k{color:var(--muted);font:500 12px/1.4 ui-monospace,monospace;width:42%;text-transform:none}
+  .assurance{font-weight:700}
+  .assurance.high{color:var(--accent)} .assurance.medium{color:var(--amber)} .assurance.low{color:var(--danger)}
+  .muted{color:var(--muted);font-size:13px;line-height:1.5}
+  .proof{margin-top:12px}
+  .proof textarea{width:100%;height:84px;background:#0c0c10;border:1px solid var(--line);color:var(--muted);border-radius:9px;padding:10px;font:11px/1.4 ui-monospace,monospace;resize:vertical}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">X-AUTH // agent console</span>
+  <span class="tenant">X-Tenant-Id <input id="tenant" placeholder="ten_demo"></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Request a verification</h2>
+    <p class="muted">Send the customer a secure “Verify with Wallet” link. They confirm with their mobile driver’s license + device biometric; the result appears here.</p>
+
+    <label for="purpose">Reason shown to customer</label>
+    <input type="text" id="purpose" placeholder="Authorize wire transfer of $48,000">
+
+    <label>Claims to request</label>
+    <div class="claims" id="claims"></div>
+
+    <label for="channel">Channel</label>
+    <select id="channel">
+      <option value="link">Cross-device (send a secure link)</option>
+      <option value="portal">Same-device (prompt in portal)</option>
+    </select>
+
+    <button onclick="createVerification()">Create verification</button>
+
+    <div class="link" id="link">
+      <label>Send this link to the customer</label>
+      <code id="verifyUrl"></code>
+      <div class="row">
+        <button class="ghost" onclick="copyLink()">Copy link</button>
+        <a id="openLink" class="pill" target="_blank" rel="noopener">Open</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Live result <span class="pill" id="statusPill" style="display:none"></span></h2>
+    <p class="muted" id="resultHint">No active verification. Create one to begin.</p>
+
+    <div class="result" id="result">
+      <div class="row"><span class="muted">Assurance</span> <span id="assurance" class="assurance"></span></div>
+      <table id="claimsTable"></table>
+      <div class="proof" id="proofWrap" style="display:none">
+        <label>Verified Identity Token (proof)</label>
+        <textarea id="proof" readonly></textarea>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const CLAIMS = ["family_name","given_name","birth_date","document_number","expiry_date","age_over_18","age_over_21","portrait"];
+const DEFAULT_CHECKED = new Set(["family_name","given_name","birth_date","document_number"]);
+const claimsBox = document.getElementById('claims');
+CLAIMS.forEach(c=>{
+  const id='c_'+c;
+  claimsBox.insertAdjacentHTML('beforeend',
+    `<label><input type="checkbox" id="${id}" value="${c}" ${DEFAULT_CHECKED.has(c)?'checked':''}> ${c}</label>`);
+});
+
+const tenantEl = document.getElementById('tenant');
+tenantEl.value = localStorage.getItem('xauth_id_tenant') || 'ten_demo';
+tenantEl.addEventListener('change',()=>localStorage.setItem('xauth_id_tenant', tenantEl.value.trim()));
+
+let pollTimer = null;
+let current = null;
+
+function headers(){ return {'Content-Type':'application/json','X-Tenant-Id': tenantEl.value.trim() || 'ten_demo'}; }
+
+async function createVerification(){
+  const claims = CLAIMS.filter(c=>document.getElementById('c_'+c).checked);
+  const body = {
+    purpose: document.getElementById('purpose').value.trim(),
+    claims,
+    channel: document.getElementById('channel').value
+  };
+  const resp = await fetch('/v1/verifications',{method:'POST',headers:headers(),body:JSON.stringify(body)});
+  if(!resp.ok){ alert('Create failed: '+resp.status); return; }
+  const v = await resp.json();
+  current = v.id;
+  const url = new URL(v.verifyUrl, location.origin).href;
+  document.getElementById('verifyUrl').textContent = url;
+  document.getElementById('openLink').href = url;
+  document.getElementById('link').style.display='block';
+  resetResult('pending');
+  poll();
+}
+
+function copyLink(){ navigator.clipboard.writeText(document.getElementById('verifyUrl').textContent); }
+
+function resetResult(status){
+  const pill = document.getElementById('statusPill');
+  pill.style.display='inline-block'; pill.className='pill '+status; pill.textContent=status;
+  document.getElementById('resultHint').style.display='none';
+  document.getElementById('result').style.display = status==='verified' ? 'block':'none';
+}
+
+async function poll(){
+  if(pollTimer) clearTimeout(pollTimer);
+  if(!current) return;
+  const resp = await fetch('/v1/verifications/'+current,{headers:headers()});
+  if(resp.ok){
+    const v = await resp.json();
+    const pill=document.getElementById('statusPill');
+    pill.className='pill '+v.status; pill.textContent=v.status;
+    if(v.status==='verified'){ renderResult(v); return; }
+    if(v.status==='failed'||v.status==='expired'){
+      document.getElementById('resultHint').style.display='block';
+      document.getElementById('resultHint').textContent='Verification '+v.status+'.';
+      return;
+    }
+  }
+  pollTimer = setTimeout(poll, 2000);
+}
+
+function renderResult(v){
+  resetResult('verified');
+  const r=v.result||{};
+  const a=document.getElementById('assurance');
+  a.textContent=(r.assurance||'').toUpperCase(); a.className='assurance '+(r.assurance||'');
+  const t=document.getElementById('claimsTable'); t.innerHTML='';
+  const meta=[['Issuer trusted', r.issuerTrusted?'yes':'no'],['Device-bound', r.deviceBound?'yes':'no']];
+  if(r.issuerCommonName) meta.push(['Issuer', r.issuerCommonName]);
+  meta.forEach(([k,val])=>t.insertAdjacentHTML('beforeend',`<tr><td class="k">${k}</td><td>${val}</td></tr>`));
+  Object.entries(r.claims||{}).forEach(([k,val])=>{
+    let disp = (typeof val==='object') ? JSON.stringify(val) : String(val);
+    if(k==='portrait') disp='[image]';
+    t.insertAdjacentHTML('beforeend',`<tr><td class="k">${k}</td><td>${disp}</td></tr>`);
+  });
+  if(r.proofToken){
+    document.getElementById('proofWrap').style.display='block';
+    document.getElementById('proof').value=r.proofToken;
+  }
+}
+</script>
+</body>
+</html>

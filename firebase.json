@@ -16,6 +16,14 @@
         "destination": "/fido/index.html"
       },
       {
+        "source": "/id",
+        "destination": "/id/index.html"
+      },
+      {
+        "source": "/id/**",
+        "destination": "/id/index.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

@@ -19,6 +19,7 @@ locals {
     "broker-service",
     "grant-service",
     "fido-service",
+    "id-service",
   ]
 
   short = {
@@ -31,6 +32,7 @@ locals {
     "broker-service"         = "broker"
     "grant-service"          = "grant"
     "fido-service"           = "fido"
+    "id-service"             = "id"
   }
 
   # Deterministic run.app URLs — avoids resource self-references in for_each.
@@ -119,6 +121,19 @@ locals {
       redis  = true
       env    = {}
     }
+    # Public remote identity-verification API + UIs (id.x-auth.com). Redis backs
+    # the token cache + rate limiter. JWT_SIGNING_KEY (wired below) signs the
+    # Verified Identity Token. Domain mapping is a manual post-apply step — see
+    # deploy/terraform/README.md.
+    "id-service" = {
+      port   = 8185
+      public = true
+      db     = "id_db"
+      redis  = true
+      env = {
+        ID_ISSUER = "https://id.x-auth.com"
+      }
+    }
   }
 
   # CI owns the image tag; Terraform deploys a placeholder on first apply and
@@ -149,10 +164,18 @@ resource "google_secret_manager_secret_iam_member" "redis_auth" {
   member    = "serviceAccount:${google_service_account.run[each.key].email}"
 }
 
+# Services that mint RS256 tokens and therefore need the shared signing key:
+# authentication-service (OIDC) and id-service (Verified Identity Token).
+locals {
+  jwt_signing_services = ["authentication-service", "id-service"]
+}
+
 resource "google_secret_manager_secret_iam_member" "jwt_signing_key" {
+  for_each = toset(local.jwt_signing_services)
+
   secret_id = google_secret_manager_secret.jwt_signing_key.id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.run["authentication-service"].email}"
+  member    = "serviceAccount:${google_service_account.run[each.value].email}"
 }
 
 resource "google_cloud_run_v2_service" "svc" {
@@ -234,7 +257,7 @@ resource "google_cloud_run_v2_service" "svc" {
       }
 
       dynamic "env" {
-        for_each = each.key == "authentication-service" ? [1] : []
+        for_each = contains(local.jwt_signing_services, each.key) ? [1] : []
         content {
           name = "JWT_SIGNING_KEY"
           value_source {
