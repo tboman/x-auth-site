@@ -58,6 +58,11 @@ type SignupConsoleHandlers struct {
 	// Verifier validates a phone number (Twilio Lookup) before the owner stores it
 	// for a user. Optional/nil → no lookup validation (dev/stub).
 	Verifier smsx.Verifier
+
+	// MDLVerifier validates an id-service mDL proof token before recording an mdl
+	// identity anchor. Optional/nil → the "Record mDL" action reports the feature
+	// is not configured (ID_ISSUER unset).
+	MDLVerifier MDLProofVerifier
 }
 
 const (
@@ -551,6 +556,70 @@ func (h *SignupConsoleHandlers) SetUserPhone(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, "/admin?tab=users", http.StatusFound)
 }
 
+// RecordUserMDL handles POST /admin/owner/identities/mdl — records a verified mDL
+// as an identity anchor for a user. The owner supplies a proof token from a
+// completed id-service verification; authn validates it against id-service's JWKS
+// (audience-bound to this workspace) and stores the credential's signing root
+// (the trust anchor) as the anchor value, verified by construction.
+func (h *SignupConsoleHandlers) RecordUserMDL(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if h.MDLVerifier == nil {
+		h.errorPage(w, http.StatusNotImplemented, "mDL recording isn't configured for this deployment (id-service issuer unset).", "/admin?tab=users")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=users")
+		return
+	}
+	userID := strings.TrimSpace(r.PostForm.Get("user_id"))
+	token := strings.TrimSpace(r.PostForm.Get("proof_token"))
+	if userID == "" || token == "" {
+		h.errorPage(w, http.StatusBadRequest, "A user and a proof token are required.", "/admin?tab=users")
+		return
+	}
+	if _, err := h.Store.GetUser(owner.Tenant.ID, userID); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "That user isn't in your workspace.", "/admin?tab=users")
+		return
+	}
+	proof, err := h.MDLVerifier.Verify(r.Context(), token, owner.Tenant.ID)
+	if err != nil {
+		h.Logger.Warn("owner_mdl_proof_rejected", "err", err, "tenant_id", owner.Tenant.ID, "user_id", userID)
+		h.errorPage(w, http.StatusBadRequest, "That mDL proof token is invalid, expired, or was issued for another workspace.", "/admin?tab=users")
+		return
+	}
+	anchor := proof.TrustAnchor
+	if anchor == "" {
+		anchor = proof.IssuerCN // fall back to the document signer when no root CN is present
+	}
+	if anchor == "" {
+		anchor = "unknown issuer"
+	}
+	// Replace any existing mDL anchors for this user so "record" means "replace".
+	if anchors, err := h.Store.ListIdentityAnchors(owner.Tenant.ID); err == nil {
+		for _, a := range anchors {
+			if a.UserID == userID && a.Type == AnchorMDL {
+				_ = h.Store.DeleteIdentityAnchor(owner.Tenant.ID, a.ID)
+			}
+		}
+	}
+	now := time.Now().UTC()
+	if _, err := h.Store.CreateIdentityAnchor(IdentityAnchor{
+		ID: "ian_" + uuid.NewString(), UserID: userID, TenantID: owner.Tenant.ID,
+		Type: AnchorMDL, Value: anchor, VerifiedAt: &now, CreatedAt: now,
+	}); err != nil {
+		h.Logger.Error("owner_record_mdl_failed", "err", err, "tenant_id", owner.Tenant.ID, "user_id", userID)
+		h.errorPage(w, http.StatusBadGateway, "Could not record the mDL.", "/admin?tab=users")
+		return
+	}
+	h.Logger.Info("owner_user_mdl_recorded", "tenant_id", owner.Tenant.ID, "user_id", userID,
+		"trust_anchor", anchor, "issuer_trusted", proof.IssuerTrusted, "vrf_id", proof.VrfID, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=users", http.StatusFound)
+}
+
 // RemoveIdentity handles POST /admin/owner/identities/remove — the owner removes
 // one of their users' non-primary anchors (e.g. a phone number). Tenant-scoped:
 // an owner can only remove anchors in their own workspace.
@@ -829,39 +898,51 @@ func (h *SignupConsoleHandlers) ownerUsers(owner ownerSession) string {
 	byUser := anchorsByUser(anchors)
 	const inputStyle = `padding:8px 10px;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;font:inherit`
 
+	// anchorChip renders the current anchor of a type (value + remove control), or
+	// "none". Shared by the phone and mDL cells.
+	anchorChip := func(userID, typ, confirm string) string {
+		for _, a := range byUser[userID] {
+			if a.Type != typ {
+				continue
+			}
+			return `<code>` + html.EscapeString(a.Value) + `</code> ` +
+				`<form method="post" action="/admin/owner/identities/remove" style="display:inline" onsubmit="return confirm('` + confirm + `')">` +
+				`<input type="hidden" name="anchor_id" value="` + html.EscapeString(a.ID) + `">` +
+				`<button class="danger" type="submit" style="padding:4px 9px">Remove</button></form>`
+		}
+		return `<span class="muted">none</span>`
+	}
+
 	var rows strings.Builder
 	if len(users) == 0 {
-		rows.WriteString(`<tr><td colspan="3" class="muted">No users yet.</td></tr>`)
+		rows.WriteString(`<tr><td colspan="4" class="muted">No users yet.</td></tr>`)
 	}
 	for _, u := range users {
 		name := u.Email
 		if name == "" {
 			name = u.ID
 		}
-		// Current phone anchor (if any) with a remove control.
-		phoneCell := `<span class="muted">none</span>`
-		for _, a := range byUser[u.ID] {
-			if a.Type != AnchorPhone {
-				continue
-			}
-			phoneCell = `<code>` + html.EscapeString(a.Value) + `</code> ` +
-				`<form method="post" action="/admin/owner/identities/remove" style="display:inline" onsubmit="return confirm('Remove this phone number?')">` +
-				`<input type="hidden" name="anchor_id" value="` + html.EscapeString(a.ID) + `">` +
-				`<button class="danger" type="submit" style="padding:4px 9px">Remove</button></form>`
-			break
-		}
-		setForm := `<form method="post" action="/admin/owner/identities/phone" style="display:flex;gap:6px;margin-top:8px">` +
+		phoneForm := `<form method="post" action="/admin/owner/identities/phone" style="display:flex;gap:6px;margin-top:8px">` +
 			`<input type="hidden" name="user_id" value="` + html.EscapeString(u.ID) + `">` +
 			`<input type="tel" name="phone" placeholder="+15551234567" required style="` + inputStyle + `">` +
 			`<button class="secondary" type="submit" style="padding:6px 12px">Set</button></form>`
-		rows.WriteString(`<tr><td><code>` + html.EscapeString(name) + `</code></td><td>` + phoneCell + setForm +
-			`</td><td class="muted">` + html.EscapeString(u.CreatedAt.UTC().Format(time.RFC3339)) + `</td></tr>`)
+		// mDL is recorded only from a verified id-service proof token; the owner
+		// pastes the token from a completed verification and authn validates it.
+		mdlForm := `<form method="post" action="/admin/owner/identities/mdl" style="display:flex;gap:6px;margin-top:8px">` +
+			`<input type="hidden" name="user_id" value="` + html.EscapeString(u.ID) + `">` +
+			`<input type="text" name="proof_token" placeholder="paste mDL proof token" required style="` + inputStyle + `;min-width:220px">` +
+			`<button class="secondary" type="submit" style="padding:6px 12px">Record</button></form>`
+		rows.WriteString(`<tr><td><code>` + html.EscapeString(name) + `</code></td>` +
+			`<td>` + anchorChip(u.ID, AnchorPhone, "Remove this phone number?") + phoneForm + `</td>` +
+			`<td>` + anchorChip(u.ID, AnchorMDL, "Remove this mDL?") + mdlForm + `</td>` +
+			`<td class="muted">` + html.EscapeString(u.CreatedAt.UTC().Format(time.RFC3339)) + `</td></tr>`)
 	}
 	return `<p class="muted">Everyone who has signed in to your application. Email is the Google-verified primary anchor.
-Set a verified <strong>phone number</strong> for any user manually — it enables SMS verification (step-up) and phone
-sign-in for that account.</p>
+Set a verified <strong>phone number</strong> manually (enables SMS step-up + phone sign-in). Record a verified
+<strong>mDL</strong> by pasting the proof token from a completed id-service verification — its value is the credential's
+signing root (trust anchor).</p>
 <div class="panel"><table>
-<thead><tr><th>User</th><th>Phone</th><th>Created (UTC)</th></tr></thead>
+<thead><tr><th>User</th><th>Phone</th><th>mDL</th><th>Created (UTC)</th></tr></thead>
 <tbody>` + rows.String() + `</tbody></table></div>`
 }
 

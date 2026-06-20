@@ -194,6 +194,7 @@ func (mgr *Manager) SubmitResponse(ctx context.Context, id string, sub ResponseS
 		IssuerTrusted: out.issuerTrusted,
 		DeviceBound:   out.deviceBound,
 		IssuerCN:      out.issuerCN,
+		TrustAnchor:   out.trustAnchor,
 		DocType:       out.docType,
 		Assurance:     assurance,
 		Signals:       signals,
@@ -252,6 +253,8 @@ func (mgr *Manager) mintProof(v *Verification, result *VerificationResult, now t
 		"issuer_trusted": result.IssuerTrusted,
 		"device_bound":   result.DeviceBound,
 		"claims_sha256":  claimsDigest(result.Claims),
+		"issuer_cn":      result.IssuerCN,
+		"trust_anchor":   result.TrustAnchor,
 	}
 	tok, err := mgr.signer.Sign(claims, extra)
 	return tok, jti, err

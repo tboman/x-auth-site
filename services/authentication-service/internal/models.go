@@ -146,6 +146,10 @@ const (
 	AnchorEmail   = "email"
 	AnchorPhone   = "phone"
 	AnchorPasskey = "passkey"
+	// AnchorMDL is a verified mobile driving licence (ISO 18013-5). Its Value is
+	// the signing root (the IACA trust anchor) reported by id-service, and it is
+	// recorded only from a verified id-service proof token, so VerifiedAt is set.
+	AnchorMDL = "mdl"
 )
 
 // IdentityAnchor is one way an identity can be identified: an email address, an

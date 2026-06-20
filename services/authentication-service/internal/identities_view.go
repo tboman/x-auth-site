@@ -56,7 +56,7 @@ func anchorCell(userAnchors []IdentityAnchor, typ string) string {
 // "no identities" row (colspan 4).
 func identityTableRows(users []User, anchors []IdentityAnchor) string {
 	if len(users) == 0 {
-		return `<tr><td colspan="4" class="muted">No identities yet.</td></tr>`
+		return `<tr><td colspan="5" class="muted">No identities yet.</td></tr>`
 	}
 	byUser := anchorsByUser(anchors)
 	var b strings.Builder
@@ -66,6 +66,7 @@ func identityTableRows(users []User, anchors []IdentityAnchor) string {
 		b.WriteString(`<td><code>` + html.EscapeString(u.Email) + `</code></td>`)
 		b.WriteString(`<td>` + anchorCell(ua, AnchorPhone) + `</td>`)
 		b.WriteString(`<td>` + anchorCell(ua, AnchorPasskey) + `</td>`)
+		b.WriteString(`<td>` + anchorCell(ua, AnchorMDL) + `</td>`)
 		b.WriteString(`<td class="muted">` + html.EscapeString(u.CreatedAt.UTC().Format(time.RFC3339)) + `</td>`)
 		b.WriteString(`</tr>`)
 	}
@@ -76,6 +77,6 @@ func identityTableRows(users []User, anchors []IdentityAnchor) string {
 // standard header row.
 func identityTable(users []User, anchors []IdentityAnchor) string {
 	return `<div class="panel"><table>
-<thead><tr><th>Email (primary)</th><th>Phone</th><th>Passkey</th><th>Created (UTC)</th></tr></thead>
+<thead><tr><th>Email (primary)</th><th>Phone</th><th>Passkey</th><th>mDL</th><th>Created (UTC)</th></tr></thead>
 <tbody>` + identityTableRows(users, anchors) + `</tbody></table></div>`
 }

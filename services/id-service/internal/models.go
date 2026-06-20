@@ -74,6 +74,7 @@ type VerificationResult struct {
 	IssuerTrusted bool           `json:"issuerTrusted"`
 	DeviceBound   bool           `json:"deviceBound"`
 	IssuerCN      string         `json:"issuerCommonName,omitempty"`
+	TrustAnchor   string         `json:"trustAnchor,omitempty"` // signing root (IACA) that issued the DSC
 	DocType       string         `json:"docType,omitempty"`
 	Assurance     string         `json:"assurance"`
 	Signals       []string       `json:"signals,omitempty"`

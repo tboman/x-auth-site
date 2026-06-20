@@ -75,6 +75,10 @@ type Deps struct {
 	// risk-evaluation stage. When nil, Router builds an HTTP client from
 	// RISK_EVENTS_URL (same base as the CAEP transmitter); tests inject a mock.
 	Risk RiskEvaluator
+
+	// MDLVerifier is an optional override for the id-service mDL proof verifier.
+	// When nil, Router builds an HTTP verifier from ID_ISSUER; tests inject a mock.
+	MDLVerifier MDLProofVerifier
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -164,8 +168,13 @@ func Router(d Deps) http.Handler {
 	admin.StepUps = stepUps
 	admin.Events = d.Events
 	admin.Health = d.Health
+	mdlVer := d.MDLVerifier
+	if mdlVer == nil {
+		mdlVer = NewHTTPMDLProofVerifier(os.Getenv("ID_ISSUER"), os.Getenv("ID_JWKS_URL"), d.Logger)
+	}
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps,
-		Verifier: smsx.New(smsx.ConfigFromEnv(), d.Logger)}
+		Verifier:    smsx.New(smsx.ConfigFromEnv(), d.Logger),
+		MDLVerifier: mdlVer}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 	advice := &AdviceHandlers{Store: d.Store, Logger: d.Logger}
@@ -316,6 +325,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/switch", signup.OwnerSwitch)
 	mux.HandleFunc("POST /admin/owner/phone-login", signup.SetPhoneLogin)
 	mux.HandleFunc("POST /admin/owner/identities/phone", signup.SetUserPhone)
+	mux.HandleFunc("POST /admin/owner/identities/mdl", signup.RecordUserMDL)
 	mux.HandleFunc("POST /admin/owner/identities/remove", signup.RemoveIdentity)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 

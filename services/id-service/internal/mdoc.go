@@ -91,7 +91,8 @@ type mdocOutcome struct {
 	docType       string
 	claims        map[string]any
 	issuerTrusted bool
-	issuerCN      string
+	issuerCN      string // leaf (document signer) Subject CommonName
+	trustAnchor   string // the signing root that issued the DSC (leaf Issuer CommonName)
 	deviceBound   bool
 	signals       []string
 }
@@ -133,6 +134,10 @@ func verifyDeviceResponse(raw []byte, ts *TrustStore, p verifyParams) (*mdocOutc
 	}
 	out.issuerTrusted = trusted
 	out.issuerCN = leaf.Subject.CommonName
+	// The trust anchor is the authority that signed the document signer (the
+	// IACA root in mDL terms). Recorded even when unanchored (insecure mode) so
+	// the relying party can see which issuer asserted the credential.
+	out.trustAnchor = leaf.Issuer.CommonName
 	if err := ia.verify(leaf.PublicKey, nil); err != nil {
 		return nil, fmt.Errorf("mdoc: issuerAuth signature: %w", err)
 	}
