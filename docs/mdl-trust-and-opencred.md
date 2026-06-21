@@ -122,6 +122,24 @@ number) + the issuer become the `mdl` identity anchor — same `storeMDLAnchor` 
   is explicitly not for production).
 - `caStore`: the same CA DMV IACA roots from (A), for mDoc X.509 validation.
 
+### Production issuer config (from CA DMV, captured 2026-06)
+
+These are **public** issuer identities (not secrets) for OpenCred's
+`trustedCredentialIssuers`. Validated: the `did:jwk` x5c is the *California DMV
+IACA VC Signer* (CN), issued by *California DMV IACA Root*, valid 2026-04-10 →
+2027-07-09.
+
+```yaml
+# OpenCred workflow → trustedCredentialIssuers (CA DMV PRODUCTION)
+trustedCredentialIssuers:
+  - did:web:credentials.dmv.ca.gov   # non-expiring
+  - did:jwk:eyJjcnYiOiJQLTI1NiIsImt0eSI6IkVDIiwieCI6ImJSbGpTekVyS0lfQk5OME1LRVBIVVdHcVR1Um5fVm42eXJvQlRfR0RDbFUiLCJ4NWMiOlsiTUlJQ2VUQ0NBaCtnQXdJQkFnSVVOYjF2czlucklGTmt4Vy9BaDVSYnFTazVENXN3Q2dZSUtvWkl6ajBFQXdJd1VURUxNQWtHQTFVRUJoTUNWVk14RGpBTUJnTlZCQWdNQlZWVExVTkJNUTh3RFFZRFZRUUtEQVpEUVMxRVRWWXhJVEFmQmdOVkJBTU1HRU5oYkdsbWIzSnVhV0VnUkUxV0lFbEJRMEVnVW05dmREQWVGdzB5TmpBME1UQXhOVE14TWpGYUZ3MHlOekEzTURreE5UTXhNakZhTUZZeEN6QUpCZ05WQkFZVEFsVlRNUTR3REFZRFZRUUlEQVZWVXkxRFFURVBNQTBHQTFVRUNnd0dRMEV0UkUxV01TWXdKQVlEVlFRRERCMURZV3hwWm05eWJtbGhJRVJOVmlCSlFVTkJJRlpESUZOcFoyNWxjakJaTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEEwSUFCRzBaWTBzeEt5aVB3VFRkRENoRHgxRmhxazdrWi8xWitzcTZBVS94Z3dwVkp5T0k4cVNYRHl6NFpPQTJtR21sSnlrUGtjdnRTRjRjUnJNQlhDRDRIVitqZ2M4d2djd3dIUVlEVlIwT0JCWUVGREdQUUxGRUhwaWp2b0ZYaUNpV2c1Z2VVeGpZTUI4R0ExVWRJd1FZTUJhQUZMdDlkV2VTZW0vUG4zSjd1QXIzTnkrY0RGQTJNQjBHQ1dDR1NBR0crRUlCRFFRUUZnNURZV3hwWm05eWJtbGhJRVJOVmpBT0JnTlZIUThCQWY4RUJBTUNCNEF3SVFZRFZSMFNCQm93R0lFV2FXRmpZUzF6YVdkdVpYSkFaRzEyTG1OaExtZHZkakE0QmdOVkhSOEVNVEF2TUMyZ0s2QXBoaWRvZEhSd2N6b3ZMMk55YkM1a2JYWXVZMkV1WjI5MkwybGhZMkV2YldSdll5MXphV2R1WlhJd0NnWUlLb1pJemowRUF3SURTQUF3UlFJZ01yaGlFQ005ZU1JeHRRTzFmK1daUFhuaGRxK0g0ZWlPcnA4a0xpUkFkc0VDSVFDZDI4MktSUEsyUTVtdkRPUGMrRGVrYzFhR3RaRnRhaHVreS9NeDZWQ2JsZz09Il0sInkiOiJKeU9JOHFTWER5ejRaT0EybUdtbEp5a1BrY3Z0U0Y0Y1JyTUJYQ0Q0SFY4In0   # VC signer, valid to 2027-07-09
+```
+
+Note: these are *issuer DIDs* for the OpenCred / W3C-VC path. For **id-service's
+mdoc (A)** you still need the X.509 **IACA Root** PEM (the issuer of the signer
+above) — from the DMV developer package or the AAMVA VICAL.
+
 ### Effort & sequencing
 
 1. **(A) now** — drop in the IACA roots (free) so id-service's trust is real for
