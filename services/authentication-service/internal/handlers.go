@@ -79,6 +79,10 @@ type Deps struct {
 	// MDLVerifier is an optional override for the id-service mDL proof verifier.
 	// When nil, Router builds an HTTP verifier from ID_ISSUER; tests inject a mock.
 	MDLVerifier MDLProofVerifier
+
+	// IDClient is an optional override for the id-service verification client used
+	// by self-enrollment. When nil, Router builds an HTTP client from ID_ISSUER.
+	IDClient IDVerificationClient
 }
 
 // Router builds the complete http.Handler for authentication-service.
@@ -172,9 +176,13 @@ func Router(d Deps) http.Handler {
 	if mdlVer == nil {
 		mdlVer = NewHTTPMDLProofVerifier(os.Getenv("ID_ISSUER"), os.Getenv("ID_JWKS_URL"), d.Logger)
 	}
+	idClient := d.IDClient
+	if idClient == nil {
+		idClient = NewHTTPIDClient(os.Getenv("ID_ISSUER"))
+	}
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps,
 		Verifier:    smsx.New(smsx.ConfigFromEnv(), d.Logger),
-		MDLVerifier: mdlVer}
+		MDLVerifier: mdlVer, IDClient: idClient}
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 	advice := &AdviceHandlers{Store: d.Store, Logger: d.Logger}
@@ -326,6 +334,11 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/phone-login", signup.SetPhoneLogin)
 	mux.HandleFunc("POST /admin/owner/identities/phone", signup.SetUserPhone)
 	mux.HandleFunc("POST /admin/owner/identities/mdl", signup.RecordUserMDL)
+	// Self-service mDL enrollment (social-gated): a tenant's user adds their own mDL.
+	mux.HandleFunc("GET /enroll/mdl", signup.EnrollMDLStart)
+	mux.HandleFunc("GET /enroll/mdl/callback", signup.EnrollMDLCallback)
+	mux.HandleFunc("GET /enroll/mdl/page", signup.EnrollMDLPage)
+	mux.HandleFunc("GET /enroll/mdl/status", signup.EnrollMDLStatus)
 	mux.HandleFunc("POST /admin/owner/identities/remove", signup.RemoveIdentity)
 	mux.HandleFunc("GET /admin/owner/download/{asset}", signup.DownloadQuickstart)
 

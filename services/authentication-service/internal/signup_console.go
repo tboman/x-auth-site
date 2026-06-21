@@ -63,6 +63,10 @@ type SignupConsoleHandlers struct {
 	// identity anchor. Optional/nil → the "Record mDL" action reports the feature
 	// is not configured (ID_ISSUER unset).
 	MDLVerifier MDLProofVerifier
+
+	// IDClient drives an id-service verification during self-enrollment (create +
+	// poll). Optional/nil → the /enroll/mdl journey reports not configured.
+	IDClient IDVerificationClient
 }
 
 const (
@@ -591,26 +595,8 @@ func (h *SignupConsoleHandlers) RecordUserMDL(w http.ResponseWriter, r *http.Req
 		h.errorPage(w, http.StatusBadRequest, "That mDL proof token is invalid, expired, or was issued for another workspace.", "/admin?tab=users")
 		return
 	}
-	anchor := proof.TrustAnchor
-	if anchor == "" {
-		anchor = proof.IssuerCN // fall back to the document signer when no root CN is present
-	}
-	if anchor == "" {
-		anchor = "unknown issuer"
-	}
-	// Replace any existing mDL anchors for this user so "record" means "replace".
-	if anchors, err := h.Store.ListIdentityAnchors(owner.Tenant.ID); err == nil {
-		for _, a := range anchors {
-			if a.UserID == userID && a.Type == AnchorMDL {
-				_ = h.Store.DeleteIdentityAnchor(owner.Tenant.ID, a.ID)
-			}
-		}
-	}
-	now := time.Now().UTC()
-	if _, err := h.Store.CreateIdentityAnchor(IdentityAnchor{
-		ID: "ian_" + uuid.NewString(), UserID: userID, TenantID: owner.Tenant.ID,
-		Type: AnchorMDL, Value: anchor, VerifiedAt: &now, CreatedAt: now,
-	}); err != nil {
+	anchor, err := h.storeMDLAnchor(owner.Tenant.ID, userID, proof)
+	if err != nil {
 		h.Logger.Error("owner_record_mdl_failed", "err", err, "tenant_id", owner.Tenant.ID, "user_id", userID)
 		h.errorPage(w, http.StatusBadGateway, "Could not record the mDL.", "/admin?tab=users")
 		return
