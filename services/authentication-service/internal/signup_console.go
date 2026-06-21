@@ -283,13 +283,17 @@ func (h *SignupConsoleHandlers) SignupCallback(w http.ResponseWriter, r *http.Re
 
 	h.setOwnerCookie(w, tenantID, sess.ID, sess.ExpiresAt)
 	h.Logger.Info("signup_provisioned", "tenant_id", tenantID, "client_id", clientID, "owner", email)
-	h.renderWorkspaceReady(w, tenant, client)
+	// Start mDL enrollment inline: the owner just authenticated with Google, so we
+	// reuse that session (no re-login) and offer the licence check right on the
+	// workspace-ready screen. Best-effort — never blocks the workspace from showing.
+	enroll := h.mdlEnrollSection(w, r, tenantID, sess.ID, email, sess.ExpiresAt)
+	h.renderWorkspaceReady(w, tenant, client, enroll)
 }
 
 // renderWorkspaceReady is the post-signup screen for a public-client workspace:
 // the workspace identifiers plus the downloadable starter kit. There is no
 // secret to show (public/PKCE client).
-func (h *SignupConsoleHandlers) renderWorkspaceReady(w http.ResponseWriter, t Tenant, c OIDCClient) {
+func (h *SignupConsoleHandlers) renderWorkspaceReady(w http.ResponseWriter, t Tenant, c OIDCClient, enrollSection string) {
 	h.page(w, http.StatusOK, "Workspace created", `<h1 class="ok">Workspace created</h1>
 <p class="muted">Your X-Auth workspace is ready. It uses a public (PKCE) OIDC client — there's no secret to manage.</p>
 <div class="panel"><table>
@@ -299,6 +303,7 @@ func (h *SignupConsoleHandlers) renderWorkspaceReady(w http.ResponseWriter, t Te
 <tr><td>Type</td><td>Public — PKCE, no client secret</td></tr>
 </table></div>`+
 		h.quickstartPanel(c.ClientID)+
+		enrollSection+
 		`<div class="actions"><a class="btn" href="/admin">Continue to dashboard</a></div>`)
 }
 

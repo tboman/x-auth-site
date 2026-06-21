@@ -121,6 +121,40 @@ func TestEnrollMDLStatusVerifiedCreatesAnchor(t *testing.T) {
 	}
 }
 
+// Signing up for a tenant via Google also starts mDL enrollment inline on the
+// workspace-ready screen (reusing the just-created owner session — no re-login).
+func TestSignupStartsMDLEnrollment(t *testing.T) {
+	r, store := newEnrollRouter(t,
+		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
+		stubMDLVerifier{})
+	w := driveSignup(t, r, store, "founder@newco.test", "Newco", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("signup: want 200, got %d", w.Code)
+	}
+	b := w.Body.String()
+	for _, want := range []string{"Workspace created", "Verify your identity", "data:image/png;base64,", "/enroll/mdl/status", "https://id.x-auth.com/v/tok"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("workspace-ready should embed enrollment, missing %q", want)
+		}
+	}
+	cookies := strings.Join(w.Header().Values("Set-Cookie"), " ")
+	if !strings.Contains(cookies, enrollSessionCookie) || !strings.Contains(cookies, enrollVrfCookie) {
+		t.Errorf("signup should set enroll session + vrf cookies: %s", cookies)
+	}
+}
+
+// Without id-service configured, signup still completes (enrollment is best-effort).
+func TestSignupWithoutMDLStillCompletes(t *testing.T) {
+	r, store := newEnrollRouter(t, nil, nil)
+	w := driveSignup(t, r, store, "founder2@newco.test", "Newco Two", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Workspace created") {
+		t.Fatalf("signup should complete without enrollment: %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "Verify your identity") {
+		t.Error("no enrollment section expected when id-service is unconfigured")
+	}
+}
+
 func TestEnrollMDLStatusNoSession(t *testing.T) {
 	r, _ := newEnrollRouter(t, stubIDClient{}, stubMDLVerifier{})
 	w := httptest.NewRecorder()

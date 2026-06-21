@@ -85,10 +85,7 @@ func (h *SignupConsoleHandlers) EnrollMDLCallback(w http.ResponseWriter, r *http
 		h.errorPage(w, http.StatusBadGateway, "Could not start enrollment.", "/")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: enrollSessionCookie, Value: tenantID + "|" + sess.ID, Path: "/enroll",
-		Expires: sess.ExpiresAt, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
-	})
+	h.setEnrollSessionCookie(w, tenantID, sess.ID, sess.ExpiresAt)
 	http.Redirect(w, r, "/enroll/mdl/page", http.StatusFound)
 }
 
@@ -137,17 +134,24 @@ func (h *SignupConsoleHandlers) EnrollMDLPage(w http.ResponseWriter, r *http.Req
 	h.page(w, http.StatusOK, "Add your mobile driving licence", h.enrollPageBody(user.Email, verifyURL))
 }
 
-// enrollPageBody renders the same-device button + cross-device QR + a poller.
+// enrollPageBody is the standalone enrollment page (heading + the shared inner UI).
 func (h *SignupConsoleHandlers) enrollPageBody(email, verifyURL string) string {
+	return `<h1 style="margin:0 0 6px">Add your mobile driving licence</h1>
+<p class="muted" style="margin:0 0 20px">Signed in as <strong>` + html.EscapeString(email) + `</strong>. Verify your mDL once and it becomes a sign-in credential on your account.</p>` +
+		h.enrollInner(verifyURL)
+}
+
+// enrollInner is the dual-path verification UI (same-device button + cross-device
+// QR) plus the status poller — reused standalone and embedded in the post-signup
+// workspace-ready screen.
+func (h *SignupConsoleHandlers) enrollInner(verifyURL string) string {
 	qr := ""
 	if png, err := qrcode.Encode(verifyURL, qrcode.Medium, 240); err == nil {
 		qr = `<img alt="Scan with your phone" width="240" height="240" style="background:#fff;padding:10px;border-radius:10px" src="data:image/png;base64,` +
 			base64.StdEncoding.EncodeToString(png) + `">`
 	}
 	esc := html.EscapeString(verifyURL)
-	return `<h1 style="margin:0 0 6px">Add your mobile driving licence</h1>
-<p class="muted" style="margin:0 0 20px">Signed in as <strong>` + html.EscapeString(email) + `</strong>. Verify your mDL once and it becomes a sign-in credential on your account.</p>
-<div class="panel" style="display:grid;gap:22px">
+	return `<div class="panel" style="display:grid;gap:22px">
   <div>
     <h3 style="margin:0 0 8px">On this device</h3>
     <p class="muted" style="margin:0 0 10px">If your wallet is on this device, verify directly.</p>
@@ -176,6 +180,34 @@ func (h *SignupConsoleHandlers) enrollPageBody(email, verifyURL string) string {
   setTimeout(poll,2500);
 })();
 </script>`
+}
+
+// setEnrollSessionCookie binds the enrollment session (tenant|session) to /enroll.
+func (h *SignupConsoleHandlers) setEnrollSessionCookie(w http.ResponseWriter, tenantID, sessionID string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name: enrollSessionCookie, Value: tenantID + "|" + sessionID, Path: "/enroll",
+		Expires: expires, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// mdlEnrollSection sets up enrollment for an already-authenticated session (reuses
+// it, no re-login) and returns an embeddable UI block — used to start mDL
+// enrollment right after tenant signup. Best-effort: returns "" when the feature
+// is unconfigured or id-service can't be reached, so it never blocks signup.
+func (h *SignupConsoleHandlers) mdlEnrollSection(w http.ResponseWriter, r *http.Request, tenantID, sessionID, email string, expires time.Time) string {
+	if h.IDClient == nil || h.MDLVerifier == nil {
+		return ""
+	}
+	vrfID, verifyURL, err := h.IDClient.Create(r.Context(), tenantID, "Verify your identity", mdlEnrollClaims, "link")
+	if err != nil {
+		h.Logger.Warn("signup_mdl_enroll_init_failed", "err", err, "tenant_id", tenantID)
+		return ""
+	}
+	h.setEnrollSessionCookie(w, tenantID, sessionID, expires)
+	h.setShortCookie(w, enrollVrfCookie, vrfID, "/enroll")
+	return `<h2 style="margin-top:30px">Verify your identity <span class="muted" style="font-weight:400">(optional)</span></h2>
+<p class="muted">Add your mobile driving licence now as a strong sign-in credential — or skip and do it later from your dashboard.</p>` +
+		h.enrollInner(verifyURL)
 }
 
 // EnrollMDLStatus is polled by the page. It checks id-service and, on a verified
