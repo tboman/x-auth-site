@@ -183,6 +183,9 @@ func Router(d Deps) http.Handler {
 	signup := &SignupConsoleHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, StepUps: stepUps,
 		Verifier:    smsx.New(smsx.ConfigFromEnv(), d.Logger),
 		MDLVerifier: mdlVer, IDClient: idClient}
+	// Let the social leg offer mDL enrollment to first-time users via the signup
+	// handlers' enrollment machinery.
+	social.Enroll = signup
 	users := &UserHandlers{Store: d.Store, Logger: d.Logger}
 	sessions := &SessionHandlers{Store: d.Store, Logger: d.Logger}
 	advice := &AdviceHandlers{Store: d.Store, Logger: d.Logger}

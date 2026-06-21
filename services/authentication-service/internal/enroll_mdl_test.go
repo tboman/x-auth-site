@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,61 @@ func TestSignupWithoutMDLStillCompletes(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "Verify your identity") {
 		t.Error("no enrollment section expected when id-service is unconfigured")
+	}
+}
+
+// driveSocialStub runs the social authorize→callback stub for ten_a and returns
+// the callback response.
+func driveSocialStub(t *testing.T, r http.Handler, store Storage) *httptest.ResponseRecorder {
+	t.Helper()
+	if err := store.PutClient(OIDCClient{ClientID: "cli_a", TenantID: "ten_a",
+		RedirectURIs: []string{"http://app.example.com/cb"}, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed client: %v", err)
+	}
+	au := "/v1/social/google/authorize?" + url.Values{"tenant_id": {"ten_a"},
+		"redirect_uri": {"http://app.example.com/cb"}, "state": {"s1"}}.Encode()
+	aw := httptest.NewRecorder()
+	r.ServeHTTP(aw, httptest.NewRequest(http.MethodGet, au, nil))
+	loc, _ := url.Parse(aw.Header().Get("Location"))
+	cu := "/v1/social/google/callback?" + url.Values{"code": {loc.Query().Get("code")}, "state": {"s1"}}.Encode()
+	cw := httptest.NewRecorder()
+	r.ServeHTTP(cw, httptest.NewRequest(http.MethodGet, cu, nil))
+	return cw
+}
+
+// A first-time OIDC social login shows the mDL interstitial (with a Continue link
+// back to the app), reusing the just-created session.
+func TestSocialLoginNewUserOffersMDLInterstitial(t *testing.T) {
+	r, store := newEnrollRouter(t,
+		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
+		stubMDLVerifier{})
+	cw := driveSocialStub(t, r, store)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("first social login: want 200 interstitial, got %d", cw.Code)
+	}
+	b := cw.Body.String()
+	for _, want := range []string{"Continue to your app", "app.example.com/cb", "data:image/png;base64,", "/enroll/mdl/status"} {
+		if !strings.Contains(b, want) {
+			t.Errorf("interstitial missing %q", want)
+		}
+	}
+	if c := strings.Join(cw.Header().Values("Set-Cookie"), " "); !strings.Contains(c, enrollSessionCookie) {
+		t.Error("interstitial should set the enroll session cookie")
+	}
+}
+
+// A returning user (already exists) is NOT interrupted — straight redirect to app.
+func TestSocialLoginReturningUserNoInterstitial(t *testing.T) {
+	r, store := newEnrollRouter(t,
+		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
+		stubMDLVerifier{})
+	mustUser(t, store, "usr_pre", "ten_a", "stub-google@example.com", time.Now().UTC())
+	cw := driveSocialStub(t, r, store)
+	if cw.Code != http.StatusFound {
+		t.Fatalf("returning user: want 302 redirect, got %d (%s)", cw.Code, cw.Body.String())
+	}
+	if loc, _ := url.Parse(cw.Header().Get("Location")); loc.Host != "app.example.com" {
+		t.Fatalf("should redirect to the app, got %q", loc.Host)
 	}
 }
 

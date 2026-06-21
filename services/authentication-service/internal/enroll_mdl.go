@@ -210,6 +210,31 @@ func (h *SignupConsoleHandlers) mdlEnrollSection(w http.ResponseWriter, r *http.
 		h.enrollInner(verifyURL)
 }
 
+// MDLInterstitial renders an optional mDL-enrollment screen for a just-
+// authenticated user mid-flow (e.g. first OIDC social login), with a Continue
+// button to proceed to continueURL. It reuses the existing session (no re-login)
+// and returns true when it rendered the page. Returns false — having written
+// nothing — when enrollment isn't configured or id-service can't be reached, so
+// the caller falls through to its normal redirect (OIDC contract unchanged).
+func (h *SignupConsoleHandlers) MDLInterstitial(w http.ResponseWriter, r *http.Request, tenantID, sessionID, email, continueURL string, expires time.Time) bool {
+	if h.IDClient == nil || h.MDLVerifier == nil {
+		return false
+	}
+	vrfID, verifyURL, err := h.IDClient.Create(r.Context(), tenantID, "Verify your identity", mdlEnrollClaims, "link")
+	if err != nil {
+		h.Logger.Warn("social_mdl_interstitial_init_failed", "err", err, "tenant_id", tenantID)
+		return false
+	}
+	h.setEnrollSessionCookie(w, tenantID, sessionID, expires)
+	h.setShortCookie(w, enrollVrfCookie, vrfID, "/enroll")
+	h.page(w, http.StatusOK, "Verify your identity",
+		`<h1 style="margin:0 0 6px">Add your mobile driving licence</h1>
+<p class="muted" style="margin:0 0 20px">Signed in as <strong>`+html.EscapeString(email)+`</strong>. Add your mDL now as a strong sign-in credential — or continue and do it later.</p>`+
+			h.enrollInner(verifyURL)+
+			`<div class="actions" style="margin-top:18px"><a class="btn" href="`+html.EscapeString(continueURL)+`">Continue to your app</a></div>`)
+	return true
+}
+
 // EnrollMDLStatus is polled by the page. It checks id-service and, on a verified
 // result, validates the proof and stores the user's mdl anchor. JSON only.
 func (h *SignupConsoleHandlers) EnrollMDLStatus(w http.ResponseWriter, r *http.Request) {

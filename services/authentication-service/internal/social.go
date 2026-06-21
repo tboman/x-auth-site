@@ -53,6 +53,10 @@ type SocialHandlers struct {
 	// social-login validation. Required (Observe is nil-safe but we always wire it).
 	Analyzer *DeviceAnalyzer
 
+	// Enroll, when set, offers mDL self-enrollment to a newly created user on
+	// their first social login, before continuing to the app. Nil → no interstitial.
+	Enroll *SignupConsoleHandlers
+
 	// mu guards pending. Stub entries are keyed by the mock code; real entries
 	// are keyed by the state nonce we hand the provider.
 	mu          sync.Mutex
@@ -396,6 +400,7 @@ func (h *SocialHandlers) callbackReal(w http.ResponseWriter, r *http.Request, cf
 func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, pending socialPending, profile SocialProfile) {
 	// Upsert by (tenant, email). A repeat login for the same email returns the
 	// existing user — we don't want every /callback to create a new row.
+	justCreated := false
 	user, err := h.Store.GetUserByEmail(pending.TenantID, profile.Email)
 	if err != nil {
 		now := time.Now().UTC()
@@ -412,6 +417,7 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create user")
 			return
 		}
+		justCreated = true
 	}
 
 	now := time.Now().UTC()
@@ -456,7 +462,18 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 		rq.Set("state", pending.State)
 	}
 	redir.RawQuery = rq.Encode()
-	http.Redirect(w, r, redir.String(), http.StatusFound)
+	finalURL := redir.String()
+
+	// On a first social login, offer the new user mDL self-enrollment before
+	// handing them back to the app — they're already authenticated, so the
+	// interstitial reuses this session and continues to finalURL on "Continue".
+	// Best-effort: returns false (renders nothing) when not configured, and we
+	// fall through to the normal redirect — the OIDC contract is unchanged.
+	if justCreated && h.Enroll != nil &&
+		h.Enroll.MDLInterstitial(w, r, pending.TenantID, sess.ID, user.Email, finalURL, sess.ExpiresAt) {
+		return
+	}
+	http.Redirect(w, r, finalURL, http.StatusFound)
 }
 
 // cannedProfile returns the canned SocialProfile used by stub mode. Real mode
