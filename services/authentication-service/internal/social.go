@@ -465,15 +465,24 @@ func (h *SocialHandlers) completeLogin(w http.ResponseWriter, r *http.Request, p
 	finalURL := redir.String()
 
 	// On a first social login, offer the new user mDL self-enrollment before
-	// handing them back to the app — they're already authenticated, so the
-	// interstitial reuses this session and continues to finalURL on "Continue".
-	// Best-effort: returns false (renders nothing) when not configured, and we
-	// fall through to the normal redirect — the OIDC contract is unchanged.
-	if justCreated && h.Enroll != nil &&
+	// handing them back to the app — but only when the tenant has opted in
+	// (mdl_enroll_enabled). They're already authenticated, so the interstitial
+	// reuses this session and continues to finalURL on "Continue". Best-effort:
+	// returns false (renders nothing) when not configured, and we fall through to
+	// the normal redirect — the OIDC contract is unchanged.
+	if justCreated && h.Enroll != nil && h.tenantOffersMDLEnroll(pending.TenantID) &&
 		h.Enroll.MDLInterstitial(w, r, pending.TenantID, sess.ID, user.Email, finalURL, sess.ExpiresAt) {
 		return
 	}
 	http.Redirect(w, r, finalURL, http.StatusFound)
+}
+
+// tenantOffersMDLEnroll reports whether the tenant has opted into the mDL
+// enrollment interstitial. A missing registry row (or lookup error) reads as
+// false — the safe default that leaves the login flow untouched.
+func (h *SocialHandlers) tenantOffersMDLEnroll(tenantID string) bool {
+	t, err := h.Store.GetTenant(tenantID)
+	return err == nil && t.MDLEnrollEnabled
 }
 
 // cannedProfile returns the canned SocialProfile used by stub mode. Real mode

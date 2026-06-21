@@ -135,6 +135,10 @@ type Tenant struct {
 	// this tenant (migration 000016). Default false: SMS delivery is still a stub
 	// (fixed code 123456), so an owner must deliberately opt in.
 	PhoneLoginEnabled bool `json:"phone_login_enabled"`
+	// MDLEnrollEnabled gates the optional mDL-enrollment interstitial shown to a
+	// first-time end user on OIDC social login (migration 000018). Default false:
+	// the owner opts in so an integrator never gets an unexpected extra screen.
+	MDLEnrollEnabled bool `json:"mdl_enroll_enabled"`
 }
 
 // Identity anchor types. An identity (a users row) can be identified by one or

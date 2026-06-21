@@ -97,6 +97,10 @@ type Storage interface {
 	// 000016). ErrNotFound if the tenant has no registry row.
 	SetTenantPhoneLogin(tenantID string, enabled bool) error
 
+	// SetTenantMDLEnroll toggles the per-tenant mDL-enrollment interstitial
+	// (migration 000018). ErrNotFound if the tenant has no registry row.
+	SetTenantMDLEnroll(tenantID string, enabled bool) error
+
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
 	// id (email stays canonical on users.email). Returns ErrConflict when the
@@ -718,6 +722,19 @@ func (s *MemStorage) SetTenantPhoneLogin(tenantID string, enabled bool) error {
 		return ErrNotFound
 	}
 	t.PhoneLoginEnabled = enabled
+	s.tenants[tenantID] = t
+	return nil
+}
+
+// SetTenantMDLEnroll toggles the tenant's mDL-enrollment interstitial opt-in.
+func (s *MemStorage) SetTenantMDLEnroll(tenantID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.MDLEnrollEnabled = enabled
 	s.tenants[tenantID] = t
 	return nil
 }

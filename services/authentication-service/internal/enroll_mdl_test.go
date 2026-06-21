@@ -156,10 +156,14 @@ func TestSignupWithoutMDLStillCompletes(t *testing.T) {
 	}
 }
 
-// driveSocialStub runs the social authorize→callback stub for ten_a and returns
-// the callback response.
-func driveSocialStub(t *testing.T, r http.Handler, store Storage) *httptest.ResponseRecorder {
+// driveSocialStub runs the social authorize→callback stub for ten_a (whose mDL
+// enrollment opt-in is set to mdlEnabled) and returns the callback response.
+func driveSocialStub(t *testing.T, r http.Handler, store Storage, mdlEnabled bool) *httptest.ResponseRecorder {
 	t.Helper()
+	if _, err := store.CreateTenant(Tenant{ID: "ten_a", CompanyName: "A", Slug: "a",
+		OwnerEmail: "o@a.test", CreatedAt: time.Now().UTC(), MDLEnrollEnabled: mdlEnabled}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
 	if err := store.PutClient(OIDCClient{ClientID: "cli_a", TenantID: "ten_a",
 		RedirectURIs: []string{"http://app.example.com/cb"}, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed client: %v", err)
@@ -181,7 +185,7 @@ func TestSocialLoginNewUserOffersMDLInterstitial(t *testing.T) {
 	r, store := newEnrollRouter(t,
 		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
 		stubMDLVerifier{})
-	cw := driveSocialStub(t, r, store)
+	cw := driveSocialStub(t, r, store, true)
 	if cw.Code != http.StatusOK {
 		t.Fatalf("first social login: want 200 interstitial, got %d", cw.Code)
 	}
@@ -202,12 +206,56 @@ func TestSocialLoginReturningUserNoInterstitial(t *testing.T) {
 		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
 		stubMDLVerifier{})
 	mustUser(t, store, "usr_pre", "ten_a", "stub-google@example.com", time.Now().UTC())
-	cw := driveSocialStub(t, r, store)
+	cw := driveSocialStub(t, r, store, true)
 	if cw.Code != http.StatusFound {
 		t.Fatalf("returning user: want 302 redirect, got %d (%s)", cw.Code, cw.Body.String())
 	}
 	if loc, _ := url.Parse(cw.Header().Get("Location")); loc.Host != "app.example.com" {
 		t.Fatalf("should redirect to the app, got %q", loc.Host)
+	}
+}
+
+// A first-time user whose tenant has NOT opted in gets the normal redirect — no
+// interstitial (the per-tenant flag gates it).
+func TestSocialLoginMDLDisabledNoInterstitial(t *testing.T) {
+	r, store := newEnrollRouter(t,
+		stubIDClient{createID: "vrf_s", createURL: "https://id.x-auth.com/v/tok"},
+		stubMDLVerifier{})
+	cw := driveSocialStub(t, r, store, false) // tenant opt-in OFF
+	if cw.Code != http.StatusFound {
+		t.Fatalf("opt-in off: want 302, got %d (%s)", cw.Code, cw.Body.String())
+	}
+	if loc, _ := url.Parse(cw.Header().Get("Location")); loc.Host != "app.example.com" {
+		t.Fatalf("should redirect to the app, got %q", loc.Host)
+	}
+}
+
+// The owner toggles the mDL-enrollment opt-in from the Integration tab.
+func TestOwnerTogglesMDLEnroll(t *testing.T) {
+	r, store := newEnrollRouter(t, stubIDClient{}, stubMDLVerifier{})
+	w := driveSignup(t, r, store, "owner@acme.test", "Acme", "")
+	oc := &http.Cookie{Name: ownerSessionCookie, Value: sessionCookie(w, ownerSessionCookie)}
+
+	if pw := postForm(t, r, "/admin/owner/mdl-enroll", url.Values{"enabled": {"true"}}, oc); pw.Code != http.StatusFound {
+		t.Fatalf("enable: want 302, got %d", pw.Code)
+	}
+	if tn, _ := store.GetTenant("ten_acme"); !tn.MDLEnrollEnabled {
+		t.Fatal("flag should be enabled")
+	}
+	// Integration tab shows the toggle.
+	req := httptest.NewRequest(http.MethodGet, "/admin?tab=integration", nil)
+	req.AddCookie(oc)
+	dw := httptest.NewRecorder()
+	r.ServeHTTP(dw, req)
+	if !strings.Contains(dw.Body.String(), "Offer mDL enrollment on first social login") {
+		t.Error("Integration tab missing the mDL toggle")
+	}
+	// Disable again.
+	if pw := postForm(t, r, "/admin/owner/mdl-enroll", url.Values{}, oc); pw.Code != http.StatusFound {
+		t.Fatalf("disable: want 302, got %d", pw.Code)
+	}
+	if tn, _ := store.GetTenant("ten_acme"); tn.MDLEnrollEnabled {
+		t.Fatal("flag should be disabled")
 	}
 }
 

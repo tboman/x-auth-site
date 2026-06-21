@@ -508,6 +508,28 @@ func (h *SignupConsoleHandlers) SetPhoneLogin(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
 }
 
+// SetMDLEnroll handles POST /admin/owner/mdl-enroll — the owner toggles whether a
+// first-time end user is offered mDL enrollment on social login.
+func (h *SignupConsoleHandlers) SetMDLEnroll(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=integration")
+		return
+	}
+	enabled := r.PostForm.Get("enabled") == "true"
+	if err := h.Store.SetTenantMDLEnroll(owner.Tenant.ID, enabled); err != nil {
+		h.Logger.Error("owner_set_mdl_enroll_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not update sign-in methods.", "/admin?tab=integration")
+		return
+	}
+	h.Logger.Info("mdl_enroll_toggled", "tenant_id", owner.Tenant.ID, "enabled", enabled, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
+}
+
 // SetUserPhone handles POST /admin/owner/identities/phone — the owner sets (or
 // replaces) a verified phone number for one of their users. The number becomes
 // a verified phone identity anchor, enabling SMS step-up and phone sign-in.
@@ -870,6 +892,10 @@ func (h *SignupConsoleHandlers) signInMethodsPanel(owner ownerSession) string {
 	if owner.Tenant.PhoneLoginEnabled {
 		checked = " checked"
 	}
+	mdlChecked := ""
+	if owner.Tenant.MDLEnrollEnabled {
+		mdlChecked = " checked"
+	}
 	return `<div class="panel">
 <h3 style="margin:0 0 8px">Sign-in methods</h3>
 <p class="muted">Google is always available on your hosted <code>/login</code> page. Phone (SMS one-time code) is optional.
@@ -879,6 +905,16 @@ so leave phone off for real end users until it's announced.</p>
 <label style="display:flex;align-items:center;gap:8px;color:var(--text)">
 <input type="checkbox" name="enabled" value="true"` + checked + ` style="width:auto"> Enable phone (SMS OTP) sign-in</label>
 <div class="actions"><button type="submit">Save sign-in methods</button></div>
+</form></div>
+<div class="panel">
+<h3 style="margin:0 0 8px">Identity verification</h3>
+<p class="muted">When enabled, a first-time user signing in with Google is offered to add their
+<strong>mobile driving licence (mDL)</strong> before continuing to your app — an optional one-screen step they can skip.
+Off by default so the sign-in flow is unchanged until you opt in.</p>
+<form method="post" action="/admin/owner/mdl-enroll">
+<label style="display:flex;align-items:center;gap:8px;color:var(--text)">
+<input type="checkbox" name="enabled" value="true"` + mdlChecked + ` style="width:auto"> Offer mDL enrollment on first social login</label>
+<div class="actions"><button type="submit">Save</button></div>
 </form></div>`
 }
 
