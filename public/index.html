@@ -1045,6 +1045,7 @@
             <nav>
                 <a href="#apps">For Apps</a>
                 <a href="#use-cases">Use Cases</a>
+                <a href="#verified-identity">Verified ID</a>
                 <a href="#agents">For Agents</a>
                 <a href="/quickstarts/">Quickstarts</a>
                 <a href="#pricing">Pricing</a>
@@ -1311,10 +1312,11 @@
             </div>
             <div class="service-card">
                 <h3>Adaptive Authentication</h3>
-                <p>Last — execution. A full OIDC provider with risk-aware step-up: when <code>/v1/advice</code> returns STEP_UP, the authenticator service dispatches the right challenge — passkey, push, TOTP, SMS, or magic link — and the session is upgraded with the achieved ACR.</p>
+                <p>Last — execution. A full OIDC provider with risk-aware step-up: when <code>/v1/advice</code> returns STEP_UP, the authenticator service dispatches the right challenge — passkey, push, TOTP, SMS, or magic link — and the session is upgraded with the achieved ACR. Every factor a user binds, including a verified <strong>mobile driver's license</strong>, is one inventory across the account.</p>
                 <div class="tag-row" style="margin-top:1.25rem;">
                     <span class="tag">OIDC</span>
                     <span class="tag">Passkeys / FIDO2</span>
+                    <span class="tag">mDL / Verified ID</span>
                     <span class="tag">TOTP</span>
                     <span class="tag">Push</span>
                     <span class="tag">SMS</span>
@@ -1411,6 +1413,63 @@
                     <span class="tag">Pass-through</span>
                     <span class="tag">Role &amp; action aware</span>
                     <span class="tag">Finance &rarr; ultra:strict</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ── Section 5c: Verified Identity (mDL + FIDO assurance) ── -->
+<section id="verified-identity">
+    <div class="container">
+        <div class="section-head">
+            <div class="section-kicker">Verified Identity</div>
+            <h2>Verify the human.<br>Trust the authenticator.</h2>
+            <p class="lead">Step-up proves possession of a factor. X-Auth goes further — it can verify a real government ID from the user's phone wallet, and it knows exactly which authenticator sits behind every passkey. Two new services, live in production.</p>
+        </div>
+        <div class="engine-grid">
+            <div class="engine-card">
+                <span class="engine-icon">🪪</span>
+                <h3>Mobile Driver's License</h3>
+                <p>Verify a real, government-issued <strong>mobile driver's license</strong> straight from the user's phone wallet over <strong>ISO/IEC 18013-5 / -7</strong> and OpenID4VP. X-Auth cryptographically checks the issuer chain, extracts the verified claims — name, date of birth, document number — and records the <strong>issuing authority as the trust anchor</strong> of the verification. Live at <code>id.x-auth.com</code>.</p>
+                <div class="tag-row">
+                    <span class="tag">ISO 18013-5 / -7</span>
+                    <span class="tag">OpenID4VP</span>
+                    <span class="tag">issuer trust anchor</span>
+                    <span class="tag">selective claims</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">📲</span>
+                <h3>Self-Service Enrollment</h3>
+                <p>Users add their own mDL — no admin in the loop. They authenticate with a social login first, then present from their wallet <strong>same-device or by QR</strong>. Enrollment is offered at three points: a shareable per-tenant link, during workspace signup, and as an optional prompt on first social login. <strong>Per-tenant opt-in</strong> keeps the default flow untouched until an admin enables it.</p>
+                <div class="tag-row">
+                    <span class="tag">same-device + QR</span>
+                    <span class="tag">social-login bound</span>
+                    <span class="tag">per-tenant opt-in</span>
+                    <span class="tag">no admin step</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🔐</span>
+                <h3>FIDO Authenticator Assurance</h3>
+                <p>Not every passkey is equal. X-Auth's <strong>FIDO Metadata Service</strong> checks each WebAuthn credential against the live <strong>FIDO Alliance MDS</strong> — resolving the authenticator by AAGUID to its make, certification level, and any published security advisories. Know whether a credential came from a certified hardware key or an unknown platform authenticator. Live at <code>fido.x-auth.com</code>.</p>
+                <div class="tag-row">
+                    <span class="tag">FIDO2 MDS</span>
+                    <span class="tag">AAGUID lookup</span>
+                    <span class="tag">attestation</span>
+                    <span class="tag">certification level</span>
+                </div>
+            </div>
+            <div class="engine-card">
+                <span class="engine-icon">🗂</span>
+                <h3>One Authenticator Inventory</h3>
+                <p>A verified mDL becomes a first-class authenticator on the account, shown <strong>alongside SMS and FIDO passkeys</strong> on the admin and owner screens. Every factor bound to a user — phone, passkey, verified ID — sits in one inventory, each carrying the trust anchor it was verified against.</p>
+                <div class="tag-row">
+                    <span class="tag">unified view</span>
+                    <span class="tag">SMS · FIDO · mDL</span>
+                    <span class="tag">trust anchor recorded</span>
+                    <span class="tag">admin &amp; owner</span>
                 </div>
             </div>
         </div>
