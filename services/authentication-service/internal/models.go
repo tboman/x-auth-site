@@ -139,6 +139,21 @@ type Tenant struct {
 	// first-time end user on OIDC social login (migration 000018). Default false:
 	// the owner opts in so an integrator never gets an unexpected extra screen.
 	MDLEnrollEnabled bool `json:"mdl_enroll_enabled"`
+	// Branding (migration 000019) customises the tenant's hosted end-user pages
+	// — the /login chooser, phone-login, and step-up verification screens.
+	// BrandLogoURL is an absolute http(s) logo shown above the card; BrandColor
+	// overrides the accent (primary buttons/highlights); BrandBgColor overrides
+	// the page background, with panel/text/line colours derived from it. All
+	// empty = X-Auth's default dark theme, unchanged. See branding.go.
+	BrandLogoURL string `json:"brand_logo_url,omitempty"`
+	BrandColor   string `json:"brand_color,omitempty"`
+	BrandBgColor string `json:"brand_bg_color,omitempty"`
+}
+
+// Branding returns the tenant's hosted-page customisation. Zero value (any
+// empty field) falls back to the X-Auth default theme for that aspect.
+func (t Tenant) Branding() Branding {
+	return Branding{LogoURL: t.BrandLogoURL, Accent: t.BrandColor, BG: t.BrandBgColor}
 }
 
 // Identity anchor types. An identity (a users row) can be identified by one or

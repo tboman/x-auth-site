@@ -284,7 +284,7 @@ func (h *OIDCHandlers) startStepUpFlow(w http.ResponseWriter, r *http.Request, s
 
 	h.Logger.Info("stepup_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
 		"user_id", p.UserID, "tenant_id", p.TenantID, "method", spec.Method)
-	h.renderOTPForm(w, http.StatusOK, otpFormData{FlowID: flowID, Prompt: chal.Prompt, Method: spec.Method})
+	h.renderOTPForm(w, http.StatusOK, otpFormData{FlowID: flowID, Prompt: chal.Prompt, Method: spec.Method, TenantID: p.TenantID})
 }
 
 // userPhone returns the user's verified phone number from their phone identity
@@ -428,16 +428,24 @@ func (h *OIDCHandlers) AuthorizeVerify(w http.ResponseWriter, r *http.Request) {
 }
 
 // otpFormData feeds the OTP (code) verification page. FIDO2 has its own page
-// (renderWebAuthnForm), so this template only renders the code input.
+// (renderWebAuthnForm), so this template only renders the code input. TenantID
+// drives the per-tenant branding resolved in renderOTPForm; BrandStyle and
+// BrandLogo are populated there (never by callers) and are pre-validated, safe
+// HTML — see branding.go.
 type otpFormData struct {
-	FlowID string
-	Prompt string
-	Error  string
-	Method string
+	FlowID     string
+	Prompt     string
+	Error      string
+	Method     string
+	TenantID   string
+	BrandStyle template.HTML
+	BrandLogo  template.HTML
 }
 
-// otpFormTmpl is the minimal hosted verification page. Brand-consistent with
-// the marketing site's dark theme; no JavaScript required.
+// otpFormTmpl is the minimal hosted verification page. The base theme is the
+// marketing site's dark scheme expressed as CSS variables; a tenant's branding
+// (logo + accent/background) overrides those via {{.BrandStyle}}. No JavaScript
+// required for the form itself.
 var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -446,22 +454,25 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Verify your identity — X-Auth</title>
 <style>
-  body { background:#09090b; color:#dddde4; font-family:system-ui,sans-serif;
+  :root{--bg:#09090b;--panel:rgba(18,18,22,.85);--text:#dddde4;--muted:#7c7c8a;--line:rgba(255,255,255,.1);--accent:#00e096;--on-accent:#000;--danger:#f04040}
+  body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif;
          display:grid; place-items:center; min-height:100vh; margin:0 }
-  .card { background:rgba(18,18,22,.85); border:1px solid rgba(255,255,255,.07);
+  .card { background:var(--panel); border:1px solid var(--line);
           border-radius:12px; padding:2.5rem; max-width:24rem; text-align:center }
   h1 { font-size:1.1rem; margin:0 0 .75rem }
-  p  { color:#7c7c8a; font-size:.9rem; margin:0 0 1.5rem }
-  .err { color:#f04040; font-size:.85rem; margin:0 0 1rem }
-  input[type=text] { width:100%; box-sizing:border-box; background:#0c0c10; color:#dddde4;
-          border:1px solid rgba(255,255,255,.12); border-radius:6px; padding:.7rem 1rem;
+  p  { color:var(--muted); font-size:.9rem; margin:0 0 1.5rem }
+  .err { color:var(--danger); font-size:.85rem; margin:0 0 1rem }
+  input[type=text] { width:100%; box-sizing:border-box; background:var(--bg); color:var(--text);
+          border:1px solid var(--line); border-radius:6px; padding:.7rem 1rem;
           font-size:1.2rem; text-align:center; letter-spacing:.5em; font-family:monospace }
-  button { width:100%; margin-top:1rem; background:#00e096; color:#000; font-weight:700;
+  button { width:100%; margin-top:1rem; background:var(--accent); color:var(--on-accent); font-weight:700;
            border:0; border-radius:6px; padding:.8rem; font-size:1rem; cursor:pointer }
-</style>
+  ` + brandLogoCSS + `
+</style>{{.BrandStyle}}
 </head>
 <body>
 <div class="card">
+  {{.BrandLogo}}
   <h1>Enter verification code</h1>
   <p>{{.Prompt}}</p>
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
@@ -479,12 +490,27 @@ var otpFormTmpl = template.Must(template.New("otp").Parse(`<!DOCTYPE html>
 `))
 
 func (h *OIDCHandlers) renderOTPForm(w http.ResponseWriter, status int, data otpFormData) {
+	brand := h.tenantBrand(data.TenantID)
+	data.BrandStyle = template.HTML(brandingCSS(brand))
+	data.BrandLogo = template.HTML(brandLogoHTML(brand))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if err := otpFormTmpl.Execute(w, data); err != nil {
 		h.Logger.Error("otp_form_render_failed", "err", err)
 	}
+}
+
+// tenantBrand resolves a tenant's hosted-page branding for the step-up screens,
+// or the zero value (default theme) when the tenant can't be read.
+func (h *OIDCHandlers) tenantBrand(tenantID string) Branding {
+	if tenantID == "" {
+		return Branding{}
+	}
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		return t.Branding()
+	}
+	return Branding{}
 }
 
 // mintCodeAndRedirect is the shared tail of /authorize and /authorize/verify:

@@ -530,6 +530,45 @@ func (h *SignupConsoleHandlers) SetMDLEnroll(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
 }
 
+// SetBranding handles POST /admin/owner/branding — the owner sets the logo and
+// accent/background colours their hosted end-user pages render with. Each field
+// is optional; an empty value clears it (back to the X-Auth default). Values are
+// validated here (hex colours, http(s) logo URL) before they reach storage,
+// since they are interpolated into a <style>/<img> context downstream.
+func (h *SignupConsoleHandlers) SetBranding(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=branding")
+		return
+	}
+	logo := strings.TrimSpace(r.PostForm.Get("logo_url"))
+	accent := strings.ToLower(strings.TrimSpace(r.PostForm.Get("accent")))
+	bg := strings.ToLower(strings.TrimSpace(r.PostForm.Get("bg")))
+	if logo != "" && !validLogoURL(logo) {
+		h.errorPage(w, http.StatusBadRequest, "The logo URL must be an absolute https:// (or http://) URL.", "/admin?tab=branding")
+		return
+	}
+	if accent != "" && !validHexColor(accent) {
+		h.errorPage(w, http.StatusBadRequest, "The accent colour must be a hex value like #00e096.", "/admin?tab=branding")
+		return
+	}
+	if bg != "" && !validHexColor(bg) {
+		h.errorPage(w, http.StatusBadRequest, "The background colour must be a hex value like #09090b.", "/admin?tab=branding")
+		return
+	}
+	if err := h.Store.SetTenantBranding(owner.Tenant.ID, Branding{LogoURL: logo, Accent: accent, BG: bg}); err != nil {
+		h.Logger.Error("owner_set_branding_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not save branding.", "/admin?tab=branding")
+		return
+	}
+	h.Logger.Info("branding_updated", "tenant_id", owner.Tenant.ID, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=branding", http.StatusFound)
+}
+
 // SetUserPhone handles POST /admin/owner/identities/phone — the owner sets (or
 // replaces) a verified phone number for one of their users. The number becomes
 // a verified phone identity anchor, enabling SMS step-up and phone sign-in.
@@ -733,6 +772,7 @@ func (h *SignupConsoleHandlers) Home(w http.ResponseWriter, r *http.Request) {
 var dashboardTabs = []struct{ key, label string }{
 	{"overview", "Overview"},
 	{"integration", "Integration"},
+	{"branding", "Branding"},
 	{"transactions", "Transaction types"},
 	{"flows", "Flows"},
 	{"users", "Users"},
@@ -755,6 +795,8 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 	switch tab {
 	case "integration":
 		content = h.ownerIntegration(owner)
+	case "branding":
+		content = h.ownerBranding(owner)
 	case "transactions":
 		content = h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
 	case "flows":
@@ -917,6 +959,111 @@ Off by default so the sign-in flow is unchanged until you opt in.</p>
 <div class="actions"><button type="submit">Save</button></div>
 </form></div>`
 }
+
+// ownerBranding is the Branding tab: the logo + accent/background colour the
+// tenant's hosted end-user pages (the /login chooser, phone sign-in, and step-up
+// verification screens) render with. Empty fields fall back to the X-Auth
+// default dark theme. A small inline script live-previews the scheme; SetBranding
+// re-validates on save. The owner's own dashboard is intentionally not themed.
+func (h *SignupConsoleHandlers) ownerBranding(owner ownerSession) string {
+	t := owner.Tenant
+	logo := html.EscapeString(t.BrandLogoURL)
+	accent := html.EscapeString(t.BrandColor)
+	bg := html.EscapeString(t.BrandBgColor)
+	pickAccent := t.BrandColor
+	if !validHexColor(pickAccent) {
+		pickAccent = "#00e096"
+	}
+	pickBg := t.BrandBgColor
+	if !validHexColor(pickBg) {
+		pickBg = "#09090b"
+	}
+	const inp = `padding:9px 11px;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;font:inherit;width:100%;box-sizing:border-box`
+	const swatch = `width:42px;height:38px;flex:0 0 auto;border:1px solid var(--line);border-radius:6px;background:#0d0d12;padding:2px`
+	return `<div class="panel">
+<h3 style="margin:0 0 8px">Branding</h3>
+<p class="muted">Customise the pages your end users see — the hosted <code>/login</code> chooser, phone sign-in, and step-up verification. Leave a field blank to use the X-Auth default. Your admin dashboard is not affected.</p>
+<form method="post" action="/admin/owner/branding">
+<label>Logo URL <span class="muted">(https, shown above the sign-in card)</span></label>
+<input id="bLogo" name="logo_url" type="url" placeholder="https://cdn.example.com/logo.svg" value="` + logo + `" style="` + inp + `">
+<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:14px">
+<div style="flex:1;min-width:170px">
+<label>Accent colour <span class="muted">(buttons &amp; highlights)</span></label>
+<div style="display:flex;gap:8px;align-items:center">
+<input id="bAccent" name="accent" type="text" placeholder="#00e096" value="` + accent + `" style="` + inp + `">
+<input id="bAccentPick" type="color" value="` + html.EscapeString(pickAccent) + `" style="` + swatch + `" aria-label="Accent colour picker">
+</div></div>
+<div style="flex:1;min-width:170px">
+<label>Background colour <span class="muted">(page background)</span></label>
+<div style="display:flex;gap:8px;align-items:center">
+<input id="bBg" name="bg" type="text" placeholder="#09090b" value="` + bg + `" style="` + inp + `">
+<input id="bBgPick" type="color" value="` + html.EscapeString(pickBg) + `" style="` + swatch + `" aria-label="Background colour picker">
+</div></div>
+</div>
+<div class="actions" style="margin-top:16px"><button type="submit">Save branding</button></div>
+</form></div>
+<div class="panel">
+<h3 style="margin:0 0 10px">Live preview <span class="muted" style="font-weight:400">— the hosted sign-in page</span></h3>
+<div id="bPrev" style="border:1px solid var(--line);border-radius:10px;padding:30px;display:grid;place-items:center;background:#09090b">
+<div style="width:min(320px,100%)">
+<img id="bPrevLogo" alt="" style="display:none;max-height:42px;max-width:170px;margin:0 auto 16px;object-fit:contain">
+<div id="bPrevCard" style="background:#121217;border:1px solid rgba(255,255,255,.11);border-radius:10px;padding:22px">
+<div id="bPrevTitle" style="font-weight:700;font-size:1.05rem;margin-bottom:4px;color:#dddde4">Sign in</div>
+<div id="bPrevSub" style="font-size:.82rem;color:#8a8a96;margin-bottom:16px">Choose how you'd like to continue.</div>
+<div id="bPrevBtn" style="background:#00e096;color:#00150e;font-weight:800;text-align:center;padding:12px;border-radius:8px">Continue with Google</div>
+</div></div></div></div>
+<script>` + brandingPreviewScript + `</script>`
+}
+
+// brandingPreviewScript live-updates the branding preview as the owner edits the
+// fields. It mirrors a light version of branding.go's derivation (text/panel
+// from background luminance, on-accent from accent luminance) — close enough to
+// preview; the server is the source of truth on save. No backticks (this string
+// lives inside a Go raw literal).
+const brandingPreviewScript = `
+(function(){
+  function $(id){ return document.getElementById(id); }
+  function isHex(s){ return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s); }
+  function parse(s){
+    var h = s.slice(1);
+    if(h.length===3){ h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; }
+    var n = parseInt(h,16);
+    return [(n>>16)&255,(n>>8)&255,n&255];
+  }
+  function lum(s){ var c=parse(s); return (0.2126*c[0]+0.7152*c[1]+0.0722*c[2])/255; }
+  function on(s){ return lum(s)>0.55 ? '#0b0b0d' : '#f5f6f8'; }
+  function mix(a,b,t){ var x=parse(a),y=parse(b),o=[0,0,0];
+    for(var i=0;i<3;i++){ o[i]=Math.round(x[i]+(y[i]-x[i])*t); }
+    return 'rgb('+o[0]+','+o[1]+','+o[2]+')'; }
+  function rgba(s,al){ var c=parse(s); return 'rgba('+c[0]+','+c[1]+','+c[2]+','+al+')'; }
+  function render(){
+    var accent = $('bAccent').value.trim();
+    var bg = $('bBg').value.trim();
+    var logo = $('bLogo').value.trim();
+    var prev=$('bPrev'), card=$('bPrevCard'), title=$('bPrevTitle'), sub=$('bPrevSub'), btn=$('bPrevBtn'), img=$('bPrevLogo');
+    if(isHex(bg)){
+      var fg=on(bg);
+      prev.style.background=bg; card.style.background=mix(bg,fg,0.06);
+      card.style.borderColor=rgba(fg,0.14); title.style.color=fg; sub.style.color=rgba(fg,0.55);
+    } else {
+      prev.style.background='#09090b'; card.style.background='#121217';
+      card.style.borderColor='rgba(255,255,255,.11)'; title.style.color='#dddde4'; sub.style.color='#8a8a96';
+    }
+    if(isHex(accent)){ btn.style.background=accent; btn.style.color=on(accent); }
+    else { btn.style.background='#00e096'; btn.style.color='#00150e'; }
+    if(/^https?:\/\//i.test(logo)){ img.src=logo; img.style.display='block'; }
+    else { img.removeAttribute('src'); img.style.display='none'; }
+  }
+  function bind(textId,pickId){
+    var tx=$(textId), pk=$(pickId);
+    if(tx){ tx.addEventListener('input', function(){ if(isHex(tx.value.trim())){ pk.value = tx.value.trim().length===4 ? '#'+tx.value.trim().slice(1).replace(/./g,function(c){return c+c;}) : tx.value.trim(); } render(); }); }
+    if(pk){ pk.addEventListener('input', function(){ tx.value = pk.value; render(); }); }
+  }
+  bind('bAccent','bAccentPick'); bind('bBg','bBgPick');
+  var lg=$('bLogo'); if(lg){ lg.addEventListener('input', render); }
+  render();
+})();
+`
 
 // ownerUsers is the users tab.
 func (h *SignupConsoleHandlers) ownerUsers(owner ownerSession) string {

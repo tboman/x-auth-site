@@ -983,10 +983,12 @@ func (s *PGStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 
 // getTenant runs the shared SELECT with a caller-supplied single-arg WHERE.
 func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
-	q := `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled FROM tenants ` + where
+	q := `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled,
+		brand_logo_url, brand_color, brand_bg_color FROM tenants ` + where
 	var t Tenant
 	err := s.pool.QueryRow(bgCtx(), q, arg).Scan(
 		&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled, &t.MDLEnrollEnabled,
+		&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
@@ -1002,7 +1004,8 @@ func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 // Owner email is no longer unique (a Google account may own several workspaces),
 // so login uses this to drive the workspace picker.
 func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
-	const q = `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled
+	const q = `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled,
+		brand_logo_url, brand_color, brand_bg_color
 		FROM tenants WHERE owner_email = $1 ORDER BY slug`
 	rows, err := s.pool.Query(bgCtx(), q, email)
 	if err != nil {
@@ -1012,7 +1015,8 @@ func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	var out []Tenant
 	for rows.Next() {
 		var t Tenant
-		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled, &t.MDLEnrollEnabled); err != nil {
+		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled, &t.MDLEnrollEnabled,
+			&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor); err != nil {
 			return nil, fmt.Errorf("pgstorage list_tenants_by_owner scan: %w", err)
 		}
 		t.CreatedAt = t.CreatedAt.UTC()
@@ -1062,6 +1066,20 @@ func (s *PGStorage) SetTenantMDLEnroll(tenantID string, enabled bool) error {
 		`UPDATE tenants SET mdl_enroll_enabled = $2 WHERE id = $1`, tenantID, enabled)
 	if err != nil {
 		return fmt.Errorf("pgstorage set_tenant_mdl_enroll: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetTenantBranding sets the tenant's hosted-page logo + colour scheme.
+func (s *PGStorage) SetTenantBranding(tenantID string, b Branding) error {
+	tag, err := s.pool.Exec(bgCtx(),
+		`UPDATE tenants SET brand_logo_url = $2, brand_color = $3, brand_bg_color = $4 WHERE id = $1`,
+		tenantID, b.LogoURL, b.Accent, b.BG)
+	if err != nil {
+		return fmt.Errorf("pgstorage set_tenant_branding: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

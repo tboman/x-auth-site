@@ -101,6 +101,12 @@ type Storage interface {
 	// (migration 000018). ErrNotFound if the tenant has no registry row.
 	SetTenantMDLEnroll(tenantID string, enabled bool) error
 
+	// SetTenantBranding sets the tenant's hosted-page branding — logo URL and
+	// accent/background colours (migration 000019). Values are persisted as
+	// given; validation/normalisation is the caller's responsibility (see
+	// branding.go). ErrNotFound if the tenant has no registry row.
+	SetTenantBranding(tenantID string, b Branding) error
+
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
 	// id (email stays canonical on users.email). Returns ErrConflict when the
@@ -735,6 +741,21 @@ func (s *MemStorage) SetTenantMDLEnroll(tenantID string, enabled bool) error {
 		return ErrNotFound
 	}
 	t.MDLEnrollEnabled = enabled
+	s.tenants[tenantID] = t
+	return nil
+}
+
+// SetTenantBranding sets the tenant's hosted-page logo + colour scheme.
+func (s *MemStorage) SetTenantBranding(tenantID string, b Branding) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.BrandLogoURL = b.LogoURL
+	t.BrandColor = b.Accent
+	t.BrandBgColor = b.BG
 	s.tenants[tenantID] = t
 	return nil
 }

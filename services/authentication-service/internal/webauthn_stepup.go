@@ -47,7 +47,7 @@ func (h *OIDCHandlers) startWebAuthnStepUp(w http.ResponseWriter, r *http.Reques
 		h.storeFlow(flowID, p)
 		h.StepUps.Start(StepUpAttempt{FlowID: flowID, TenantID: p.TenantID, UserID: p.UserID, Method: spec.Method, StartedAt: p.CreatedAt})
 		h.Logger.Info("stepup_webauthn_register_started", "flow_id", flowID, "user_id", p.UserID, "tenant_id", p.TenantID)
-		h.renderWebAuthnForm(w, http.StatusOK, webAuthnFormData{FlowID: flowID, Register: true})
+		h.renderWebAuthnForm(w, http.StatusOK, webAuthnFormData{FlowID: flowID, Register: true, TenantID: p.TenantID})
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *OIDCHandlers) startWebAuthnStepUp(w http.ResponseWriter, r *http.Reques
 	h.StepUps.Start(StepUpAttempt{FlowID: flowID, TenantID: p.TenantID, UserID: p.UserID, Method: spec.Method, StartedAt: p.CreatedAt})
 	h.Logger.Info("stepup_flow_started", "flow_id", flowID, "challenge_id", chal.ChallengeID,
 		"user_id", p.UserID, "tenant_id", p.TenantID, "method", spec.Method)
-	h.renderWebAuthnForm(w, http.StatusOK, webAuthnFormData{FlowID: flowID, AssertionOptions: string(chal.Options)})
+	h.renderWebAuthnForm(w, http.StatusOK, webAuthnFormData{FlowID: flowID, AssertionOptions: string(chal.Options), TenantID: p.TenantID})
 }
 
 // AuthorizeWebAuthnRegisterBegin proxies POST /authorize/webauthn/register/begin
@@ -168,10 +168,10 @@ func (h *OIDCHandlers) webAuthnUserName(tenantID, userID string) (name, displayN
 // throttled attempt: the passkey page for fido2, the OTP page otherwise.
 func (h *OIDCHandlers) renderStepUpRetry(w http.ResponseWriter, status int, flow pendingAuthorize, flowID, errMsg string) {
 	if flow.Method == stepUpMethodFIDO2 {
-		h.renderWebAuthnForm(w, status, webAuthnFormData{FlowID: flowID, AssertionOptions: flow.WebAuthnOptions, Error: errMsg})
+		h.renderWebAuthnForm(w, status, webAuthnFormData{FlowID: flowID, AssertionOptions: flow.WebAuthnOptions, Error: errMsg, TenantID: flow.TenantID})
 		return
 	}
-	h.renderOTPForm(w, status, otpFormData{FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method, Error: errMsg})
+	h.renderOTPForm(w, status, otpFormData{FlowID: flowID, Prompt: flow.Prompt, Method: flow.Method, Error: errMsg, TenantID: flow.TenantID})
 }
 
 // webAuthnFormData feeds the passkey page. Register selects the
@@ -182,14 +182,17 @@ type webAuthnFormData struct {
 	Error            string
 	Register         bool
 	AssertionOptions string
+	TenantID         string // drives per-tenant branding (resolved in renderWebAuthnForm)
 }
 
 type webAuthnTmplData struct {
 	FlowID     string
 	Error      string
-	Register   bool        // drives the {{if}} HTML branch
-	RegisterJS template.JS // the JS boolean literal
-	Options    template.JS // assertion options JSON, or "null"
+	Register   bool          // drives the {{if}} HTML branch
+	RegisterJS template.JS   // the JS boolean literal
+	Options    template.JS   // assertion options JSON, or "null"
+	BrandStyle template.HTML // tenant theme override (pre-validated, see branding.go)
+	BrandLogo  template.HTML // tenant logo <img>, or empty
 }
 
 func (h *OIDCHandlers) renderWebAuthnForm(w http.ResponseWriter, status int, data webAuthnFormData) {
@@ -201,11 +204,13 @@ func (h *OIDCHandlers) renderWebAuthnForm(w http.ResponseWriter, status int, dat
 	if data.Register {
 		regJS = template.JS("true")
 	}
+	brand := h.tenantBrand(data.TenantID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if err := webAuthnTmpl.Execute(w, webAuthnTmplData{
 		FlowID: data.FlowID, Error: data.Error, Register: data.Register, RegisterJS: regJS, Options: opts,
+		BrandStyle: template.HTML(brandingCSS(brand)), BrandLogo: template.HTML(brandLogoHTML(brand)),
 	}); err != nil {
 		h.Logger.Error("webauthn_form_render_failed", "err", err)
 	}
@@ -219,20 +224,23 @@ var webAuthnTmpl = template.Must(template.New("webauthn").Parse(`<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Verify your identity — X-Auth</title>
 <style>
-  body { background:#09090b; color:#dddde4; font-family:system-ui,sans-serif;
+  :root{--bg:#09090b;--panel:rgba(18,18,22,.85);--text:#dddde4;--muted:#7c7c8a;--line:rgba(255,255,255,.07);--accent:#00e096;--on-accent:#000;--danger:#f04040}
+  body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif;
          display:grid; place-items:center; min-height:100vh; margin:0 }
-  .card { background:rgba(18,18,22,.85); border:1px solid rgba(255,255,255,.07);
+  .card { background:var(--panel); border:1px solid var(--line);
           border-radius:12px; padding:2.5rem; max-width:24rem; text-align:center }
   h1 { font-size:1.1rem; margin:0 0 .75rem }
-  p  { color:#7c7c8a; font-size:.9rem; margin:0 0 1.25rem }
-  .err { color:#f04040; font-size:.85rem; margin:0 0 1rem }
-  button { width:100%; margin-top:.5rem; background:#00e096; color:#000; font-weight:700;
+  p  { color:var(--muted); font-size:.9rem; margin:0 0 1.25rem }
+  .err { color:var(--danger); font-size:.85rem; margin:0 0 1rem }
+  button { width:100%; margin-top:.5rem; background:var(--accent); color:var(--on-accent); font-weight:700;
            border:0; border-radius:6px; padding:.8rem; font-size:1rem; cursor:pointer }
   button:disabled { opacity:.6; cursor:default }
-</style>
+  ` + brandLogoCSS + `
+</style>{{.BrandStyle}}
 </head>
 <body>
 <div class="card">
+  {{.BrandLogo}}
   {{if .Register}}<h1>Create a passkey</h1><p>Set up a passkey on this device to continue securely.</p>
   {{else}}<h1>Confirm with your passkey</h1><p>Use your passkey (fingerprint, face, or security key) to continue.</p>{{end}}
   {{if .Error}}<p class="err">{{.Error}}</p>{{end}}

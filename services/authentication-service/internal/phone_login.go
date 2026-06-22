@@ -203,8 +203,12 @@ func (h *PhoneLoginHandlers) Start(w http.ResponseWriter, r *http.Request) {
 	}
 
 	heading := "Sign in with your phone"
-	if t, err := h.Store.GetTenant(tenantID); err == nil && t.CompanyName != "" {
-		heading = "Sign in to " + t.CompanyName
+	var brand Branding
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		if t.CompanyName != "" {
+			heading = "Sign in to " + t.CompanyName
+		}
+		brand = t.Branding()
 	}
 	h.page(w, http.StatusOK, "Phone sign-in", `<h1>`+html.EscapeString(heading)+`</h1>
 <p class="muted">Enter your mobile number — we'll text you a verification code.</p>
@@ -213,7 +217,7 @@ func (h *PhoneLoginHandlers) Start(w http.ResponseWriter, r *http.Request) {
 <label for="phone">Mobile number</label>
 <input id="phone" name="phone" type="tel" inputmode="tel" placeholder="+15551234567" autocomplete="tel" autofocus required>
 <button class="btn" type="submit" style="margin-top:14px">Send code</button>
-</form>`)
+</form>`, brand)
 }
 
 // Submit validates the number, "sends" the OTP, parks the flow, and shows the
@@ -234,7 +238,7 @@ func (h *PhoneLoginHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		h.page(w, http.StatusBadRequest, "Phone sign-in", `<h1 class="err">Check the number</h1>
 <p class="muted">Enter a valid mobile number in international format, e.g. <code>+15551234567</code>.</p>
-<div class="actions"><a class="btn secondary" href="`+html.EscapeString(h.entryHref(tenantID, redirectURI, state))+`">Back</a></div>`)
+<div class="actions"><a class="btn secondary" href="`+html.EscapeString(h.entryHref(tenantID, redirectURI, state))+`">Back</a></div>`, h.brandFor(tenantID))
 		return
 	}
 
@@ -250,7 +254,7 @@ func (h *PhoneLoginHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, smsx.ErrInvalidNumber) {
 			h.page(w, http.StatusBadRequest, "Phone sign-in", `<h1 class="err">Check the number</h1>
 <p class="muted">That doesn't look like a valid mobile number. Enter it in full international format, e.g. <code>+15551234567</code>.</p>
-<div class="actions"><a class="btn secondary" href="`+html.EscapeString(h.entryHref(tenantID, redirectURI, state))+`">Back</a></div>`)
+<div class="actions"><a class="btn secondary" href="`+html.EscapeString(h.entryHref(tenantID, redirectURI, state))+`">Back</a></div>`, h.brandFor(tenantID))
 			return
 		}
 		h.Logger.Error("phone_otp_send_failed", "err", err, "tenant_id", tenantID)
@@ -262,7 +266,7 @@ func (h *PhoneLoginHandlers) Submit(w http.ResponseWriter, r *http.Request) {
 		TenantID: tenantID, Phone: phone, RedirectURI: redirectURI, State: state,
 		IsNew: isNew, CreatedAt: time.Now().UTC(),
 	})
-	h.renderCodeForm(w, flowID, phone, "")
+	h.renderCodeForm(w, tenantID, flowID, phone, "")
 }
 
 // Verify checks the code and, on success, logs the user in (creating the account
@@ -282,7 +286,7 @@ func (h *PhoneLoginHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 	valid, err := h.Verifier.Check(r.Context(), flow.Phone, code)
 	if err != nil {
 		h.Logger.Error("phone_otp_check_failed", "err", err, "tenant_id", flow.TenantID)
-		h.renderCodeForm(w, flowID, flow.Phone, "Could not verify the code right now. Try again.")
+		h.renderCodeForm(w, flow.TenantID, flowID, flow.Phone, "Could not verify the code right now. Try again.")
 		return
 	}
 	if !valid {
@@ -293,7 +297,7 @@ func (h *PhoneLoginHandlers) Verify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.putOTP(flowID, flow)
-		h.renderCodeForm(w, flowID, flow.Phone, "Incorrect code — try again.")
+		h.renderCodeForm(w, flow.TenantID, flowID, flow.Phone, "Incorrect code — try again.")
 		return
 	}
 	h.dropOTP(flowID)
@@ -379,7 +383,7 @@ func (h *PhoneLoginHandlers) offerLink(w http.ResponseWriter, flow pendingPhoneO
 <form method="post" action="/login/phone/skip" style="margin:0">
 <button class="btn secondary" type="submit">Skip for now</button>
 </form>
-</div>`)
+</div>`, h.brandFor(flow.TenantID))
 }
 
 // LinkStart begins the Google leg in the staging tenant (ten_signup) purely to
@@ -485,7 +489,7 @@ func (h *PhoneLoginHandlers) finishLink(w http.ResponseWriter, r *http.Request, 
 	redir.RawQuery = rq.Encode()
 	h.page(w, http.StatusOK, "Signed in", `<h1 class="ok">Signed in</h1>
 <p class="muted">`+html.EscapeString(note)+`</p>
-<div class="actions"><a class="btn" href="`+html.EscapeString(redir.String())+`">Continue</a></div>`)
+<div class="actions"><a class="btn" href="`+html.EscapeString(redir.String())+`">Continue</a></div>`, h.brandFor(link.TenantID))
 }
 
 // finalize mirrors the social leg's tail: redirect to the app's redirect_uri
@@ -590,7 +594,7 @@ func (h *PhoneLoginHandlers) entryHref(tenantID, redirectURI, state string) stri
 	return "/login/phone?" + q.Encode()
 }
 
-func (h *PhoneLoginHandlers) renderCodeForm(w http.ResponseWriter, flowID, phone, errMsg string) {
+func (h *PhoneLoginHandlers) renderCodeForm(w http.ResponseWriter, tenantID, flowID, phone, errMsg string) {
 	errBlock := ""
 	if errMsg != "" {
 		errBlock = `<p class="err">` + html.EscapeString(errMsg) + `</p>`
@@ -603,12 +607,12 @@ func (h *PhoneLoginHandlers) renderCodeForm(w http.ResponseWriter, flowID, phone
 <label for="code">Verification code</label>
 <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" autofocus required>
 <button class="btn" type="submit" style="margin-top:14px">Verify</button>
-</form>`+deviceFPScript)
+</form>`+deviceFPScript, h.brandFor(tenantID))
 }
 
 // ---- page shell ----
 
-func (h *PhoneLoginHandlers) page(w http.ResponseWriter, status int, title, body string) {
+func (h *PhoneLoginHandlers) page(w http.ResponseWriter, status int, title, body string, brand Branding) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
@@ -620,7 +624,7 @@ func (h *PhoneLoginHandlers) page(w http.ResponseWriter, status int, title, body
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>`+html.EscapeString(title)+`</title>
 <style>
-:root{color-scheme:dark;--bg:#09090b;--panel:#121217;--text:#dddde4;--muted:#8a8a96;--line:rgba(255,255,255,.11);--accent:#00e096;--warn:#f0b429;--danger:#f04040}
+:root{color-scheme:dark;--bg:#09090b;--panel:#121217;--text:#dddde4;--muted:#8a8a96;--line:rgba(255,255,255,.11);--accent:#00e096;--on-accent:#00150e;--warn:#f0b429;--danger:#f04040}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;line-height:1.55;display:grid;place-items:center;min-height:100vh}
 main{width:min(420px,calc(100% - 32px))}
 h1{font-size:1.6rem;line-height:1.1;margin:0 0 6px;letter-spacing:-.02em}
@@ -629,16 +633,26 @@ h1{font-size:1.6rem;line-height:1.1;margin:0 0 6px;letter-spacing:-.02em}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
 label{display:block;color:var(--muted);font-size:.83rem;margin:2px 0 5px}
 input{width:100%;background:#0d0d12;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:11px 12px;font:inherit}
-.btn{appearance:none;width:100%;border:0;border-radius:8px;background:var(--accent);color:#00150e;font-weight:800;padding:12px 14px;text-decoration:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font:inherit;font-weight:800}
+.btn{appearance:none;width:100%;border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);font-weight:800;padding:12px 14px;text-decoration:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font:inherit;font-weight:800}
 .btn.secondary{background:#22232b;color:var(--text);border:1px solid var(--line)}
 code{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
-</style>
-</head><body><main>`+body+`</main></body></html>`)
+`+brandLogoCSS+`
+</style>`+brandingCSS(brand)+`
+</head><body><main>`+brandLogoHTML(brand)+body+`</main></body></html>`)
+}
+
+// brandFor resolves a tenant's hosted-page branding, or the zero value (default
+// theme) when the tenant has no registry row or can't be read.
+func (h *PhoneLoginHandlers) brandFor(tenantID string) Branding {
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		return t.Branding()
+	}
+	return Branding{}
 }
 
 func (h *PhoneLoginHandlers) errorPage(w http.ResponseWriter, msg string) {
 	h.page(w, http.StatusBadRequest, "Phone sign-in", `<h1 class="err">Can't sign in</h1>
-<p class="muted">`+html.EscapeString(msg)+`</p>`)
+<p class="muted">`+html.EscapeString(msg)+`</p>`, Branding{})
 }
 
 // ---- small helpers ----
