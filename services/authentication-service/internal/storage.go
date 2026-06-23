@@ -107,6 +107,10 @@ type Storage interface {
 	// branding.go). ErrNotFound if the tenant has no registry row.
 	SetTenantBranding(tenantID string, b Branding) error
 
+	// SetTenantFidoEnabled toggles per-tenant passkey (FIDO2) step-up (migration
+	// 000020, default true). ErrNotFound if the tenant has no registry row.
+	SetTenantFidoEnabled(tenantID string, enabled bool) error
+
 	// Identity anchors (tenant-scoped). CreateIdentityAnchor records an
 	// additional way to identify a user — a phone number or a passkey credential
 	// id (email stays canonical on users.email). Returns ErrConflict when the
@@ -645,6 +649,9 @@ func (s *MemStorage) CreateTenant(t Tenant) (Tenant, error) {
 			return Tenant{}, ErrConflict
 		}
 	}
+	// Mirror the PG column defaults (execInsertTenant never sets these, so PG
+	// always applies them): passkey step-up is ON by default (migration 000020).
+	t.FidoEnabled = true
 	s.tenants[t.ID] = t
 	return t, nil
 }
@@ -714,6 +721,10 @@ func (s *MemStorage) SetTenantOwner(tenantID, email string) error {
 	company, slug := synthTenantIdentity(tenantID)
 	s.tenants[tenantID] = Tenant{
 		ID: tenantID, CompanyName: company, Slug: slug, OwnerEmail: email, CreatedAt: time.Now().UTC(),
+		// Mirror the PG column default (the PG SetTenantOwner INSERT omits this
+		// column, so the DB default true applies): passkey step-up is ON by
+		// default for a synthesized tenant too (migration 000020).
+		FidoEnabled: true,
 	}
 	return nil
 }
@@ -760,6 +771,19 @@ func (s *MemStorage) SetTenantBranding(tenantID string, b Branding) error {
 	return nil
 }
 
+// SetTenantFidoEnabled toggles the tenant's passkey (FIDO2) step-up opt-out.
+func (s *MemStorage) SetTenantFidoEnabled(tenantID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tenants[tenantID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.FidoEnabled = enabled
+	s.tenants[tenantID] = t
+	return nil
+}
+
 // synthTenantIdentity derives a company name + slug for a registry row
 // synthesized when staff assigns an owner to a tenant that was never
 // self-service-provisioned. The slug is the tenant id itself (already unique, so
@@ -788,6 +812,9 @@ func (s *MemStorage) ProvisionTenant(t Tenant, owner User, sess Session, client 
 			return ErrConflict
 		}
 	}
+	// Mirror the PG column default (execInsertTenant never sets it): passkey
+	// step-up is ON by default for a freshly provisioned tenant (migration 000020).
+	t.FidoEnabled = true
 	s.tenants[t.ID] = t
 	s.users[owner.ID] = owner
 	s.sessions[sess.ID] = sess

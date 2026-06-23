@@ -984,11 +984,11 @@ func (s *PGStorage) GetTenantByOwnerEmail(email string) (Tenant, error) {
 // getTenant runs the shared SELECT with a caller-supplied single-arg WHERE.
 func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 	q := `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled,
-		brand_logo_url, brand_color, brand_bg_color FROM tenants ` + where
+		brand_logo_url, brand_color, brand_bg_color, fido_enabled FROM tenants ` + where
 	var t Tenant
 	err := s.pool.QueryRow(bgCtx(), q, arg).Scan(
 		&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled, &t.MDLEnrollEnabled,
-		&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor,
+		&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor, &t.FidoEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Tenant{}, ErrNotFound
@@ -1005,7 +1005,7 @@ func (s *PGStorage) getTenant(where, arg string) (Tenant, error) {
 // so login uses this to drive the workspace picker.
 func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	const q = `SELECT id, company_name, slug, owner_email, created_at, phone_login_enabled, mdl_enroll_enabled,
-		brand_logo_url, brand_color, brand_bg_color
+		brand_logo_url, brand_color, brand_bg_color, fido_enabled
 		FROM tenants WHERE owner_email = $1 ORDER BY slug`
 	rows, err := s.pool.Query(bgCtx(), q, email)
 	if err != nil {
@@ -1016,7 +1016,7 @@ func (s *PGStorage) ListTenantsByOwnerEmail(email string) ([]Tenant, error) {
 	for rows.Next() {
 		var t Tenant
 		if err := rows.Scan(&t.ID, &t.CompanyName, &t.Slug, &t.OwnerEmail, &t.CreatedAt, &t.PhoneLoginEnabled, &t.MDLEnrollEnabled,
-			&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor); err != nil {
+			&t.BrandLogoURL, &t.BrandColor, &t.BrandBgColor, &t.FidoEnabled); err != nil {
 			return nil, fmt.Errorf("pgstorage list_tenants_by_owner scan: %w", err)
 		}
 		t.CreatedAt = t.CreatedAt.UTC()
@@ -1080,6 +1080,19 @@ func (s *PGStorage) SetTenantBranding(tenantID string, b Branding) error {
 		tenantID, b.LogoURL, b.Accent, b.BG)
 	if err != nil {
 		return fmt.Errorf("pgstorage set_tenant_branding: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetTenantFidoEnabled toggles the tenant's passkey (FIDO2) step-up opt-out.
+func (s *PGStorage) SetTenantFidoEnabled(tenantID string, enabled bool) error {
+	tag, err := s.pool.Exec(bgCtx(),
+		`UPDATE tenants SET fido_enabled = $2 WHERE id = $1`, tenantID, enabled)
+	if err != nil {
+		return fmt.Errorf("pgstorage set_tenant_fido_enabled: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound

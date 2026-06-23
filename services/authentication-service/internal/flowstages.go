@@ -60,17 +60,18 @@ func (s authValidateStage) Execute(w http.ResponseWriter, r *http.Request, exec 
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "protection level has no challenge method")
 			return StageDeny, nil
 		}
+		spec = h.effectiveStepUpSpec(exec.TenantID, spec)
 		pend.TargetACR = lvl.ACR
 		pend.TargetRank = lvl.Rank
 		pend.AuthzSessionID = exec.AuthzSessionID
-		h.Logger.Info("protection_challenge", "acr", lvl.ACR, "rank", lvl.Rank, "method", lvl.Method,
+		h.Logger.Info("protection_challenge", "acr", lvl.ACR, "rank", lvl.Rank, "method", spec.Method,
 			"user_id", exec.UserID, "tenant_id", exec.TenantID)
 		h.startStepUpFlow(w, r, spec, pend) // renders + parks pendingAuthorize; resume via AuthorizeVerify
 		return StageRespond, nil
 	}
 
 	if spec, ok := matchStepUp(exec.ACRValues); ok {
-		h.startStepUpFlow(w, r, spec, pend)
+		h.startStepUpFlow(w, r, h.effectiveStepUpSpec(exec.TenantID, spec), pend)
 		return StageRespond, nil
 	}
 

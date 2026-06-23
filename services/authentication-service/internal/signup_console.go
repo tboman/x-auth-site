@@ -140,6 +140,21 @@ code{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
 .secret{font-family:"JetBrains Mono",ui-monospace,monospace;background:#0b0b10;border:1px solid var(--line);border-radius:8px;padding:14px;word-break:break-all}
 table{width:100%;border-collapse:collapse;margin-top:8px}td{border-top:1px solid var(--line);padding:10px 8px;vertical-align:top}td:first-child{color:var(--muted);width:150px}
 .warn{color:var(--warn)}
+/* ── owner dashboard: sidebar layout (wider shell only when a .dash is present) ── */
+main:has(.dash){width:min(1040px,calc(100% - 32px));margin:28px auto 64px}
+.dash{display:grid;grid-template-columns:188px 1fr;gap:26px;align-items:start}
+.dash-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:14px}
+.dash-brand{font-weight:800;font-size:1.05rem;letter-spacing:-.01em;line-height:1.2}
+.dash-brand small{display:block;color:var(--muted);font-weight:500;font-size:.73rem;margin-top:4px;word-break:break-word}
+.dash-nav{display:flex;flex-direction:column;gap:1px}
+.dash-nav a{display:block;padding:8px 11px;border-radius:7px;color:var(--muted);text-decoration:none;font-size:.9rem;font-weight:600}
+.dash-nav a:hover{background:#16161c;color:var(--text)}
+.dash-nav a[aria-current=page]{background:rgba(0,224,150,.12);color:var(--accent)}
+.dash-foot{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px}
+.dash-main{min-width:0}
+.tab-title{font-size:1.4rem;margin:2px 0 0}
+.dash-main .panel:first-of-type{margin-top:14px}
+@media(max-width:680px){.dash{grid-template-columns:1fr}.dash-side{position:static}.dash-nav{flex-flow:row wrap}.dash-nav a{border:1px solid var(--line)}}
 </style>
 </head><body><main>`+body+`</main></body></html>`)
 }
@@ -530,6 +545,29 @@ func (h *SignupConsoleHandlers) SetMDLEnroll(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
 }
 
+// SetFido handles POST /admin/owner/fido — the owner toggles whether passkey
+// (FIDO2) step-up is offered for their tenant. Default on; off → step-up falls
+// back to SMS.
+func (h *SignupConsoleHandlers) SetFido(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		http.Redirect(w, r, "/admin/owner/login", http.StatusFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=integration")
+		return
+	}
+	enabled := r.PostForm.Get("enabled") == "true"
+	if err := h.Store.SetTenantFidoEnabled(owner.Tenant.ID, enabled); err != nil {
+		h.Logger.Error("owner_set_fido_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not update step-up security.", "/admin?tab=integration")
+		return
+	}
+	h.Logger.Info("fido_toggled", "tenant_id", owner.Tenant.ID, "enabled", enabled, "by", owner.User.Email)
+	http.Redirect(w, r, "/admin?tab=integration", http.StatusFound)
+}
+
 // SetBranding handles POST /admin/owner/branding — the owner sets the logo and
 // accent/background colours their hosted end-user pages render with. Each field
 // is optional; an empty value clears it (back to the X-Auth default). Values are
@@ -809,27 +847,29 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 		content = h.ownerOverview(owner)
 	}
 
+	title := "Overview"
 	var nav strings.Builder
-	nav.WriteString(`<div class="actions" style="margin:18px 0 6px">`)
 	for _, t := range dashboardTabs {
-		cls := "btn secondary"
+		cur := ""
 		if t.key == tab {
-			cls = "btn"
+			cur = ` aria-current="page"`
+			title = t.label
 		}
-		nav.WriteString(`<a class="` + cls + `" href="/admin?tab=` + t.key + `">` + html.EscapeString(t.label) + `</a>`)
+		nav.WriteString(`<a href="/admin?tab=` + t.key + `"` + cur + `>` + html.EscapeString(t.label) + `</a>`)
 	}
-	nav.WriteString(`</div>`)
 
-	const role = "workspace owner"
+	side := `<aside class="dash-side">
+<div class="dash-brand">` + html.EscapeString(owner.Tenant.CompanyName) +
+		`<small>` + html.EscapeString(owner.User.Email) + ` · workspace owner</small></div>
+<nav class="dash-nav">` + nav.String() + `</nav>
+<div class="dash-foot">` + h.workspaceSwitcher(owner) +
+		`<form method="post" action="/admin/owner/logout"><button class="secondary" type="submit" style="width:100%">Sign out</button></form></div>
+</aside>`
 
-	h.page(w, http.StatusOK, "Your X-Auth workspace",
-		`<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-<div><h1 style="margin:0 0 4px">`+html.EscapeString(owner.Tenant.CompanyName)+`</h1>
-<p class="muted" style="margin:0">Signed in as <strong>`+html.EscapeString(owner.User.Email)+`</strong> · `+role+`</p></div>
-<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">`+h.workspaceSwitcher(owner)+`
-<form method="post" action="/admin/owner/logout"><button class="secondary" type="submit">Sign out</button></form>
-</div>
-</div>`+nav.String()+content)
+	body := `<div class="dash">` + side +
+		`<section class="dash-main"><h2 class="tab-title">` + html.EscapeString(title) + `</h2>` + content + `</section></div>`
+
+	h.page(w, http.StatusOK, "Your X-Auth workspace", body)
 }
 
 // workspaceSwitcher renders an inline workspace chooser for an owner who manages
@@ -938,7 +978,21 @@ func (h *SignupConsoleHandlers) signInMethodsPanel(owner ownerSession) string {
 	if owner.Tenant.MDLEnrollEnabled {
 		mdlChecked = " checked"
 	}
+	fidoChecked := ""
+	if owner.Tenant.FidoEnabled {
+		fidoChecked = " checked"
+	}
 	return `<div class="panel">
+<h3 style="margin:0 0 8px">Step-up security</h3>
+<p class="muted"><strong>Passkeys (FIDO2/WebAuthn)</strong> are the strongest step-up factor and are <strong>on by default</strong>.
+When off, a sensitive action that would have prompted for a passkey falls back to an SMS one-time code instead
+(the user needs a verified phone number on file for that).</p>
+<form method="post" action="/admin/owner/fido">
+<label style="display:flex;align-items:center;gap:8px;color:var(--text)">
+<input type="checkbox" name="enabled" value="true"` + fidoChecked + ` style="width:auto"> Enable passkey (FIDO2) step-up</label>
+<div class="actions"><button type="submit">Save</button></div>
+</form></div>
+<div class="panel">
 <h3 style="margin:0 0 8px">Sign-in methods</h3>
 <p class="muted">Google is always available on your hosted <code>/login</code> page. Phone (SMS one-time code) is optional.
 ⚠️ SMS delivery is not live yet — codes are <strong>not</strong> actually texted (the verification code is a fixed test value),

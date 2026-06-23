@@ -217,9 +217,37 @@ func (h *OIDCHandlers) handleProtection(w http.ResponseWriter, r *http.Request, 
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "protection level has no challenge method")
 		return
 	}
+	spec = h.effectiveStepUpSpec(p.TenantID, spec)
 	p.TargetACR = lvl.ACR
 	p.TargetRank = lvl.Rank
 	p.AuthzSessionID = sessionID
-	h.Logger.Info("protection_challenge", "acr", lvl.ACR, "rank", lvl.Rank, "method", lvl.Method, "user_id", p.UserID, "tenant_id", p.TenantID)
+	h.Logger.Info("protection_challenge", "acr", lvl.ACR, "rank", lvl.Rank, "method", spec.Method, "user_id", p.UserID, "tenant_id", p.TenantID)
 	h.startStepUpFlow(w, r, spec, p)
+}
+
+// tenantFidoEnabled reports whether passkey (FIDO2) step-up is enabled for the
+// tenant. Default TRUE: a tenant with no registry row (derived/console tenants)
+// or an unreadable one keeps FIDO on (migration 000020 column default).
+func (h *OIDCHandlers) tenantFidoEnabled(tenantID string) bool {
+	if tenantID == "" {
+		return true
+	}
+	if t, err := h.Store.GetTenant(tenantID); err == nil {
+		return t.FidoEnabled
+	}
+	return true
+}
+
+// effectiveStepUpSpec downgrades a passkey (FIDO2) step-up to the SMS one-time
+// code spec when the tenant has turned FIDO off. Any other method is returned
+// unchanged. When SMS is somehow unavailable the original spec is kept.
+func (h *OIDCHandlers) effectiveStepUpSpec(tenantID string, spec stepUpSpec) stepUpSpec {
+	if spec.Method != stepUpMethodFIDO2 || h.tenantFidoEnabled(tenantID) {
+		return spec
+	}
+	if sms, ok := specForMethod(stepUpMethodSMS); ok {
+		h.Logger.Info("fido_disabled_fallback", "tenant_id", tenantID, "from", spec.Method, "to", sms.Method)
+		return sms
+	}
+	return spec
 }

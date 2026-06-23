@@ -390,7 +390,7 @@ func (h *OIDCHandlers) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if spec, ok := matchStepUp(q.Get("acr_values")); ok {
-		h.startStepUpFlow(w, r, spec, pend)
+		h.startStepUpFlow(w, r, h.effectiveStepUpSpec(effectiveTenant, spec), pend)
 		return
 	}
 

@@ -139,6 +139,11 @@ type Tenant struct {
 	// first-time end user on OIDC social login (migration 000018). Default false:
 	// the owner opts in so an integrator never gets an unexpected extra screen.
 	MDLEnrollEnabled bool `json:"mdl_enroll_enabled"`
+	// FidoEnabled gates passkey (FIDO2/WebAuthn) step-up for this tenant
+	// (migration 000020). Default TRUE — passkeys are the strongest factor and on
+	// by default; when an owner turns it off, a step-up that would have used a
+	// passkey falls back to the next method (SMS one-time code).
+	FidoEnabled bool `json:"fido_enabled"`
 	// Branding (migration 000019) customises the tenant's hosted end-user pages
 	// — the /login chooser, phone-login, and step-up verification screens.
 	// BrandLogoURL is an absolute http(s) logo shown above the card; BrandColor

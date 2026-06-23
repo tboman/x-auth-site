@@ -336,6 +336,7 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/switch", signup.OwnerSwitch)
 	mux.HandleFunc("POST /admin/owner/phone-login", signup.SetPhoneLogin)
 	mux.HandleFunc("POST /admin/owner/mdl-enroll", signup.SetMDLEnroll)
+	mux.HandleFunc("POST /admin/owner/fido", signup.SetFido)
 	mux.HandleFunc("POST /admin/owner/branding", signup.SetBranding)
 	mux.HandleFunc("POST /admin/owner/identities/phone", signup.SetUserPhone)
 	mux.HandleFunc("POST /admin/owner/identities/mdl", signup.RecordUserMDL)
