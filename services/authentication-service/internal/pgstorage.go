@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -493,6 +494,90 @@ func (s *PGStorage) DeleteTransactionType(tenantID, name string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ---- MCP servers (Cross-App Access allow-list) ----
+
+func (s *PGStorage) CreateMCPServer(m MCPServer) error {
+	const q = `INSERT INTO mcp_servers (id, tenant_id, name, resource_uri, scopes, enabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	_, err := s.pool.Exec(bgCtx(), q, m.ID, m.TenantID, m.Name, m.ResourceURI,
+		strings.Join(m.Scopes, " "), m.Enabled, m.CreatedAt.UTC())
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return fmt.Errorf("pgstorage create_mcp_server: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStorage) ListMCPServers(tenantID string) ([]MCPServer, error) {
+	const q = `SELECT id, tenant_id, name, resource_uri, scopes, enabled, created_at
+		FROM mcp_servers WHERE tenant_id = $1 ORDER BY name ASC`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_mcp_servers: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MCPServer, 0)
+	for rows.Next() {
+		m, err := scanMCPServer(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStorage) GetMCPServer(tenantID, id string) (MCPServer, error) {
+	const q = `SELECT id, tenant_id, name, resource_uri, scopes, enabled, created_at
+		FROM mcp_servers WHERE tenant_id = $1 AND id = $2`
+	m, err := scanMCPServer(s.pool.QueryRow(bgCtx(), q, tenantID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MCPServer{}, ErrNotFound
+	}
+	if err != nil {
+		return MCPServer{}, fmt.Errorf("pgstorage get_mcp_server: %w", err)
+	}
+	return m, nil
+}
+
+func (s *PGStorage) SetMCPServerEnabled(tenantID, id string, enabled bool) error {
+	const q = `UPDATE mcp_servers SET enabled = $3 WHERE tenant_id = $1 AND id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, id, enabled)
+	if err != nil {
+		return fmt.Errorf("pgstorage set_mcp_server_enabled: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStorage) DeleteMCPServer(tenantID, id string) error {
+	const q = `DELETE FROM mcp_servers WHERE tenant_id = $1 AND id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_mcp_server: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// scanMCPServer reads one mcp_servers row (space-delimited scopes → []string).
+func scanMCPServer(row rowScanner) (MCPServer, error) {
+	var m MCPServer
+	var scopes string
+	if err := row.Scan(&m.ID, &m.TenantID, &m.Name, &m.ResourceURI, &scopes, &m.Enabled, &m.CreatedAt); err != nil {
+		return MCPServer{}, err
+	}
+	m.Scopes = strings.Fields(scopes)
+	m.CreatedAt = m.CreatedAt.UTC()
+	return m, nil
 }
 
 // ---- Configurable flows ----

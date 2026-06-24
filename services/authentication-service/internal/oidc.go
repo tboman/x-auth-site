@@ -113,7 +113,7 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"jwks_uri":                              issuer + "/.well-known/jwks.json",
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 supportedGrantTypes(),
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"acr_values_supported":                  supportedACRValues(),
@@ -135,7 +135,7 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "profile", "email"},
 		"claims_supported":                      []string{"sub", "iss", "aud", "exp", "iat", "email", "name"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 supportedGrantTypes(),
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"acr_values_supported":                  supportedACRValues(),
@@ -493,9 +493,12 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 		h.handleCodeGrant(w, r)
 	case "refresh_token":
 		h.handleRefreshGrant(w, r)
+	case GrantTypeTokenExchange:
+		// RFC 8693 token exchange → Cross-App Access ID-JAG issuance (idjag.go).
+		h.handleTokenExchange(w, r)
 	default:
 		httpx.WriteError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"only authorization_code and refresh_token are supported in phase 1")
+			"only authorization_code, refresh_token, and token-exchange are supported")
 	}
 }
 

@@ -163,6 +163,15 @@ type Storage interface {
 	GetTransactionType(tenantID, name string) (TransactionType, error)
 	DeleteTransactionType(tenantID, name string) error
 
+	// MCP servers — a tenant's static allow-list of MCP servers authorized for
+	// Cross-App Access (ID-JAG). CreateMCPServer returns ErrConflict when the
+	// (tenant_id, resource_uri) is already authorized. See idjag.go.
+	CreateMCPServer(m MCPServer) error
+	ListMCPServers(tenantID string) ([]MCPServer, error)
+	GetMCPServer(tenantID, id string) (MCPServer, error)
+	SetMCPServerEnabled(tenantID, id string, enabled bool) error
+	DeleteMCPServer(tenantID, id string) error
+
 	// Configurable flows (tenant-scoped, flow engine). UpsertFlow creates or
 	// replaces by ID (stamping UpdatedAt). GetEnabledFlow returns the enabled
 	// flow for a designation (ErrNotFound when none) — what Authorize selects.
@@ -210,6 +219,7 @@ type MemStorage struct {
 	staffRol  map[string][]string        // keyed by user id
 	txnTypes  map[string]TransactionType // keyed by tenant_id\x00name
 	flows     map[string]FlowDefinition  // keyed by flow id
+	mcpSrv    map[string]MCPServer       // keyed by mcp-server id
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
@@ -227,6 +237,7 @@ func NewMemStorage() *MemStorage {
 		staffRol: make(map[string][]string),
 		txnTypes: make(map[string]TransactionType),
 		flows:    make(map[string]FlowDefinition),
+		mcpSrv:   make(map[string]MCPServer),
 	}
 	s.seedDefaultClient()
 	return s
@@ -1105,6 +1116,66 @@ func (s *MemStorage) DeleteTransactionType(tenantID, name string) error {
 		return ErrNotFound
 	}
 	delete(s.txnTypes, k)
+	return nil
+}
+
+// ---- MCP servers (Cross-App Access allow-list) ----
+
+func (s *MemStorage) CreateMCPServer(m MCPServer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.mcpSrv {
+		if e.TenantID == m.TenantID && e.ResourceURI == m.ResourceURI {
+			return ErrConflict
+		}
+	}
+	s.mcpSrv[m.ID] = m
+	return nil
+}
+
+func (s *MemStorage) ListMCPServers(tenantID string) ([]MCPServer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]MCPServer, 0)
+	for _, m := range s.mcpSrv {
+		if m.TenantID == tenantID {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *MemStorage) GetMCPServer(tenantID, id string) (MCPServer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	m, ok := s.mcpSrv[id]
+	if !ok || m.TenantID != tenantID {
+		return MCPServer{}, ErrNotFound
+	}
+	return m, nil
+}
+
+func (s *MemStorage) SetMCPServerEnabled(tenantID, id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.mcpSrv[id]
+	if !ok || m.TenantID != tenantID {
+		return ErrNotFound
+	}
+	m.Enabled = enabled
+	s.mcpSrv[id] = m
+	return nil
+}
+
+func (s *MemStorage) DeleteMCPServer(tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.mcpSrv[id]
+	if !ok || m.TenantID != tenantID {
+		return ErrNotFound
+	}
+	delete(s.mcpSrv, id)
 	return nil
 }
 

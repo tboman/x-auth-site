@@ -363,6 +363,25 @@ type TransactionType struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MCPServer is one entry in a tenant's static allow-list of MCP servers the
+// tenant authorizes for Cross-App Access (ID-JAG). A tenant admin maintains
+// these in the owner dashboard; ID-JAG issuance (a later increment) will only
+// mint an identity assertion for a ResourceURI that appears here and is Enabled.
+//
+// ResourceURI is the canonical audience an issued ID-JAG is scoped to (the MCP
+// server's resource identifier, an absolute http(s) URL). Scopes is the set of
+// OAuth scopes the tenant authorizes for that server (may be empty). Keyed by
+// (TenantID, ID); (TenantID, ResourceURI) is unique — see idjag.go.
+type MCPServer struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	Name        string    `json:"name"`
+	ResourceURI string    `json:"resource_uri"`
+	Scopes      []string  `json:"scopes,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // AdviceCall is one append-only record of a /v1/advice request and the level it
 // returned — the staff "advice history" view reads these (filterable by tenant
 // and user). The subject ids are whatever the caller supplied.

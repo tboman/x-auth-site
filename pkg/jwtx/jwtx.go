@@ -155,15 +155,27 @@ func NewSigner(key *rsa.PrivateKey) *Signer {
 // KID returns the key id embedded in issued tokens and published in the JWKS.
 func (s *Signer) KID() string { return s.kid }
 
-// Sign produces a compact RS256 JWS over claims merged with extra. Extra keys
-// must not collide with Claims field names; collisions return an error rather
-// than silently picking a winner.
+// Sign produces a compact RS256 JWS over claims merged with extra, with the
+// standard "JWT" type header. Extra keys must not collide with Claims field
+// names; collisions return an error rather than silently picking a winner.
 func (s *Signer) Sign(claims Claims, extra map[string]any) (string, error) {
+	return s.SignTyped(claims, extra, "JWT")
+}
+
+// SignTyped is Sign with an explicit JOSE `typ` header. Most tokens use "JWT"
+// (via Sign); profiles that mandate a media type — e.g. an ID-JAG identity
+// assertion, which carries "oauth-id-jag+jwt" so a resource server can tell it
+// apart from an ordinary access token — pass their own. An empty typ falls back
+// to "JWT".
+func (s *Signer) SignTyped(claims Claims, extra map[string]any, typ string) (string, error) {
+	if typ == "" {
+		typ = "JWT"
+	}
 	payload, err := mergeClaims(claims, extra)
 	if err != nil {
 		return "", err
 	}
-	headerJSON, err := json.Marshal(header{Alg: "RS256", Typ: "JWT", Kid: s.kid})
+	headerJSON, err := json.Marshal(header{Alg: "RS256", Typ: typ, Kid: s.kid})
 	if err != nil {
 		return "", err
 	}

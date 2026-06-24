@@ -813,6 +813,7 @@ var dashboardTabs = []struct{ key, label string }{
 	{"branding", "Branding"},
 	{"transactions", "Transaction types"},
 	{"flows", "Flows"},
+	{"mcp", "MCP servers"},
 	{"users", "Users"},
 	{"sessions", "Sessions"},
 }
@@ -839,6 +840,8 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 		content = h.transactionTypesSection(owner.Tenant.ID, owner.Client.ClientID)
 	case "flows":
 		content = h.flowsSection(owner.Tenant.ID, r.URL.Query().Get("edit"))
+	case "mcp":
+		content = h.mcpServersSection(owner.Tenant.ID)
 	case "users":
 		content = h.ownerUsers(owner)
 	case "sessions":
@@ -1324,6 +1327,155 @@ func (h *SignupConsoleHandlers) DeleteTransactionType(w http.ResponseWriter, r *
 	}
 	h.Logger.Info("owner_txntype_deleted", "tenant_id", owner.Tenant.ID, "name", name)
 	http.Redirect(w, r, "/admin", http.StatusFound)
+}
+
+// mcpServersSection is the "MCP servers" tab: the tenant's static allow-list of
+// MCP servers authorized for Cross-App Access (ID-JAG). The tenant admin adds a
+// server name + its resource URI (the audience an issued ID-JAG is scoped to)
+// and optional scopes; ID-JAG issuance (a later increment) only mints for a
+// resource that appears here and is enabled. See idjag.go.
+func (h *SignupConsoleHandlers) mcpServersSection(tenantID string) string {
+	servers, _ := h.Store.ListMCPServers(tenantID)
+	var rows strings.Builder
+	if len(servers) == 0 {
+		rows.WriteString(`<tr><td colspan="5" class="muted">No MCP servers authorized yet — add one below.</td></tr>`)
+	}
+	for _, m := range servers {
+		scopes := `<span class="muted">all</span>`
+		if len(m.Scopes) > 0 {
+			scopes = `<code>` + html.EscapeString(strings.Join(m.Scopes, " ")) + `</code>`
+		}
+		status := `<span class="ok">enabled</span>`
+		toggleLabel, toggleVal := "Disable", "false"
+		if !m.Enabled {
+			status = `<span class="warn">disabled</span>`
+			toggleLabel, toggleVal = "Enable", "true"
+		}
+		rows.WriteString(`<tr><td>` + html.EscapeString(m.Name) + `</td>` +
+			`<td><code>` + html.EscapeString(m.ResourceURI) + `</code></td>` +
+			`<td>` + scopes + `</td><td>` + status + `</td><td style="white-space:nowrap">` +
+			`<form method="post" action="/admin/owner/mcp-servers/toggle" style="display:inline">` +
+			`<input type="hidden" name="id" value="` + html.EscapeString(m.ID) + `">` +
+			`<input type="hidden" name="enabled" value="` + toggleVal + `">` +
+			`<button class="secondary" type="submit" style="padding:6px 10px">` + toggleLabel + `</button></form> ` +
+			`<form method="post" action="/admin/owner/mcp-servers/delete" style="display:inline" onsubmit="return confirm('Remove this MCP server?')">` +
+			`<input type="hidden" name="id" value="` + html.EscapeString(m.ID) + `">` +
+			`<button class="danger" type="submit" style="padding:6px 10px">Delete</button></form></td></tr>`)
+	}
+	baseURL := strings.TrimRight(h.Issuer, "/")
+	return `<p class="muted">Authorize the <strong>MCP servers</strong> your apps and agents may request access to on a
+user's behalf via <strong>Cross-App Access</strong> (ID-JAG). This is the allow-list: only a server listed and
+<strong>enabled</strong> here can have an identity assertion issued for it. The <em>resource URI</em> is the
+canonical audience the assertion is scoped to.</p>
+<div class="panel"><table>
+<thead><tr><th>Name</th><th>Resource URI</th><th>Scopes</th><th>Status</th><th></th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table>
+<form method="post" action="/admin/owner/mcp-servers" style="margin-top:16px">
+<label>Server name</label>
+<input type="text" name="name" placeholder="Acme CRM MCP" required>
+<label>Resource URI <span class="muted">(absolute https URL — the audience)</span></label>
+<input type="url" name="resource_uri" placeholder="https://mcp.acme.com" required>
+<label>Scopes <span class="muted">(optional, space-separated — blank = all)</span></label>
+<input type="text" name="scopes" placeholder="crm.contacts.read crm.accounts.read">
+<div class="actions"><button type="submit">Authorize MCP server</button></div>
+</form></div>
+<p class="muted">Cross-App Access is advertised on your IdP's discovery document
+(<code>` + html.EscapeString(baseURL) + `/.well-known/oauth-authorization-server</code>) via the
+<code>urn:ietf:params:oauth:grant-type:token-exchange</code> grant. A requesting app exchanges a user token at
+the token endpoint for a short-lived identity assertion (ID-JAG) scoped to one of the servers above — this list,
+with the <strong>enabled</strong> toggle, is the policy that issuance enforces.</p>`
+}
+
+// CreateMCPServer handles POST /admin/owner/mcp-servers — authorize a new MCP
+// server for Cross-App Access.
+func (h *SignupConsoleHandlers) CreateMCPServer(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=mcp")
+		return
+	}
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	resourceURI := strings.TrimSpace(r.PostForm.Get("resource_uri"))
+	scopes := strings.Fields(r.PostForm.Get("scopes"))
+	if name == "" {
+		h.errorPage(w, http.StatusBadRequest, "A server name is required.", "/admin?tab=mcp")
+		return
+	}
+	if u, err := url.Parse(resourceURI); err != nil || !u.IsAbs() || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		h.errorPage(w, http.StatusBadRequest, "The resource URI must be an absolute https:// (or http://) URL.", "/admin?tab=mcp")
+		return
+	}
+	err := h.Store.CreateMCPServer(MCPServer{
+		ID: "mcp_" + uuid.NewString(), TenantID: owner.Tenant.ID, Name: name,
+		ResourceURI: resourceURI, Scopes: scopes, Enabled: true, CreatedAt: time.Now().UTC(),
+	})
+	if err == ErrConflict {
+		h.errorPage(w, http.StatusConflict, "That resource URI is already authorized.", "/admin?tab=mcp")
+		return
+	}
+	if err != nil {
+		h.Logger.Error("owner_create_mcp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not save the MCP server.", "/admin?tab=mcp")
+		return
+	}
+	h.Logger.Info("owner_mcp_created", "tenant_id", owner.Tenant.ID, "resource_uri", resourceURI)
+	http.Redirect(w, r, "/admin?tab=mcp", http.StatusFound)
+}
+
+// ToggleMCPServer handles POST /admin/owner/mcp-servers/toggle — enable/disable
+// an authorized server without deleting it.
+func (h *SignupConsoleHandlers) ToggleMCPServer(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=mcp")
+		return
+	}
+	id := strings.TrimSpace(r.PostForm.Get("id"))
+	enabled := r.PostForm.Get("enabled") == "true"
+	if id == "" {
+		h.errorPage(w, http.StatusBadRequest, "id is required.", "/admin?tab=mcp")
+		return
+	}
+	if err := h.Store.SetMCPServerEnabled(owner.Tenant.ID, id, enabled); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_toggle_mcp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not update the MCP server.", "/admin?tab=mcp")
+		return
+	}
+	h.Logger.Info("owner_mcp_toggled", "tenant_id", owner.Tenant.ID, "id", id, "enabled", enabled)
+	http.Redirect(w, r, "/admin?tab=mcp", http.StatusFound)
+}
+
+// DeleteMCPServer handles POST /admin/owner/mcp-servers/delete.
+func (h *SignupConsoleHandlers) DeleteMCPServer(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=mcp")
+		return
+	}
+	id := strings.TrimSpace(r.PostForm.Get("id"))
+	if id == "" {
+		h.errorPage(w, http.StatusBadRequest, "id is required.", "/admin?tab=mcp")
+		return
+	}
+	if err := h.Store.DeleteMCPServer(owner.Tenant.ID, id); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_delete_mcp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not delete the MCP server.", "/admin?tab=mcp")
+		return
+	}
+	h.Logger.Info("owner_mcp_deleted", "tenant_id", owner.Tenant.ID, "id", id)
+	http.Redirect(w, r, "/admin?tab=mcp", http.StatusFound)
 }
 
 // RevokeSession handles POST /admin/owner/sessions/revoke — the owner
