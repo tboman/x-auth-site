@@ -625,6 +625,45 @@ OAuth2 token endpoint (authorization code exchange, refresh).
 }
 ```
 
+#### `POST /v1/auth/token` (token exchange → Cross-App Access ID-JAG)
+
+RFC 8693 token exchange that mints an **Identity Assertion Authorization Grant**
+(ID-JAG, `draft-parecki-oauth-identity-assertion-authz-grant` — the mechanism
+Okta ships as **Cross App Access**). A requesting app (an agent / MCP client)
+converts a token X-Auth issued it into a short-lived, scoped assertion it can
+present to a downstream MCP server's authorization server. The target `resource`
+must be on the tenant's authorized MCP-server allow-list (owner dashboard → "MCP
+servers"; `grant_types_supported` advertises the token-exchange grant).
+
+**Request:**
+```json
+{
+  "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+  "requested_token_type": "urn:ietf:params:oauth:token-type:id-jag",
+  "subject_token": "eyJhbGciOiJSUzI1NiIs...",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "resource": "https://mcp.acme.com",
+  "scope": "crm.contacts.read"
+}
+```
+
+**Response (200):**
+```json
+{
+  "issued_token_type": "urn:ietf:params:oauth:token-type:id-jag",
+  "access_token": "eyJ0eXAiOiJvYXV0aC1pZC1qYWcrand0Iis...",
+  "token_type": "N_A",
+  "expires_in": 300,
+  "scope": "crm.contacts.read"
+}
+```
+
+The assertion is an RS256 JWT (`typ: oauth-id-jag+jwt`) with `aud` = the resource
+URI, `sub` = the end user, and a `client_id` claim naming the requesting app.
+Policy errors are structured: `invalid_target` (resource not on the enabled
+allow-list), `invalid_scope` (request exceeds the server's authorized scopes),
+`invalid_grant` (subject token unusable / wrong client).
+
 #### `POST /v1/sessions`
 
 Create a new session (called by transaction-service after successful auth).

@@ -259,6 +259,46 @@ All authorization-code flows **require PKCE** (RFC 7636), S256 only:
   with **400 `invalid_grant`**. There is no PKCE-optional path; codes minted
   before PKCE enforcement (no stored challenge) can no longer be exchanged.
 
+## Cross-App Access (ID-JAG token exchange)
+
+`POST /token` also issues **Identity Assertion Authorization Grants** (ID-JAG,
+`draft-parecki-oauth-identity-assertion-authz-grant`) — the IETF mechanism Okta
+ships as **Cross App Access (XAA)**. This is how a requesting app (an agent /
+MCP client) gets a scoped credential to act on a user's behalf at a downstream
+MCP server, without dragging the user through a per-tool consent loop. Code in
+`internal/idjag.go`.
+
+- **Registry (per tenant).** A tenant owner maintains an allow-list of MCP
+  servers in the dashboard "MCP servers" tab (`mcp_servers`, migration
+  `000021`). Each row pins a `resource_uri` (the audience an assertion is scoped
+  to), optional `scopes`, and an `enabled` toggle. `(tenant_id, resource_uri)`
+  is unique.
+- **Issuance.** `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`
+  with `requested_token_type=urn:ietf:params:oauth:token-type:id-jag` (RFC
+  8693). The caller presents `subject_token` — an access or ID token **this**
+  service issued it — plus the target `resource` (or `audience`).
+- **Checks**: the subject token is verified against our own JWKS (issuer + time
+  window; access tokens additionally hit the revocation deny-list). An
+  authenticating confidential client must match the subject token's `aud`
+  (token-substitution guard). The target must be on the tenant allow-list **and**
+  enabled, or it is **400 `invalid_target`**. Requested `scope` is downscoped to
+  the server's authorized set (empty server list = unrestricted; empty request =
+  inherit the full set), or **400 `invalid_scope`**.
+- **Output**: a short-lived (**300 s**) RS256 assertion with the JOSE header
+  `typ: oauth-id-jag+jwt`, `aud` = the resource URI, `sub` = the user, a
+  `client_id` claim naming the requesting app, and the granted `scope`. The
+  RFC 8693 response carries `issued_token_type` = the ID-JAG type and
+  `token_type: "N_A"` (it is a grant the app redeems at the resource's AS, not a
+  bearer token). The requesting app then presents it to the resource's
+  authorization server as a JWT authorization grant.
+
+Discovery advertises the capability: `grant_types_supported` in both metadata
+documents includes the token-exchange grant.
+
+> Known gaps (next increment): no single-use `jti` tracking — the 300 s TTL is
+> the only replay bound — and `aud` is the registered `resource_uri` rather than
+> the resource AS's issuer URL.
+
 ## Endpoints
 
 ### Public (no tenant header)
@@ -270,7 +310,7 @@ All authorization-code flows **require PKCE** (RFC 7636), S256 only:
 | `GET` | `/.well-known/openid-configuration` | OIDC discovery |
 | `GET` | `/authorize` | Phase-1 stub: auto-approves and redirects with `code`. **Requires PKCE** (`code_challenge` + `code_challenge_method=S256`). With `acr_values=urn:xauth:otp:sms`, interrupts with a hosted SMS-OTP page first |
 | `POST` | `/authorize/verify` | OTP-form submission for the second-factor interlude; on success redirects with `code` |
-| `POST` | `/token` | Exchange `code` (+ `code_verifier`) or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`) |
+| `POST` | `/token` | Exchange `code` (+ `code_verifier`) or `refresh_token` for a JWT access token + opaque refresh token (+ `id_token` when scope has `openid`); also **RFC 8693 token-exchange** → an ID-JAG identity assertion (Cross-App Access, see above) |
 | `POST` | `/revoke` | RFC 7009 token revocation |
 | `GET` | `/userinfo` | Returns `{sub, email, name}` for the bearer (hybrid JWT + deny-list check) |
 | `GET` | `/v1/auth/jwks` | RFC 7517 JSON Web Key Set (canonical route, §4.3) |
@@ -333,6 +373,9 @@ tenant + owner + confidential OIDC client (see Phase 2.10 above).
 | `GET` | `/admin/owner/callback` | Resolves the email to a workspace; sets the owner cookie. Unknown email → "no workspace yet" |
 | `POST` | `/admin/owner/regenerate-secret` | Issues a fresh client secret, shown once |
 | `POST` | `/admin/owner/client` | Edit the client's redirect URIs / web origins |
+| `POST` | `/admin/owner/mcp-servers` | Authorize an MCP server for Cross-App Access (name + `resource_uri` + optional scopes) |
+| `POST` | `/admin/owner/mcp-servers/toggle` | Enable/disable an authorized MCP server without deleting it |
+| `POST` | `/admin/owner/mcp-servers/delete` | Remove an MCP server from the allow-list |
 | `POST` | `/admin/owner/logout` | Invalidates the owner session and clears the cookie |
 
 `GET /admin` itself is role-aware: a `ADMIN_EMAILS` staff member gets the

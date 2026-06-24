@@ -1609,9 +1609,21 @@
 <section>
     <div class="container">
         <div class="section-head">
-            <div class="section-kicker">Standards-Aligned</div>
+            <div class="section-kicker">Standards-Aligned · Live</div>
             <h2>Built on ID-JAG.<br>Compatible with Okta Cross App Access.</h2>
-            <p class="lead">X-Auth for Agents implements the IETF <strong>Identity Assertion JWT Authorization Grant</strong> (ID-JAG) — the same emerging OAuth extension Okta ships as <strong>Cross App Access (XAA)</strong>. Your IdP becomes the authorization broker for AI agents: signed identity assertions in, scoped access out, no per-tool consent prompts.</p>
+            <p class="lead">X-Auth implements the IETF <strong>Identity Assertion Authorization Grant</strong> (ID-JAG) — the same emerging OAuth extension Okta ships as <strong>Cross App Access (XAA)</strong>. Your IdP becomes the authorization broker for AI agents: a requesting app exchanges a user token for a signed, scoped assertion it presents downstream — no per-tool consent loop. The token-exchange grant is live on the discovery document today; agents request assertions only for the MCP servers a tenant admin has authorized.</p>
+        </div>
+        <div style="max-width:720px;margin:2rem auto 0;">
+            <pre class="flow-code"><span class="cmt"># RFC 8693 token exchange → a Cross-App Access assertion</span>
+<span class="kw">POST</span> /token
+  grant_type: <span class="str">urn:ietf:params:oauth:grant-type:token-exchange</span>
+  requested_token_type: <span class="str">urn:ietf:params:oauth:token-type:id-jag</span>
+  subject_token: <span class="str">&lt;the user token X-Auth issued your app&gt;</span>
+  resource: <span class="str">https://mcp.acme.com</span>   <span class="cmt"># must be on the tenant allow-list</span>
+  scope: <span class="str">crm.contacts.read</span>
+
+<span class="cmt"># → 300s ID-JAG (typ: oauth-id-jag+jwt), aud = the MCP server</span>
+<span class="cmt">#   present it to the resource's AS for a scoped access token</span></pre>
         </div>
         <div class="engine-grid">
             <div class="engine-card">
