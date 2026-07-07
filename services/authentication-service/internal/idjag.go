@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,7 +34,9 @@ import (
 //     the request against the server's authorized scopes, and mints a signed,
 //     short-lived ID-JAG identity assertion (handleTokenExchange).
 //  4. The requesting app presents the ID-JAG to the resource's authorization
-//     server as a JWT authorization grant to obtain an access token.
+//     server as a JWT authorization grant to obtain an access token. X-Auth
+//     implements that side too — the RFC 7523 jwt-bearer grant in
+//     idjag_redemption.go redeems assertions from tenant-trusted IdPs.
 //
 // Discovery advertises the token-exchange grant (supportedGrantTypes) so
 // requesting apps can detect support.
@@ -61,9 +66,10 @@ const (
 )
 
 // supportedGrantTypes is the grant_types_supported list advertised by both
-// discovery documents. Token exchange carries the XAA/ID-JAG capability.
+// discovery documents. Token exchange carries ID-JAG issuance; jwt-bearer
+// carries redemption (idjag_redemption.go).
 func supportedGrantTypes() []string {
-	return []string{"authorization_code", "refresh_token", GrantTypeTokenExchange}
+	return []string{"authorization_code", "refresh_token", GrantTypeTokenExchange, GrantTypeJWTBearer}
 }
 
 // handleTokenExchange implements RFC 8693 token exchange for Cross-App Access:
@@ -120,8 +126,12 @@ func (h *OIDCHandlers) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "subject_token is not a valid token issued by this server")
 		return
 	}
-	if claims.TenantID == "" || claims.Sub == "" {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "subject_token is missing tenant or subject")
+	if typ, err := jwtType(subjectToken); err != nil || typ != "JWT" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "subject_token must be an access token or ID token")
+		return
+	}
+	if claims.TenantID == "" || claims.Sub == "" || claims.Aud == "" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_grant", "subject_token is missing tenant, subject, or audience")
 		return
 	}
 	// An access token is revocable; honour the deny list so a revoked session
@@ -243,4 +253,25 @@ func grantedScopes(authorized, requested []string) ([]string, bool) {
 		}
 	}
 	return requested, true
+}
+
+// jwtType returns the JOSE typ header from a compact JWT. Access and ID tokens
+// minted by this service use typ=JWT; ID-JAG assertions use their own media type
+// and must not be recycled as a subject_token for another exchange.
+func jwtType(token string) (string, error) {
+	head, _, _ := strings.Cut(token, ".")
+	if head == "" {
+		return "", errors.New("missing JOSE header")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(head)
+	if err != nil {
+		return "", err
+	}
+	var h struct {
+		Typ string `json:"typ"`
+	}
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return "", err
+	}
+	return h.Typ, nil
 }

@@ -98,6 +98,11 @@ type OIDCHandlers struct {
 	// unreachable risk-service) degrades fail-open: risk inputs default to falsy
 	// and policies referencing them evaluate as if risk were absent.
 	Risk RiskEvaluator
+
+	// IDPVerifiers verifies ID-JAG assertions from tenant-trusted external IdPs
+	// against their published JWKS (Cross-App Access redemption — the jwt-bearer
+	// grant, idjag_redemption.go).
+	IDPVerifiers *IDPVerifierCache
 }
 
 // OAuthMetadata serves RFC 8414 OAuth 2.0 Authorization Server Metadata.
@@ -117,6 +122,9 @@ func (h *OIDCHandlers) OAuthMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"acr_values_supported":                  supportedACRValues(),
+		// The jwt-bearer grant accepts ID-JAG identity assertions (Cross-App
+		// Access redemption, draft-ietf-oauth-identity-assertion-authz-grant §7).
+		"authorization_grant_profiles_supported": []string{IDJAGGrantProfile},
 	})
 }
 
@@ -139,6 +147,9 @@ func (h *OIDCHandlers) OIDCMetadata(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"acr_values_supported":                  supportedACRValues(),
+		// The jwt-bearer grant accepts ID-JAG identity assertions (Cross-App
+		// Access redemption, draft-ietf-oauth-identity-assertion-authz-grant §7).
+		"authorization_grant_profiles_supported": []string{IDJAGGrantProfile},
 	})
 }
 
@@ -496,9 +507,12 @@ func (h *OIDCHandlers) Token(w http.ResponseWriter, r *http.Request) {
 	case GrantTypeTokenExchange:
 		// RFC 8693 token exchange → Cross-App Access ID-JAG issuance (idjag.go).
 		h.handleTokenExchange(w, r)
+	case GrantTypeJWTBearer:
+		// RFC 7523 jwt-bearer → Cross-App Access ID-JAG redemption (idjag_redemption.go).
+		h.handleJWTBearerGrant(w, r)
 	default:
 		httpx.WriteError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"only authorization_code, refresh_token, and token-exchange are supported")
+			"only authorization_code, refresh_token, token-exchange, and jwt-bearer are supported")
 	}
 }
 

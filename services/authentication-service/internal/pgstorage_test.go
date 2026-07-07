@@ -41,7 +41,8 @@ func newPGStorage(t *testing.T) *PGStorage {
 		t.Fatalf("pool.Ping: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types, advice_calls, tenant_admins",
+		// tenant_admins is gone since migration 000015 (single workspace owner).
+		"TRUNCATE TABLE users, sessions, tokens, auth_codes, oidc_clients, tenants, identity_anchors, device_signals, staff_users, staff_user_roles, transaction_types, advice_calls, flows, mcp_servers, trusted_idps, idjag_used_jtis",
 	); err != nil {
 		pool.Close()
 		t.Fatalf("truncate: %v (is the migration applied?)", err)
@@ -737,6 +738,129 @@ func TestPGStorageTransactionTypes(t *testing.T) {
 	}
 	if err := s.DeleteTransactionType("tenant-a", "payment.high"); err != ErrNotFound {
 		t.Errorf("delete missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestPGStorageMCPServers(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	m := MCPServer{
+		ID: "mcp_" + uuid.NewString(), TenantID: "tenant-a", Name: "Acme CRM",
+		ResourceURI: "https://mcp.acme.test", Scopes: []string{"crm.read", "crm.write"},
+		Enabled: true, CreatedAt: now,
+	}
+	if err := s.CreateMCPServer(m); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	dup := m
+	dup.ID = "mcp_" + uuid.NewString()
+	if err := s.CreateMCPServer(dup); err != ErrConflict {
+		t.Fatalf("duplicate tenant/resource should be ErrConflict, got %v", err)
+	}
+	other := m
+	other.ID, other.TenantID = "mcp_"+uuid.NewString(), "tenant-b"
+	if err := s.CreateMCPServer(other); err != nil {
+		t.Fatalf("same resource in another tenant should succeed: %v", err)
+	}
+
+	list, err := s.ListMCPServers("tenant-a")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ResourceURI != m.ResourceURI || len(list[0].Scopes) != 2 || !list[0].Enabled {
+		t.Fatalf("tenant-a list/roundtrip wrong: %+v", list)
+	}
+	got, err := s.GetMCPServer("tenant-a", m.ID)
+	if err != nil || got.Name != "Acme CRM" || len(got.Scopes) != 2 || got.Scopes[1] != "crm.write" {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	if _, err := s.GetMCPServer("tenant-b", m.ID); err != ErrNotFound {
+		t.Fatalf("cross-tenant get should be ErrNotFound, got %v", err)
+	}
+	if err := s.SetMCPServerEnabled("tenant-a", m.ID, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	got, err = s.GetMCPServer("tenant-a", m.ID)
+	if err != nil || got.Enabled {
+		t.Fatalf("server should be disabled: %v %+v", err, got)
+	}
+	if err := s.DeleteMCPServer("tenant-a", m.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetMCPServer("tenant-a", m.ID); err != ErrNotFound {
+		t.Fatalf("after delete want ErrNotFound, got %v", err)
+	}
+}
+
+func TestPGStorageTrustedIDPs(t *testing.T) {
+	s := newPGStorage(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p := TrustedIDP{
+		ID: "idp_" + uuid.NewString(), TenantID: "tenant-a", Name: "Corporate Okta",
+		Issuer: "https://acme.okta.test", JWKSURI: "https://acme.okta.test/oauth2/v1/keys",
+		Scopes: []string{"crm.read", "crm.write"}, Enabled: true, CreatedAt: now,
+	}
+	if err := s.CreateTrustedIDP(p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	dup := p
+	dup.ID = "idp_" + uuid.NewString()
+	if err := s.CreateTrustedIDP(dup); err != ErrConflict {
+		t.Fatalf("duplicate tenant/issuer should be ErrConflict, got %v", err)
+	}
+	other := p
+	other.ID, other.TenantID = "idp_"+uuid.NewString(), "tenant-b"
+	if err := s.CreateTrustedIDP(other); err != nil {
+		t.Fatalf("same issuer in another tenant should succeed: %v", err)
+	}
+
+	list, err := s.ListTrustedIDPs("tenant-a")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].Issuer != p.Issuer || list[0].JWKSURI != p.JWKSURI || len(list[0].Scopes) != 2 || !list[0].Enabled {
+		t.Fatalf("tenant-a list/roundtrip wrong: %+v", list)
+	}
+	got, err := s.GetTrustedIDP("tenant-a", p.ID)
+	if err != nil || got.Name != "Corporate Okta" || got.Scopes[1] != "crm.write" {
+		t.Fatalf("get: %v %+v", err, got)
+	}
+	if _, err := s.GetTrustedIDP("tenant-b", p.ID); err != ErrNotFound {
+		t.Fatalf("cross-tenant get should be ErrNotFound, got %v", err)
+	}
+	if err := s.SetTrustedIDPEnabled("tenant-a", p.ID, false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	got, err = s.GetTrustedIDP("tenant-a", p.ID)
+	if err != nil || got.Enabled {
+		t.Fatalf("idp should be disabled: %v %+v", err, got)
+	}
+	if err := s.DeleteTrustedIDP("tenant-a", p.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetTrustedIDP("tenant-a", p.ID); err != ErrNotFound {
+		t.Fatalf("after delete want ErrNotFound, got %v", err)
+	}
+}
+
+func TestPGStorageIDJAGJTIRedemption(t *testing.T) {
+	s := newPGStorage(t)
+	jti := "jti_" + uuid.NewString()
+	future := time.Now().UTC().Add(5 * time.Minute)
+	if err := s.RedeemIDJAGJTI(jti, future); err != nil {
+		t.Fatalf("first redemption: %v", err)
+	}
+	if err := s.RedeemIDJAGJTI(jti, future); err != ErrConflict {
+		t.Fatalf("replay should be ErrConflict, got %v", err)
+	}
+	// An expired record is swept, so its jti becomes redeemable again — the
+	// assertion itself could no longer verify by then, so nothing is lost.
+	stale := "jti_" + uuid.NewString()
+	if err := s.RedeemIDJAGJTI(stale, time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatalf("stale insert: %v", err)
+	}
+	if err := s.RedeemIDJAGJTI(stale, future); err != nil {
+		t.Fatalf("redeeming after expiry sweep should succeed, got %v", err)
 	}
 }
 

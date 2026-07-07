@@ -580,6 +580,109 @@ func scanMCPServer(row rowScanner) (MCPServer, error) {
 	return m, nil
 }
 
+// ---- Trusted external IdPs (Cross-App Access redemption) ----
+
+func (s *PGStorage) CreateTrustedIDP(p TrustedIDP) error {
+	const q = `INSERT INTO trusted_idps (id, tenant_id, name, issuer, jwks_uri, scopes, enabled, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	_, err := s.pool.Exec(bgCtx(), q, p.ID, p.TenantID, p.Name, p.Issuer, p.JWKSURI,
+		strings.Join(p.Scopes, " "), p.Enabled, p.CreatedAt.UTC())
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return fmt.Errorf("pgstorage create_trusted_idp: %w", err)
+	}
+	return nil
+}
+
+func (s *PGStorage) ListTrustedIDPs(tenantID string) ([]TrustedIDP, error) {
+	const q = `SELECT id, tenant_id, name, issuer, jwks_uri, scopes, enabled, created_at
+		FROM trusted_idps WHERE tenant_id = $1 ORDER BY name ASC`
+	rows, err := s.pool.Query(bgCtx(), q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("pgstorage list_trusted_idps: %w", err)
+	}
+	defer rows.Close()
+	out := make([]TrustedIDP, 0)
+	for rows.Next() {
+		p, err := scanTrustedIDP(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStorage) GetTrustedIDP(tenantID, id string) (TrustedIDP, error) {
+	const q = `SELECT id, tenant_id, name, issuer, jwks_uri, scopes, enabled, created_at
+		FROM trusted_idps WHERE tenant_id = $1 AND id = $2`
+	p, err := scanTrustedIDP(s.pool.QueryRow(bgCtx(), q, tenantID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TrustedIDP{}, ErrNotFound
+	}
+	if err != nil {
+		return TrustedIDP{}, fmt.Errorf("pgstorage get_trusted_idp: %w", err)
+	}
+	return p, nil
+}
+
+func (s *PGStorage) SetTrustedIDPEnabled(tenantID, id string, enabled bool) error {
+	const q = `UPDATE trusted_idps SET enabled = $3 WHERE tenant_id = $1 AND id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, id, enabled)
+	if err != nil {
+		return fmt.Errorf("pgstorage set_trusted_idp_enabled: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *PGStorage) DeleteTrustedIDP(tenantID, id string) error {
+	const q = `DELETE FROM trusted_idps WHERE tenant_id = $1 AND id = $2`
+	tag, err := s.pool.Exec(bgCtx(), q, tenantID, id)
+	if err != nil {
+		return fmt.Errorf("pgstorage delete_trusted_idp: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// scanTrustedIDP reads one trusted_idps row (space-delimited scopes → []string).
+func scanTrustedIDP(row rowScanner) (TrustedIDP, error) {
+	var p TrustedIDP
+	var scopes string
+	if err := row.Scan(&p.ID, &p.TenantID, &p.Name, &p.Issuer, &p.JWKSURI, &scopes, &p.Enabled, &p.CreatedAt); err != nil {
+		return TrustedIDP{}, err
+	}
+	p.Scopes = strings.Fields(scopes)
+	p.CreatedAt = p.CreatedAt.UTC()
+	return p, nil
+}
+
+// RedeemIDJAGJTI enforces single-use redemption: the insert hits the primary
+// key on replay. Expired records are swept opportunistically first — the table
+// only needs to remember a jti for as long as the assertion could still verify.
+func (s *PGStorage) RedeemIDJAGJTI(jti string, expiresAt time.Time) error {
+	if _, err := s.pool.Exec(bgCtx(), `DELETE FROM idjag_used_jtis WHERE expires_at < now()`); err != nil {
+		return fmt.Errorf("pgstorage sweep_idjag_jtis: %w", err)
+	}
+	tag, err := s.pool.Exec(bgCtx(),
+		`INSERT INTO idjag_used_jtis (jti, expires_at) VALUES ($1, $2) ON CONFLICT (jti) DO NOTHING`,
+		jti, expiresAt.UTC())
+	if err != nil {
+		return fmt.Errorf("pgstorage redeem_idjag_jti: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 // ---- Configurable flows ----
 
 func (s *PGStorage) UpsertFlow(f FlowDefinition) error {

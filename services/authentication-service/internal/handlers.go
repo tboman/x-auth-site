@@ -162,6 +162,7 @@ func Router(d Deps) http.Handler {
 		StepUpFreshness: d.StepUpFreshness,
 		FlowEngine:      d.FlowEngine,
 		Risk:            riskEval,
+		IDPVerifiers:    NewIDPVerifierCache(d.Logger),
 	}
 	social := &SocialHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer, Providers: d.SocialProviders, Analyzer: analyzer}
 	login := &LoginHandlers{Store: d.Store, Logger: d.Logger, Issuer: d.Issuer}
@@ -330,6 +331,9 @@ func Router(d Deps) http.Handler {
 	mux.HandleFunc("POST /admin/owner/mcp-servers", signup.CreateMCPServer)
 	mux.HandleFunc("POST /admin/owner/mcp-servers/toggle", signup.ToggleMCPServer)
 	mux.HandleFunc("POST /admin/owner/mcp-servers/delete", signup.DeleteMCPServer)
+	mux.HandleFunc("POST /admin/owner/trusted-idps", signup.CreateTrustedIDP)
+	mux.HandleFunc("POST /admin/owner/trusted-idps/toggle", signup.ToggleTrustedIDP)
+	mux.HandleFunc("POST /admin/owner/trusted-idps/delete", signup.DeleteTrustedIDP)
 	mux.HandleFunc("POST /admin/owner/flows/apply", signup.ApplyFlowTemplate)
 	mux.HandleFunc("POST /admin/owner/flows/save", signup.SaveFlow)
 	mux.HandleFunc("POST /admin/owner/flows/enable", signup.SetFlowEnabled)

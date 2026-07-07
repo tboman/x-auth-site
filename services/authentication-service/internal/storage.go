@@ -172,6 +172,22 @@ type Storage interface {
 	SetMCPServerEnabled(tenantID, id string, enabled bool) error
 	DeleteMCPServer(tenantID, id string) error
 
+	// Trusted external IdPs — a tenant's registry of identity providers whose
+	// ID-JAG assertions the jwt-bearer grant redeems (the consumption side of
+	// Cross-App Access). CreateTrustedIDP returns ErrConflict when the
+	// (tenant_id, issuer) is already registered. See idjag_redemption.go.
+	CreateTrustedIDP(p TrustedIDP) error
+	ListTrustedIDPs(tenantID string) ([]TrustedIDP, error)
+	GetTrustedIDP(tenantID, id string) (TrustedIDP, error)
+	SetTrustedIDPEnabled(tenantID, id string, enabled bool) error
+	DeleteTrustedIDP(tenantID, id string) error
+
+	// RedeemIDJAGJTI records an assertion's jti at redemption time, enforcing
+	// single use: ErrConflict when the jti was already redeemed (replay).
+	// expiresAt lets storage evict the record once the assertion could no
+	// longer verify anyway.
+	RedeemIDJAGJTI(jti string, expiresAt time.Time) error
+
 	// Configurable flows (tenant-scoped, flow engine). UpsertFlow creates or
 	// replaces by ID (stamping UpdatedAt). GetEnabledFlow returns the enabled
 	// flow for a designation (ErrNotFound when none) — what Authorize selects.
@@ -220,24 +236,28 @@ type MemStorage struct {
 	txnTypes  map[string]TransactionType // keyed by tenant_id\x00name
 	flows     map[string]FlowDefinition  // keyed by flow id
 	mcpSrv    map[string]MCPServer       // keyed by mcp-server id
+	trustIDPs map[string]TrustedIDP      // keyed by trusted-idp id
+	usedJTIs  map[string]time.Time       // redeemed ID-JAG jti → assertion expiry
 }
 
 // NewMemStorage returns an empty, initialised MemStorage with the default dev
 // OIDC client already seeded. Tests can overwrite or ignore it as needed.
 func NewMemStorage() *MemStorage {
 	s := &MemStorage{
-		users:    make(map[string]User),
-		sessions: make(map[string]Session),
-		tokens:   make(map[string]Token),
-		codes:    make(map[string]AuthCode),
-		clients:  make(map[string]OIDCClient),
-		tenants:  make(map[string]Tenant),
-		anchors:  make(map[string]IdentityAnchor),
-		staffUsr: make(map[string]StaffUser),
-		staffRol: make(map[string][]string),
-		txnTypes: make(map[string]TransactionType),
-		flows:    make(map[string]FlowDefinition),
-		mcpSrv:   make(map[string]MCPServer),
+		users:     make(map[string]User),
+		sessions:  make(map[string]Session),
+		tokens:    make(map[string]Token),
+		codes:     make(map[string]AuthCode),
+		clients:   make(map[string]OIDCClient),
+		tenants:   make(map[string]Tenant),
+		anchors:   make(map[string]IdentityAnchor),
+		staffUsr:  make(map[string]StaffUser),
+		staffRol:  make(map[string][]string),
+		txnTypes:  make(map[string]TransactionType),
+		flows:     make(map[string]FlowDefinition),
+		mcpSrv:    make(map[string]MCPServer),
+		trustIDPs: make(map[string]TrustedIDP),
+		usedJTIs:  make(map[string]time.Time),
 	}
 	s.seedDefaultClient()
 	return s
@@ -1176,6 +1196,82 @@ func (s *MemStorage) DeleteMCPServer(tenantID, id string) error {
 		return ErrNotFound
 	}
 	delete(s.mcpSrv, id)
+	return nil
+}
+
+// ---- Trusted external IdPs (Cross-App Access redemption) ----
+
+func (s *MemStorage) CreateTrustedIDP(p TrustedIDP) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.trustIDPs {
+		if e.TenantID == p.TenantID && e.Issuer == p.Issuer {
+			return ErrConflict
+		}
+	}
+	s.trustIDPs[p.ID] = p
+	return nil
+}
+
+func (s *MemStorage) ListTrustedIDPs(tenantID string) ([]TrustedIDP, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TrustedIDP, 0)
+	for _, p := range s.trustIDPs {
+		if p.TenantID == tenantID {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *MemStorage) GetTrustedIDP(tenantID, id string) (TrustedIDP, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.trustIDPs[id]
+	if !ok || p.TenantID != tenantID {
+		return TrustedIDP{}, ErrNotFound
+	}
+	return p, nil
+}
+
+func (s *MemStorage) SetTrustedIDPEnabled(tenantID, id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.trustIDPs[id]
+	if !ok || p.TenantID != tenantID {
+		return ErrNotFound
+	}
+	p.Enabled = enabled
+	s.trustIDPs[id] = p
+	return nil
+}
+
+func (s *MemStorage) DeleteTrustedIDP(tenantID, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.trustIDPs[id]
+	if !ok || p.TenantID != tenantID {
+		return ErrNotFound
+	}
+	delete(s.trustIDPs, id)
+	return nil
+}
+
+func (s *MemStorage) RedeemIDJAGJTI(jti string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	for k, exp := range s.usedJTIs {
+		if now.After(exp) {
+			delete(s.usedJTIs, k)
+		}
+	}
+	if _, ok := s.usedJTIs[jti]; ok {
+		return ErrConflict
+	}
+	s.usedJTIs[jti] = expiresAt
 	return nil
 }
 

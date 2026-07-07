@@ -382,6 +382,26 @@ type MCPServer struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// TrustedIDP is one entry in a tenant's registry of external identity providers
+// whose ID-JAG identity assertions this service accepts at the token endpoint —
+// the redemption (resource-authorization-server) side of Cross-App Access,
+// mirroring the MCPServer allow-list on the issuance side. See idjag_redemption.go.
+//
+// Issuer must exactly match the assertion's iss claim; JWKSURI is where the IdP
+// publishes the RS256 keys the assertion verifies against. Scopes optionally
+// caps what an assertion from this IdP may grant (empty = no cap). Keyed by
+// (TenantID, ID); (TenantID, Issuer) is unique.
+type TrustedIDP struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	Name      string    `json:"name"`
+	Issuer    string    `json:"issuer"`
+	JWKSURI   string    `json:"jwks_uri"`
+	Scopes    []string  `json:"scopes,omitempty"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // AdviceCall is one append-only record of a /v1/advice request and the level it
 // returned — the staff "advice history" view reads these (filterable by tenant
 // and user). The subject ids are whatever the caller supplied.

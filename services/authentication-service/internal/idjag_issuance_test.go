@@ -150,6 +150,56 @@ func TestIDJAGEmptyScopeInheritsAuthorized(t *testing.T) {
 	}
 }
 
+func TestIDJAGAcceptsIDTokenSubject(t *testing.T) {
+	r, _, _, resource, clientID := idjagFixture(t)
+	now := time.Now().UTC()
+	idToken, err := testSigner.Sign(jwtx.Claims{
+		Sub: "usr_alice", Iss: "http://test.local", Aud: clientID,
+		Exp: now.Add(time.Hour).Unix(), Iat: now.Unix(), TenantID: "ten_acme",
+	}, nil)
+	if err != nil {
+		t.Fatalf("mint id token: %v", err)
+	}
+
+	form := baseExchangeForm(idToken, resource)
+	form.Set("subject_token_type", TokenTypeIDToken)
+	form.Set("scope", "crm.write")
+	w := tokenExchange(t, r, form)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if resp.Scope != "crm.write" {
+		t.Errorf("scope = %q, want crm.write", resp.Scope)
+	}
+}
+
+func TestIDJAGRejectsIDJAGAsSubjectToken(t *testing.T) {
+	r, _, access, resource, _ := idjagFixture(t)
+	first := baseExchangeForm(access, resource)
+	first.Set("scope", "crm.read")
+	w := tokenExchange(t, r, first)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initial exchange: expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+
+	reuse := baseExchangeForm(resp.AccessToken, resource)
+	reuse.Set("subject_token_type", TokenTypeIDToken)
+	w = tokenExchange(t, r, reuse)
+	assertOAuthError(t, w, http.StatusBadRequest, "invalid_grant")
+}
+
 func TestIDJAGUnauthorizedResource(t *testing.T) {
 	r, _, access, _, _ := idjagFixture(t)
 	w := tokenExchange(t, r, baseExchangeForm(access, "https://mcp.evil.com"))

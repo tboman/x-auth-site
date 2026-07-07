@@ -814,6 +814,7 @@ var dashboardTabs = []struct{ key, label string }{
 	{"transactions", "Transaction types"},
 	{"flows", "Flows"},
 	{"mcp", "MCP servers"},
+	{"idps", "Trusted IdPs"},
 	{"users", "Users"},
 	{"sessions", "Sessions"},
 }
@@ -842,6 +843,8 @@ func (h *SignupConsoleHandlers) renderDashboard(w http.ResponseWriter, r *http.R
 		content = h.flowsSection(owner.Tenant.ID, r.URL.Query().Get("edit"))
 	case "mcp":
 		content = h.mcpServersSection(owner.Tenant.ID)
+	case "idps":
+		content = h.trustedIDPsSection(owner.Tenant.ID)
 	case "users":
 		content = h.ownerUsers(owner)
 	case "sessions":
@@ -1476,6 +1479,166 @@ func (h *SignupConsoleHandlers) DeleteMCPServer(w http.ResponseWriter, r *http.R
 	}
 	h.Logger.Info("owner_mcp_deleted", "tenant_id", owner.Tenant.ID, "id", id)
 	http.Redirect(w, r, "/admin?tab=mcp", http.StatusFound)
+}
+
+// trustedIDPsSection is the "Trusted IdPs" tab: the tenant's registry of
+// external identity providers whose ID-JAG identity assertions the jwt-bearer
+// grant redeems for access tokens — the receiving side of Cross-App Access,
+// complementing the MCP-servers tab's issuance allow-list. See idjag_redemption.go.
+func (h *SignupConsoleHandlers) trustedIDPsSection(tenantID string) string {
+	idps, _ := h.Store.ListTrustedIDPs(tenantID)
+	var rows strings.Builder
+	if len(idps) == 0 {
+		rows.WriteString(`<tr><td colspan="6" class="muted">No identity providers trusted yet — add one below.</td></tr>`)
+	}
+	for _, p := range idps {
+		scopes := `<span class="muted">no cap</span>`
+		if len(p.Scopes) > 0 {
+			scopes = `<code>` + html.EscapeString(strings.Join(p.Scopes, " ")) + `</code>`
+		}
+		status := `<span class="ok">enabled</span>`
+		toggleLabel, toggleVal := "Disable", "false"
+		if !p.Enabled {
+			status = `<span class="warn">disabled</span>`
+			toggleLabel, toggleVal = "Enable", "true"
+		}
+		rows.WriteString(`<tr><td>` + html.EscapeString(p.Name) + `</td>` +
+			`<td><code>` + html.EscapeString(p.Issuer) + `</code></td>` +
+			`<td><code>` + html.EscapeString(p.JWKSURI) + `</code></td>` +
+			`<td>` + scopes + `</td><td>` + status + `</td><td style="white-space:nowrap">` +
+			`<form method="post" action="/admin/owner/trusted-idps/toggle" style="display:inline">` +
+			`<input type="hidden" name="id" value="` + html.EscapeString(p.ID) + `">` +
+			`<input type="hidden" name="enabled" value="` + toggleVal + `">` +
+			`<button class="secondary" type="submit" style="padding:6px 10px">` + toggleLabel + `</button></form> ` +
+			`<form method="post" action="/admin/owner/trusted-idps/delete" style="display:inline" onsubmit="return confirm('Remove this identity provider?')">` +
+			`<input type="hidden" name="id" value="` + html.EscapeString(p.ID) + `">` +
+			`<button class="danger" type="submit" style="padding:6px 10px">Delete</button></form></td></tr>`)
+	}
+	baseURL := strings.TrimRight(h.Issuer, "/")
+	return `<p class="muted">Register the <strong>identity providers</strong> whose <strong>Cross-App Access</strong> identity
+assertions (ID-JAG) your workspace accepts — any IdP that implements the standard, including Okta Cross App
+Access and other X-Auth workspaces. A requesting app presents an assertion at the token endpoint
+(<code>jwt-bearer</code> grant) and receives a short-lived access token; only assertions from an issuer listed and
+<strong>enabled</strong> here are redeemed, each exactly once (single-use <code>jti</code>).</p>
+<div class="panel"><table>
+<thead><tr><th>Name</th><th>Issuer</th><th>JWKS URI</th><th>Scope cap</th><th>Status</th><th></th></tr></thead>
+<tbody>` + rows.String() + `</tbody></table>
+<form method="post" action="/admin/owner/trusted-idps" style="margin-top:16px">
+<label>Provider name</label>
+<input type="text" name="name" placeholder="Corporate Okta" required>
+<label>Issuer <span class="muted">(absolute https URL — must equal the assertion's <code>iss</code>)</span></label>
+<input type="url" name="issuer" placeholder="https://acme.okta.com" required>
+<label>JWKS URI <span class="muted">(optional — blank derives <code>&lt;issuer&gt;/.well-known/jwks.json</code>)</span></label>
+<input type="url" name="jwks_uri" placeholder="https://acme.okta.com/oauth2/v1/keys">
+<label>Scope cap <span class="muted">(optional, space-separated — blank = accept the assertion's scopes as-is)</span></label>
+<input type="text" name="scopes" placeholder="crm.contacts.read crm.accounts.read">
+<div class="actions"><button type="submit">Trust identity provider</button></div>
+</form></div>
+<p class="muted">Redemption is advertised on your discovery document
+(<code>` + html.EscapeString(baseURL) + `/.well-known/oauth-authorization-server</code>) via the
+<code>urn:ietf:params:oauth:grant-type:jwt-bearer</code> grant and the
+<code>urn:ietf:params:oauth:grant-profile:id-jag</code> grant profile. The assertion's audience must be
+<code>` + html.EscapeString(baseURL) + `</code> and its <code>client_id</code> must match the presenting client.</p>`
+}
+
+// CreateTrustedIDP handles POST /admin/owner/trusted-idps — trust a new
+// identity provider for Cross-App Access redemption.
+func (h *SignupConsoleHandlers) CreateTrustedIDP(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=idps")
+		return
+	}
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	issuer := strings.TrimSpace(r.PostForm.Get("issuer"))
+	jwksURI := strings.TrimSpace(r.PostForm.Get("jwks_uri"))
+	scopes := strings.Fields(r.PostForm.Get("scopes"))
+	if name == "" {
+		h.errorPage(w, http.StatusBadRequest, "A provider name is required.", "/admin?tab=idps")
+		return
+	}
+	if u, err := url.Parse(issuer); err != nil || !u.IsAbs() || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		h.errorPage(w, http.StatusBadRequest, "The issuer must be an absolute https:// (or http://) URL.", "/admin?tab=idps")
+		return
+	}
+	if jwksURI == "" {
+		jwksURI = strings.TrimRight(issuer, "/") + "/.well-known/jwks.json"
+	}
+	if u, err := url.Parse(jwksURI); err != nil || !u.IsAbs() || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		h.errorPage(w, http.StatusBadRequest, "The JWKS URI must be an absolute https:// (or http://) URL.", "/admin?tab=idps")
+		return
+	}
+	err := h.Store.CreateTrustedIDP(TrustedIDP{
+		ID: "idp_" + uuid.NewString(), TenantID: owner.Tenant.ID, Name: name,
+		Issuer: issuer, JWKSURI: jwksURI, Scopes: scopes, Enabled: true, CreatedAt: time.Now().UTC(),
+	})
+	if err == ErrConflict {
+		h.errorPage(w, http.StatusConflict, "That issuer is already trusted.", "/admin?tab=idps")
+		return
+	}
+	if err != nil {
+		h.Logger.Error("owner_create_idp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not save the identity provider.", "/admin?tab=idps")
+		return
+	}
+	h.Logger.Info("owner_idp_created", "tenant_id", owner.Tenant.ID, "issuer", issuer)
+	http.Redirect(w, r, "/admin?tab=idps", http.StatusFound)
+}
+
+// ToggleTrustedIDP handles POST /admin/owner/trusted-idps/toggle —
+// enable/disable a trusted identity provider without deleting it.
+func (h *SignupConsoleHandlers) ToggleTrustedIDP(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=idps")
+		return
+	}
+	id := strings.TrimSpace(r.PostForm.Get("id"))
+	enabled := r.PostForm.Get("enabled") == "true"
+	if id == "" {
+		h.errorPage(w, http.StatusBadRequest, "id is required.", "/admin?tab=idps")
+		return
+	}
+	if err := h.Store.SetTrustedIDPEnabled(owner.Tenant.ID, id, enabled); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_toggle_idp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not update the identity provider.", "/admin?tab=idps")
+		return
+	}
+	h.Logger.Info("owner_idp_toggled", "tenant_id", owner.Tenant.ID, "id", id, "enabled", enabled)
+	http.Redirect(w, r, "/admin?tab=idps", http.StatusFound)
+}
+
+// DeleteTrustedIDP handles POST /admin/owner/trusted-idps/delete.
+func (h *SignupConsoleHandlers) DeleteTrustedIDP(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.currentOwner(w, r)
+	if !ok {
+		h.errorPage(w, http.StatusForbidden, "Sign in to your workspace first.", "/admin")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.errorPage(w, http.StatusBadRequest, "Could not parse the form.", "/admin?tab=idps")
+		return
+	}
+	id := strings.TrimSpace(r.PostForm.Get("id"))
+	if id == "" {
+		h.errorPage(w, http.StatusBadRequest, "id is required.", "/admin?tab=idps")
+		return
+	}
+	if err := h.Store.DeleteTrustedIDP(owner.Tenant.ID, id); err != nil && err != ErrNotFound {
+		h.Logger.Error("owner_delete_idp_failed", "err", err, "tenant_id", owner.Tenant.ID)
+		h.errorPage(w, http.StatusBadGateway, "Could not delete the identity provider.", "/admin?tab=idps")
+		return
+	}
+	h.Logger.Info("owner_idp_deleted", "tenant_id", owner.Tenant.ID, "id", id)
+	http.Redirect(w, r, "/admin?tab=idps", http.StatusFound)
 }
 
 // RevokeSession handles POST /admin/owner/sessions/revoke — the owner
