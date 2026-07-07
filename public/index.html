@@ -1610,11 +1610,11 @@
     <div class="container">
         <div class="section-head">
             <div class="section-kicker">Standards-Aligned · Live</div>
-            <h2>Built on ID-JAG.<br>Compatible with Okta Cross App Access.</h2>
-            <p class="lead">X-Auth implements the IETF <strong>Identity Assertion Authorization Grant</strong> (ID-JAG) — the same emerging OAuth extension Okta ships as <strong>Cross App Access (XAA)</strong>. Your IdP becomes the authorization broker for AI agents: a requesting app exchanges a user token for a signed, scoped assertion it presents downstream — no per-tool consent loop. The token-exchange grant is live on the discovery document today; agents request assertions only for the MCP servers a tenant admin has authorized.</p>
+            <h2>Built on ID-JAG.<br>Both sides of Okta Cross App Access.</h2>
+            <p class="lead">X-Auth implements the IETF <strong>Identity Assertion Authorization Grant</strong> (ID-JAG) — the open standard behind Okta's <strong>Cross App Access (XAA)</strong> — on <strong>both sides of the trust</strong>. As the <strong>IdP</strong>, X-Auth exchanges a user token for a signed, scoped assertion (RFC 8693 token exchange), minted only for MCP servers a tenant admin has authorized — no per-tool consent loop. As the <strong>resource authorization server</strong>, X-Auth redeems assertions from identity providers a tenant trusts — other X-Auth workspaces or any XAA-capable IdP — for short-lived Bearer access tokens (RFC 7523 <code>jwt-bearer</code>), each assertion accepted exactly once. Both grants are advertised on the discovery document.</p>
         </div>
         <div style="max-width:720px;margin:2rem auto 0;">
-            <pre class="flow-code"><span class="cmt"># RFC 8693 token exchange → a Cross-App Access assertion</span>
+            <pre class="flow-code"><span class="cmt"># Leg 1 — the IdP mints an assertion (RFC 8693 token exchange)</span>
 <span class="kw">POST</span> /token
   grant_type: <span class="str">urn:ietf:params:oauth:grant-type:token-exchange</span>
   requested_token_type: <span class="str">urn:ietf:params:oauth:token-type:id-jag</span>
@@ -1622,8 +1622,15 @@
   resource: <span class="str">https://mcp.acme.com</span>   <span class="cmt"># must be on the tenant allow-list</span>
   scope: <span class="str">crm.contacts.read</span>
 
-<span class="cmt"># → 300s ID-JAG (typ: oauth-id-jag+jwt), aud = the MCP server</span>
-<span class="cmt">#   present it to the resource's AS for a scoped access token</span></pre>
+<span class="cmt"># → 300s ID-JAG (typ: oauth-id-jag+jwt), aud = the resource</span>
+
+<span class="cmt"># Leg 2 — the resource's AS redeems it (RFC 7523 jwt-bearer)</span>
+<span class="kw">POST</span> /token
+  grant_type: <span class="str">urn:ietf:params:oauth:grant-type:jwt-bearer</span>
+  assertion: <span class="str">&lt;the ID-JAG&gt;</span>
+
+<span class="cmt"># → scoped Bearer access token — issuer must be on the tenant's</span>
+<span class="cmt">#   trusted-IdP registry; single-use jti; no refresh token</span></pre>
         </div>
         <div class="engine-grid">
             <div class="engine-card">
