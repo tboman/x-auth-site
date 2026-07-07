@@ -1,8 +1,15 @@
-# Builds, migrates, and deploys the 8 Go services to Cloud Run.
+# Builds, migrates, and deploys the DEPLOYED Go services to Cloud Run.
 #
-# Infrastructure (Cloud Run services, migration jobs, Cloud SQL, Redis,
-# secrets) is managed by Terraform in deploy/terraform — this workflow only
-# moves images. Authentication uses Workload Identity Federation; see
+# Only the five services actually running in prod are rolled out here
+# (authentication, authenticator, risk, fido, id — the low-cost standalone
+# footprint). transaction/persona/pool/broker/grant have no Cloud Run
+# service or migrate job yet; add them back to the three lists below when
+# they are provisioned.
+#
+# Deploys are DELIBERATE: manual trigger only (workflow_dispatch), no
+# push-triggered rollouts. Databases are Neon — each migrate job carries its
+# own PG_DSN from Secret Manager; this workflow only moves images.
+# Authentication uses Workload Identity Federation; see
 # deploy/terraform/README.md for the one-time setup of the two secrets:
 #   GCP_WIF_PROVIDER  projects/<num>/locations/global/workloadIdentityPools/...
 #   GCP_DEPLOY_SA     deploy-github@xauth-2026.iam.gserviceaccount.com
@@ -10,15 +17,6 @@
 name: Deploy services
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/**"
-      - "pkg/**"
-      - "go.mod"
-      - "go.sum"
-      - "deploy/docker/**"
-      - ".github/workflows/deploy-services.yml"
   workflow_dispatch:
 
 concurrency:
@@ -53,7 +51,7 @@ jobs:
       - name: Build and push images
         run: |
           set -euo pipefail
-          for svc in transaction risk authentication authenticator persona pool broker grant fido id; do
+          for svc in authentication authenticator risk fido id; do
             echo "::group::build ${svc}-service"
             docker build -t "${REPO}/${svc}-service:${GITHUB_SHA}" \
               -f "services/${svc}-service/Dockerfile" .
@@ -70,10 +68,9 @@ jobs:
         run: |
           set -euo pipefail
           declare -A short=(
-            [transaction]=txn [risk]=risk [authentication]=auth [authenticator]=authr
-            [persona]=persona [pool]=pool [broker]=broker [grant]=grant [fido]=fido [id]=id
+            [authentication]=auth [authenticator]=authr [risk]=risk [fido]=fido [id]=id
           )
-          for svc in transaction risk authentication authenticator persona pool broker grant fido id; do
+          for svc in authentication authenticator risk fido id; do
             job="migrate-${short[$svc]}"
             echo "::group::${job}"
             gcloud run jobs update "${job}" \
@@ -87,7 +84,7 @@ jobs:
       - name: Deploy services
         run: |
           set -euo pipefail
-          for svc in transaction risk authentication authenticator persona pool broker grant fido id; do
+          for svc in authentication authenticator risk fido id; do
             echo "::group::deploy ${svc}-service"
             gcloud run services update "${svc}-service" \
               --image "${REPO}/${svc}-service:${GITHUB_SHA}" \
@@ -101,20 +98,16 @@ jobs:
           PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')
           # Google's frontend reserves /healthz on run.app hosts and answers 404
           # itself — the request never reaches the container (verified on the
-          # first standalone deploy). Probe real routes instead: discovery docs
-          # on the OIDC services; a GET to POST-only /v1/advice (app-level 405)
-          # on transaction-service.
-          declare -A path=( [transaction-service]=/v1/advice
-                            [authentication-service]=/.well-known/openid-configuration
-                            [broker-service]=/.well-known/oauth-authorization-server
+          # first standalone deploy). Probe real routes instead. Only the
+          # public-ingress services are checkable from here: authenticator and
+          # risk are internal-only.
+          declare -A path=( [authentication-service]=/.well-known/openid-configuration
                             [fido-service]=/v1/mds/status
                             [id-service]=/.well-known/jwks.json )
-          declare -A want=( [transaction-service]=405
-                            [authentication-service]=200
-                            [broker-service]=200
+          declare -A want=( [authentication-service]=200
                             [fido-service]=400
                             [id-service]=200 )
-          for svc in transaction-service authentication-service broker-service fido-service id-service; do
+          for svc in authentication-service fido-service id-service; do
             url="https://${svc}-${PROJECT_NUMBER}.${REGION}.run.app${path[$svc]}"
             echo "checking ${url} (want ${want[$svc]})"
             for attempt in 1 2 3 4 5; do
