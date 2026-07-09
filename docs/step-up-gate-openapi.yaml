@@ -1,0 +1,612 @@
+openapi: 3.1.0
+info:
+  title: X-Auth Step-Up Gate API
+  version: "0.1.0"
+  x-api-version: "2026-07-08"
+  summary: Score a risky action, step the user up when needed, return an action-bound proof.
+  description: |
+    An **additive** gate you call *before* a risky action (payment, payout, credential
+    change, admin delete). It scores the action's risk, challenges the user (passkey /
+    SMS-OTP) when needed, and returns a short-lived, single-use, **action-bound** grant
+    (JWT) that you verify immediately before executing.
+
+    It sits on top of your existing auth — no login migration.
+
+    **Fail-open contract:** if the API is unreachable or slow, clients honor `options.fail_mode`
+    (`open` ⇒ treat as `allow` with `degraded:true`; `closed` ⇒ block). X-Auth downtime must
+    never lock your users out of their own app.
+
+    **Action binding:** the grant's `act` claim is `base64url(sha256(canonical_json({type, params})))`.
+    A grant issued for one action cannot be replayed for a different one.
+  contact:
+    name: XentraNET
+    url: https://x-auth.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.x-auth.com
+    description: Production
+  - url: https://api.x-auth.com
+    description: Test mode (use sk_test_ / pk_test_ keys)
+
+security:
+  - SecretKey: []
+
+tags:
+  - name: Gate
+    description: Evaluate an action and (when needed) initiate a step-up challenge.
+  - name: Challenges
+    description: Complete or inspect a step-up challenge (headless mode).
+  - name: Grants
+    description: Verify the action-bound proof before executing.
+  - name: Keys
+    description: Public keys for local grant verification.
+
+paths:
+  /v1/gate:
+    post:
+      tags: [Gate]
+      operationId: createGate
+      summary: Evaluate an action; return a decision (and a challenge or grant).
+      description: |
+        Returns one of four decisions:
+        - `allow` — low risk; a ready-to-verify `grant` is included.
+        - `challenge` — step-up required; a `challenge` object is included (hosted redirect
+          when `options.return_url` is set, otherwise headless challenge material).
+        - `block` — over the hard risk threshold.
+        - `advisory` — only when `options.mode` is `advisory`; returns risk + `recommended`,
+          never blocks or challenges.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+            examples:
+              paymentEnforce:
+                summary: Enforce a payment, hosted-redirect mode
+                value:
+                  user: { id: usr_abc, email: sam@example.com, phone: "+15551234567" }
+                  action:
+                    type: payment.send
+                    params: { amount: 4200, currency: USD, destination: acct_9f2 }
+                    description: Send $42.00 to Acme Payroll
+                  context:
+                    ip: 203.0.113.5
+                    user_agent: "Mozilla/5.0 …"
+                    device_token: dvc_1a2b
+                    session_acr: "urn:x-auth:acr:pwd"
+                  options:
+                    mode: enforce
+                    allowed_methods: [passkey, sms_otp]
+                    return_url: https://app.example.com/pay/confirm?order=987
+                    grant_ttl: 300
+                    fail_mode: open
+      responses:
+        '200':
+          description: A decision. Model as a discriminated union on `decision`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+              examples:
+                allow:
+                  summary: allow (grant issued immediately)
+                  value:
+                    decision: allow
+                    risk: { score: 12, level: low, signals: [known_device, same_geo, amount_typical] }
+                    grant: eyJhbGciOiJFUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJ1c3JfYWJjIn0.sig
+                    grant_id: grt_7hQ
+                    degraded: false
+                challengeHosted:
+                  summary: challenge (hosted redirect)
+                  value:
+                    decision: challenge
+                    risk: { score: 74, level: high, signals: [new_device, amount_anomaly, new_payee] }
+                    challenge:
+                      id: chl_Kd3
+                      methods: [passkey, sms_otp]
+                      hosted_url: https://step.x-auth.com/c/chl_Kd3
+                      expires_at: "2026-07-08T10:12:00Z"
+                block:
+                  summary: block
+                  value:
+                    decision: block
+                    risk: { score: 96, level: critical, signals: [impossible_travel, credential_stuffing_pattern] }
+                    reason: risk_threshold_exceeded
+                advisory:
+                  summary: advisory (scoring only)
+                  value:
+                    decision: advisory
+                    recommended: challenge
+                    risk: { score: 74, level: high, signals: [new_device, amount_anomaly] }
+                degraded:
+                  summary: degraded (fail-open)
+                  value:
+                    decision: allow
+                    risk: { level: unknown }
+                    degraded: true
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '5XX': { $ref: '#/components/responses/ApiError' }
+
+  /v1/challenges/{challenge_id}:
+    get:
+      tags: [Challenges]
+      operationId: getChallenge
+      summary: Poll a challenge's status (headless mode).
+      description: Browser-completable with a publishable key; a server may also poll with a secret key.
+      security:
+        - PublishableKey: []
+        - SecretKey: []
+      parameters:
+        - $ref: '#/components/parameters/ChallengeId'
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: Challenge status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeStatus'
+              examples:
+                completed:
+                  value: { id: chl_Kd3, status: completed, grant_id: grt_7hQ }
+                pending:
+                  value: { id: chl_Kd3, status: pending }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/challenges/{challenge_id}/verify:
+    post:
+      tags: [Challenges]
+      operationId: verifyChallenge
+      summary: Submit a step-up response (headless mode).
+      description: |
+        Submit an SMS-OTP code or a WebAuthn assertion to complete a challenge. Runs from the
+        browser with a publishable key (`pk_…`); a secret key also works for server-driven flows.
+      security:
+        - PublishableKey: []
+        - SecretKey: []
+      parameters:
+        - $ref: '#/components/parameters/ChallengeId'
+        - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeVerifyRequest'
+            examples:
+              smsOtp:
+                value: { method: sms_otp, code: "418923" }
+              passkey:
+                value:
+                  method: passkey
+                  assertion: { id: "…", rawId: "…", response: { }, type: public-key }
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeVerifyResponse'
+              examples:
+                success:
+                  value: { status: completed, grant: eyJhbGciOiJFUzI1NiJ9.x.y, grant_id: grt_7hQ }
+                failed:
+                  value: { status: failed, attempts_remaining: 2 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Challenge expired.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/grants/introspect:
+    post:
+      tags: [Grants]
+      operationId: introspectGrant
+      summary: Verify a grant server-side and enforce single-use + action match.
+      description: |
+        Prefer local verification against the JWKS for a zero-runtime-dependency execute path.
+        Use introspect when you want X-Auth to enforce single-use (`jti`) and recompute the
+        action hash for you. A successful introspect **consumes** the grant.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantIntrospectRequest'
+            examples:
+              payment:
+                value:
+                  grant: eyJhbGciOiJFUzI1NiJ9.x.y
+                  expected_action:
+                    type: payment.send
+                    params: { amount: 4200, currency: USD, destination: acct_9f2 }
+      responses:
+        '200':
+          description: Introspection result. Execute only when `active && action_matches`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantIntrospectResponse'
+              examples:
+                active:
+                  value:
+                    active: true
+                    action_matches: true
+                    sub: usr_abc
+                    acr: "urn:x-auth:acr:l3"
+                    amr: [passkey]
+                    risk: 74
+                    consumed: true
+                    exp: "2026-07-08T10:12:00Z"
+                consumed:
+                  value: { active: false, reason: already_consumed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Keys]
+      operationId: getJwks
+      summary: ES256 public keys for local grant verification.
+      security: []
+      responses:
+        '200':
+          description: JSON Web Key Set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Jwks'
+
+webhooks:
+  challengeEvent:
+    post:
+      operationId: onChallengeEvent
+      summary: Delivered when a challenge resolves (completed / failed / expired).
+      description: |
+        Signed with `X-Auth-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, t + "." + body)>`.
+        The payload carries `grant_id` (never the grant secret).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+            example:
+              id: evt_9Q
+              type: challenge.completed
+              created: "2026-07-08T10:11:40Z"
+              data:
+                challenge_id: chl_Kd3
+                grant_id: grt_7hQ
+                action_type: payment.send
+                sub: usr_abc
+      responses:
+        '200':
+          description: Acknowledged (return 2xx within 5s or we retry with backoff).
+
+components:
+  securitySchemes:
+    SecretKey:
+      type: http
+      scheme: bearer
+      bearerFormat: sk_live_ / sk_test_
+      description: Server-side secret key. Never expose in a browser.
+    PublishableKey:
+      type: apiKey
+      in: header
+      name: X-Auth-Publishable-Key
+      description: |
+        Browser key (`pk_live_` / `pk_test_`). Used only by the JS SDK to create device
+        tokens and complete challenges — it cannot score actions or read grants.
+
+  parameters:
+    ApiVersion:
+      name: X-Auth-Version
+      in: header
+      required: false
+      schema: { type: string, example: "2026-07-08" }
+      description: Pin the API version. Absent ⇒ your account default.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, format: uuid }
+      description: Replay-safe key for POST /v1/gate. Same key + body within 24h returns the original result.
+    ChallengeId:
+      name: challenge_id
+      in: path
+      required: true
+      schema: { type: string, example: chl_Kd3 }
+
+  responses:
+    BadRequest:
+      description: Invalid request.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: Missing or invalid key.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Resource not found.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    RateLimited:
+      description: Too many requests.
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds to wait. }
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ApiError:
+      description: Server error. Honor options.fail_mode on the client.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+    GateRequest:
+      type: object
+      required: [user, action]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        action: { $ref: '#/components/schemas/Action' }
+        context: { $ref: '#/components/schemas/Context' }
+        options: { $ref: '#/components/schemas/Options' }
+
+    User:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, description: Your stable user id., example: usr_abc }
+        email: { type: string, format: email, description: Optional; email-OTP fallback / display. }
+        phone: { type: string, description: E.164; enables SMS-OTP., example: "+15551234567" }
+
+    Action:
+      type: object
+      required: [type, params]
+      properties:
+        type:
+          type: string
+          description: Your dot-namespaced action taxonomy.
+          examples: [payment.send, payout.create, user.email.change, admin.record.delete]
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            Material fields bound into the grant's `act` hash. Include everything that, if
+            changed, must invalidate the proof (amount, currency, destination, resource id).
+          example: { amount: 4200, currency: USD, destination: acct_9f2 }
+        description:
+          type: string
+          description: Human-readable line shown on the step-up screen.
+          example: Send $42.00 to Acme Payroll
+
+    Context:
+      type: object
+      description: Optional signals that improve risk scoring.
+      properties:
+        ip: { type: string, example: 203.0.113.5 }
+        user_agent: { type: string }
+        device_token: { type: string, description: From the browser SDK xauth.device()., example: dvc_1a2b }
+        session_acr: { type: string, description: What the user already satisfied at login., example: "urn:x-auth:acr:pwd" }
+
+    Options:
+      type: object
+      description: All fields optional; the server applies defaults noted below.
+      properties:
+        mode:
+          type: string
+          enum: [enforce, advisory]
+          description: "enforce (default) returns allow/challenge/block; advisory returns scoring only."
+        allowed_methods:
+          type: array
+          items: { $ref: '#/components/schemas/Method' }
+          description: Restrict step-up methods for this action.
+        return_url:
+          type: string
+          format: uri
+          description: Present ⇒ hosted-redirect mode. Absent ⇒ headless mode.
+        grant_ttl:
+          type: integer
+          description: Seconds the resulting grant is valid (server default 300).
+        fail_mode:
+          type: string
+          enum: [open, closed]
+          description: Client degradation posture (default open).
+
+    Method:
+      type: string
+      enum: [passkey, sms_otp]
+      description: Step-up methods available in v0.1 (email_otp / totp are roadmap).
+
+    Risk:
+      type: object
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100, example: 74 }
+        level: { type: string, enum: [low, medium, high, critical, unknown] }
+        signals:
+          type: array
+          items: { type: string }
+          example: [new_device, amount_anomaly, new_payee]
+
+    GateResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AllowResponse'
+        - $ref: '#/components/schemas/ChallengeResponse'
+        - $ref: '#/components/schemas/BlockResponse'
+        - $ref: '#/components/schemas/AdvisoryResponse'
+      discriminator:
+        propertyName: decision
+        mapping:
+          allow: '#/components/schemas/AllowResponse'
+          challenge: '#/components/schemas/ChallengeResponse'
+          block: '#/components/schemas/BlockResponse'
+          advisory: '#/components/schemas/AdvisoryResponse'
+
+    AllowResponse:
+      type: object
+      required: [decision, risk]
+      properties:
+        decision: { type: string, const: allow }
+        risk: { $ref: '#/components/schemas/Risk' }
+        grant: { type: string, description: Action-bound JWT (absent on a degraded/fail-open allow). }
+        grant_id: { type: string, example: grt_7hQ }
+        degraded: { type: boolean, default: false, description: true ⇒ scored under fail-open degradation. }
+
+    ChallengeResponse:
+      type: object
+      required: [decision, risk, challenge]
+      properties:
+        decision: { type: string, const: challenge }
+        risk: { $ref: '#/components/schemas/Risk' }
+        challenge: { $ref: '#/components/schemas/Challenge' }
+
+    BlockResponse:
+      type: object
+      required: [decision, risk, reason]
+      properties:
+        decision: { type: string, const: block }
+        risk: { $ref: '#/components/schemas/Risk' }
+        reason: { type: string, example: risk_threshold_exceeded }
+
+    AdvisoryResponse:
+      type: object
+      required: [decision, risk, recommended]
+      properties:
+        decision: { type: string, const: advisory }
+        risk: { $ref: '#/components/schemas/Risk' }
+        recommended: { type: string, enum: [allow, challenge, block] }
+
+    Challenge:
+      type: object
+      required: [id, methods, expires_at]
+      description: |
+        Hosted mode returns `hosted_url`. Headless mode returns per-method material
+        (`passkey` WebAuthn options and/or `sms_otp` delivery info).
+      properties:
+        id: { type: string, example: chl_Kd3 }
+        methods:
+          type: array
+          items: { $ref: '#/components/schemas/Method' }
+        expires_at: { type: string, format: date-time }
+        hosted_url: { type: string, format: uri, description: Hosted-redirect mode only. }
+        passkey:
+          type: object
+          description: Headless mode; pass `publicKey` to navigator.credentials.get().
+          properties:
+            publicKey: { type: object, additionalProperties: true }
+        sms_otp:
+          type: object
+          description: Headless mode; the code was sent to the user.
+          properties:
+            sent_to: { type: string, example: "+1•••••34567" }
+            length: { type: integer, example: 6 }
+
+    ChallengeStatus:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pending, completed, failed, expired] }
+        grant_id: { type: string, description: Present when status is completed. }
+
+    ChallengeVerifyRequest:
+      type: object
+      required: [method]
+      properties:
+        method: { $ref: '#/components/schemas/Method' }
+        code: { type: string, description: For method sms_otp., example: "418923" }
+        assertion:
+          type: object
+          additionalProperties: true
+          description: For method passkey — the navigator.credentials.get() result.
+
+    ChallengeVerifyResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [completed, failed] }
+        grant: { type: string, description: Present when status is completed. }
+        grant_id: { type: string }
+        attempts_remaining: { type: integer, description: Present when status is failed. }
+
+    GrantIntrospectRequest:
+      type: object
+      required: [grant]
+      properties:
+        grant: { type: string }
+        expected_action:
+          $ref: '#/components/schemas/ExpectedAction'
+
+    ExpectedAction:
+      type: object
+      required: [type, params]
+      properties:
+        type: { type: string, example: payment.send }
+        params: { type: object, additionalProperties: true }
+
+    GrantIntrospectResponse:
+      type: object
+      required: [active]
+      properties:
+        active: { type: boolean }
+        action_matches: { type: boolean }
+        sub: { type: string }
+        acr: { type: string, example: "urn:x-auth:acr:l3" }
+        amr: { type: array, items: { type: string }, example: [passkey] }
+        risk: { type: integer }
+        consumed: { type: boolean, description: true ⇒ this call burned the single-use jti. }
+        exp: { type: string, format: date-time }
+        reason: { type: string, description: Present when active is false., example: already_consumed }
+
+    WebhookEvent:
+      type: object
+      required: [id, type, created, data]
+      properties:
+        id: { type: string, example: evt_9Q }
+        type: { type: string, enum: [challenge.completed, challenge.failed, challenge.expired] }
+        created: { type: string, format: date-time }
+        data:
+          type: object
+          properties:
+            challenge_id: { type: string }
+            grant_id: { type: string }
+            action_type: { type: string }
+            sub: { type: string }
+
+    Jwks:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty: { type: string, example: EC }
+              crv: { type: string, example: P-256 }
+              kid: { type: string, example: k1 }
+              x: { type: string }
+              y: { type: string }
+              use: { type: string, example: sig }
+              alg: { type: string, example: ES256 }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              enum: [invalid_request, authentication_error, rate_limited, challenge_expired, grant_consumed, api_error]
+            message: { type: string }
+            param: { type: string, description: The offending field, when applicable. }
